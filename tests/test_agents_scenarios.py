@@ -34,8 +34,6 @@ from agents.osint_heavy_agent  import OsintHeavyAgent
 from agents.author_agent       import AuthorAgent
 from agents.bug_bounty_agent   import BugBountyAgent
 from agents.fiverr_agent       import FiverrAgent
-from agents.health_agent       import HealthAgent
-from agents.nfl_bet_agent      import NflBetAgent
 from agents.music_agent        import MusicAgent
 from agents.webdesign_agent    import WebdesignAgent
 from agents.wifi_agent         import WiFiAgent
@@ -536,91 +534,6 @@ class TestFiverrAgent:
     def test_image_prompt_request_includes_brief(self):
         msgs = self.agent.build_image_prompt_request(self.BRIEF)
         assert "NovaBrew Coffee" in _user(msgs)
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# 11. HealthAgent
-# Scenario: 35-year-old male, wants to lose 10 kg, gym 3x/week, no restrictions
-# ─────────────────────────────────────────────────────────────────────────────
-
-class TestHealthAgent:
-    agent = HealthAgent()
-
-    PROMPT = (
-        "Goal: lose 10 kg in 3 months.\n"
-        "Age: 35, male, 185 cm, 95 kg.\n"
-        "Activity: gym 3× per week (mostly weights).\n"
-        "Diet: no restrictions but dislike fish.\n"
-        "Medical: none."
-    )
-
-    def test_message_structure(self):
-        msgs = self.agent.build_messages(self.PROMPT)
-        assert _roles(msgs) == ["system", "user"]
-
-    def test_prompt_preserved(self):
-        msgs = self.agent.build_messages(self.PROMPT)
-        assert "10 kg" in _user(msgs)
-        assert "gym" in _user(msgs)
-
-    def test_system_prompt_contains_response_sections(self):
-        sys = _system(self.agent.build_messages(self.PROMPT))
-        for section in ["SUMMARY", "ACTION PLAN", "DIET", "CAUTIONS"]:
-            assert section in sys
-
-    def test_system_prompt_contains_medical_disclaimer(self):
-        sys = _system(self.agent.build_messages(self.PROMPT))
-        assert "medical" in sys.lower() or "disclaimer" in sys.lower()
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Scenario: equity analysis on NVDA ahead of earnings
-# ─────────────────────────────────────────────────────────────────────────────
-
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# 13. NflBetAgent
-# Scenario: Prop bet — Patrick Mahomes passing yards over 284.5
-# ─────────────────────────────────────────────────────────────────────────────
-
-class TestNflBetAgent:
-    agent = NflBetAgent()
-
-    PROMPT = (
-        "Prop: Patrick Mahomes — Passing Yards Over 284.5  (-110)\n"
-        "Week 12 vs. Las Vegas Raiders (home).\n"
-        "Season avg: 301 yards/game. vs Raiders last 3: 320, 289, 341.\n"
-        "Raiders pass defense: 27th in yards allowed. Wind: 5 mph, dome.\n"
-        "Mahomes last 5 home games: 310, 295, 328, 270, 315."
-    )
-
-    def test_message_structure(self):
-        msgs = self.agent.build_messages(self.PROMPT)
-        assert _roles(msgs) == ["system", "user"]
-
-    def test_prompt_preserved(self):
-        msgs = self.agent.build_messages(self.PROMPT)
-        assert "Mahomes" in _user(msgs)
-        assert "284.5" in _user(msgs)
-
-    def test_system_prompt_contains_bet_analysis_sections(self):
-        sys = _system(self.agent.build_messages(self.PROMPT))
-        for section in ["OVER CASE", "UNDER CASE", "EDGE ASSESSMENT", "RECOMMENDATION"]:
-            assert section in sys
-
-    def test_system_prompt_mentions_expected_value(self):
-        sys = _system(self.agent.build_messages(self.PROMPT))
-        assert "EV" in sys or "expected value" in sys.lower()
-
-    def test_system_prompt_mentions_unit_sizing(self):
-        sys = _system(self.agent.build_messages(self.PROMPT))
-        assert "unit" in sys.lower()
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Scenario: biotech small-cap pre-FDA catalyst, 6-week window
-# ─────────────────────────────────────────────────────────────────────────────
 
 
 

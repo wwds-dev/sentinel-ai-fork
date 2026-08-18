@@ -7,7 +7,9 @@ minimum width, which pins an impossible minimum on a pane and makes Qt compress
 controls past their own minimums until the labels are chopped.
 """
 from PySide6.QtCore import Qt, QRect, QPoint, QSize
-from PySide6.QtWidgets import QLayout, QPushButton, QVBoxLayout, QWidget
+from PySide6.QtGui import QColor, QPainter
+from PySide6.QtWidgets import (QHBoxLayout, QLabel, QLayout, QPushButton,
+                               QVBoxLayout, QWidget)
 
 
 class FlowLayout(QLayout):
@@ -159,3 +161,85 @@ class CollapsibleSection(QWidget):
         title = self._title.upper().replace("&", "&&")
         self.header_btn.setText(f"  {arrow}   {title}")
         self.header_btn.setChecked(self._expanded)
+
+
+class Bar(QWidget):
+    """A thin proportion bar. Painted rather than styled.
+
+    A QProgressBar would inherit the global sheet, which styles it for the
+    audiobook progress readout — a different job with a different look.
+    """
+
+    TRACK = QColor("#242424")
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._fraction = 0.0
+        self._colour = QColor("#3cff88")
+        self.setFixedHeight(6)
+        self.setMinimumWidth(40)
+
+    def set(self, fraction: float, colour: str) -> None:
+        self._fraction = max(0.0, min(1.0, float(fraction)))
+        self._colour = QColor(colour)
+        self.update()
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setPen(Qt.NoPen)
+        radius = self.height() / 2
+        painter.setBrush(self.TRACK)
+        painter.drawRoundedRect(self.rect(), radius, radius)
+        filled = int(self.width() * self._fraction)
+        if filled > 0:
+            painter.setBrush(self._colour)
+            painter.drawRoundedRect(QRect(0, 0, max(filled, self.height()),
+                                          self.height()), radius, radius)
+
+
+class Meter(QWidget):
+    """caption · bar · value — for anything shaped "x of y".
+
+    Replaces sentences like "Used: 11.3 GB · Free: 9.4 GB", which cannot be read
+    at a glance. That is the only thing a status rail is for.
+    """
+
+    LEVEL_COLOURS = {
+        "green": "#3cff88",
+        "yellow": "#e3b341",
+        "red": "#f85149",
+        "muted": "#5a5a5a",
+    }
+
+    def __init__(self, caption: str, tip: str = "", parent=None):
+        super().__init__(parent)
+        row = QHBoxLayout(self)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(8)
+
+        self.caption = QLabel(caption)
+        self.caption.setObjectName("MeterCaption")
+        self.caption.setFixedWidth(58)
+        self.bar = Bar()
+        self.value = QLabel("—")
+        self.value.setObjectName("MeterValue")
+        self.value.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        self.value.setMinimumWidth(58)
+
+        row.addWidget(self.caption)
+        row.addWidget(self.bar, 1)
+        row.addWidget(self.value)
+        if tip:
+            self.setToolTip(tip)
+
+    def set(self, fraction: float, text: str, level: str = "green",
+            tip: str = "") -> None:
+        self.bar.set(fraction, self.LEVEL_COLOURS.get(level, "#3cff88"))
+        self.value.setText(text)
+        if tip:
+            self.setToolTip(tip)
+
+    def set_unavailable(self, text: str = "n/a") -> None:
+        self.bar.set(0.0, self.LEVEL_COLOURS["muted"])
+        self.value.setText(text)

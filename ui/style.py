@@ -10,6 +10,13 @@ single Qt style sheet string with no application state in it.
 # Semantic: green (success) / red (danger) for primary actions
 
 GLOBAL_STYLESHEET = """
+/* Type scale — four steps, two weights. 10/11/12/13px were four sizes that
+   read as one, which is why nothing looked more important than anything else.
+     display 22px/500   agent title
+     title   15px/500   card and section headings (used by the section renderer)
+     body    13px/400   controls, labels, prose
+     caption 11px/400   eyebrow labels, units, metadata
+   Do not add a fifth size. */
         QWidget {
             background-color: #0f0f0f;
             color: #d8d8d8;
@@ -60,7 +67,7 @@ GLOBAL_STYLESHEET = """
             border: 1px solid #2a2a2a;
             border-radius: 8px;
             padding: 9px 16px;
-            font-weight: 600;
+            font-weight: 500;
         }
         QPushButton:hover {
             background-color: #232323;
@@ -97,8 +104,8 @@ GLOBAL_STYLESHEET = """
             padding: 0 6px;
             color: #707070;
             background-color: transparent;
-            font-size: 10px;
-            font-weight: bold;
+            font-size: 11px;
+            font-weight: 500;
             letter-spacing: 2px;
         }
 
@@ -118,7 +125,7 @@ GLOBAL_STYLESHEET = """
             padding: 7px 12px;
             border: none;
             border-bottom: 2px solid transparent;
-            font-size: 12px;
+            font-size: 13px;
             font-weight: 500;
         }
         QTabBar::tab:hover {
@@ -218,14 +225,14 @@ GLOBAL_STYLESHEET = """
             border: 1px solid #3cff88;
             border-radius: 4px;
             padding: 6px 10px;
-            font-size: 12px;
+            font-size: 13px;
         }
 
         /* ── Sentinel agent title (big accent text) ───────────────── */
         QLabel#AgentTitle {
             color: #3cff88;
             font-size: 22px;
-            font-weight: 800;
+            font-weight: 500;
             letter-spacing: 3px;
             background: transparent;
         }
@@ -233,7 +240,7 @@ GLOBAL_STYLESHEET = """
         /* ── Agent subtitle (one-line function description) ─────── */
         QLabel#AgentSubtitle {
             color: #888888;
-            font-size: 12px;
+            font-size: 13px;
             font-weight: 400;
             background: transparent;
             padding: 0 0 4px 1px;
@@ -247,7 +254,7 @@ GLOBAL_STYLESHEET = """
             padding: 4px 12px;
             color: #3cff88;
             font-size: 11px;
-            font-weight: 600;
+            font-weight: 500;
             letter-spacing: 1px;
         }
 
@@ -273,7 +280,7 @@ GLOBAL_STYLESHEET = """
             border-radius: 8px;
             padding: 7px 14px;
             color: #3cff88;
-            font-weight: 700;
+            font-weight: 500;
             font-size: 13px;
             min-height: 18px;
             min-width: 110px;
@@ -298,7 +305,7 @@ GLOBAL_STYLESHEET = """
             border-radius: 8px;
             padding: 7px 14px;
             color: #ff7070;
-            font-weight: 700;
+            font-weight: 500;
             font-size: 13px;
             min-height: 18px;
             min-width: 80px;

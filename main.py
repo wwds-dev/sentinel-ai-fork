@@ -66,14 +66,11 @@ from agents.writing_agent import WritingAgent
 from agents.coding_agent import CodingAgent
 from agents.osint_agent import OSINTAgent
 from agents.manager_agent import ManagerAgent
-from agents.health_agent import HealthAgent
 from agents.author_agent import AuthorAgent
 from agents.manuscript_agent import ManuscriptAgent
 from agents.webdesign_agent import WebdesignAgent
 from agents.music_agent import MusicAgent
-from agents.nfl_bet_agent import NflBetAgent
 from agents.bug_bounty_agent import BugBountyAgent
-from agents.nfl_stats_parser import parse_game_log, compute_stats, format_computed_stats
 from agents.wifi_agent import WiFiAgent, KNOWN_ADAPTERS, detect_usb_adapters, build_kali_commands, AIRPORT
 from agents.osint_heavy_agent import OsintHeavyAgent
 from agents.fiverr_agent import FiverrAgent
@@ -136,19 +133,10 @@ AGENT_RECOMMENDATIONS = {
         "reason": "Vulnerability triage plus a readable HackerOne write-up — Sonnet "
                   "handles both the security reasoning and the report prose.",
     },
-    "nfl_bet": {
-        "provider": "anthropic", "model": "claude-sonnet-5",
-        "reason": "Prop analysis needs reliable arithmetic for EV and projections.",
-    },
     "fiverr": {
         "provider": "openai", "model": "gpt-4o-mini",
         "reason": "Gig copy sits next to DALL·E logo generation — staying on OpenAI "
                   "keeps prompt style and image calls on one provider, cheaply.",
-    },
-    "health": {
-        "provider": "anthropic", "model": "claude-sonnet-5",
-        "reason": "Nutrition and wellness guidance benefits from Claude's careful, "
-                  "caveat-aware phrasing on health topics.",
     },
     "author": {
         "provider": "anthropic", "model": "claude-fable-5",
@@ -189,9 +177,7 @@ AGENT_SETUP_WIDGETS = {
     "osint_heavy": ("osint_heavy_provider_box", "osint_heavy_model_box"),
     "wifi":        ("wifi_provider_box",        "wifi_model_box"),
     "bug_bounty":  ("bb_provider_box",          "bb_model_box"),
-    "nfl_bet":     ("nfl_bet_provider_box",     "nfl_bet_model_box"),
     "fiverr":      ("fiverr_provider_box",      "fiverr_model_box"),
-    "health":      ("health_provider_box",      "health_model_box"),
     "author":      ("author_provider_box",      "author_model_box"),
     "manuscript":  ("manuscript_provider_box",  "manuscript_model_box"),
     "music":       ("music_provider_box",       "music_model_box"),
@@ -208,9 +194,7 @@ AGENT_MODEL_LOADERS = {
     "osint_heavy": "osint_heavy_load_models",
     "wifi":        "wifi_load_models",
     "bug_bounty":  "bb_load_models",
-    "nfl_bet":     "nfl_bet_load_models",
     "fiverr":      "fiverr_load_models",
-    "health":      "health_load_models",
     "author":      "author_load_models",
     "manuscript":  "manuscript_load_models",
     "music":       "music_load_models",
@@ -221,17 +205,16 @@ AGENT_MODEL_LOADERS = {
 AGENT_PRETTY_NAMES = {
     "chat": "Chat", "osint": "Trace", "osint_heavy": "Bloodhound",
     "wifi": "Beacon", "bug_bounty": "Bug Spray",
-    "nfl_bet": "Playmaker", "fiverr": "Atelier",
-    "health": "Vitality", "author": "Manuscript", "manuscript": "Publisher",
+    "fiverr": "Atelier",
+    "author": "Manuscript", "manuscript": "Publisher",
     "music": "Maestro", "webdesign": "Site Builder", "audiobook": "Narrator",
-    "manager": "Forge", "ops_identity": "Op Identity",
-}
+    "manager": "Forge", }
 
 
 from ui.workers import (
     ChatWorker, SubprocessWorker, ModelPullWorker, FiverrImageWorker, ShortsWorker,
 )
-from ui.widgets import FlowLayout, CollapsibleSection
+from ui.widgets import FlowLayout, CollapsibleSection, Meter
 from ui.style import GLOBAL_STYLESHEET
 from ui.tooltips import seed_tooltips
 
@@ -284,8 +267,6 @@ class GodAI(QWidget):
         self.agent_factory = AgentFactory(BASE_DIR)
         self.pending_spec: dict | None = None
         self.manager_worker: Optional[ChatWorker] = None
-        self.health_worker: Optional[ChatWorker] = None
-        self._last_health_response: str = ""
         self.author_worker: Optional[ChatWorker] = None
         self._last_author_response: str = ""
         self._author_is_continuing: bool = False
@@ -301,12 +282,8 @@ class GodAI(QWidget):
         self._calendar_slots: list = []
         self.music_worker: Optional[ChatWorker] = None
         self._last_music_response: str = ""
-        self.nfl_bet_worker: Optional[ChatWorker] = None
-        self._last_nfl_bet_response: str = ""
         self.bug_bounty_worker: Optional[ChatWorker] = None
         self._last_bb_response: str = ""
-        self.nfl_model_worker: Optional[ChatWorker] = None
-        self._last_nfl_model_response: str = ""
         self.webdesign_worker: Optional[ChatWorker] = None
         self._last_webdesign_response: str = ""
         self.osint_worker: Optional[ChatWorker] = None
@@ -327,11 +304,9 @@ class GodAI(QWidget):
             "writing": WritingAgent(),
             "coding": CodingAgent(),
             "osint": OSINTAgent(),
-            "health": HealthAgent(),
             "author": AuthorAgent(),
             "webdesign": WebdesignAgent(),
             "music": MusicAgent(),
-            "nfl_bet": NflBetAgent(),
             "bug_bounty": BugBountyAgent(),
             "wifi": WiFiAgent(),
             "osint_heavy": OsintHeavyAgent(),
@@ -766,14 +741,6 @@ class GodAI(QWidget):
                 "reason": "Audiobook conversion uses OpenAI TTS only."
             }
 
-        if agent == "nfl_bet":
-            if self.allow_anthropic_checkbox.isChecked():
-                return {"mode": "Hybrid allowed", "provider": "anthropic", "model": "claude-sonnet-4-6", "reason": "NFL props; Claude Sonnet handles structured sports data analysis well."}
-            if self.allow_openai_checkbox.isChecked():
-                return {"mode": "Hybrid allowed", "provider": "openai", "model": "gpt-4o-mini", "reason": "NFL props; GPT-4o-mini is reliable for sports analytics reasoning."}
-            if self.allow_deepseek_checkbox.isChecked():
-                return {"mode": "Hybrid allowed", "provider": "deepseek", "model": "deepseek-chat", "reason": "NFL props; DeepSeek handles structured analytical output."}
-            return {"mode": "Local only", "provider": "ollama", "model": self.model_box.currentText(), "reason": "NFL props work best with a cloud model, but running locally."}
 
         if any(k in text for k in ["debug", "error", "traceback", "python", "code", "refactor", "function", "class"]):
             if self.allow_anthropic_checkbox.isChecked():
@@ -1302,18 +1269,16 @@ class GodAI(QWidget):
         icons = {
             "chat": "💬", "osint": "👹", "osint_heavy": "🔍",
             "audiobook": "🎧", "manager": "🏗",
-            "health": "🏃", "author": "✍️", "webdesign": "🎨",
-            "music": "🎵", "nfl_bet": "🏈", "wifi": "📡", "fiverr": "💼",
-            "bug_bounty": "🐛", "ops_identity": "🪪",
-            "manuscript": "📚",
+            "author": "✍️", "webdesign": "🎨",
+            "music": "🎵", "wifi": "📡", "fiverr": "💼",
+            "bug_bounty": "🐛", "manuscript": "📚",
         }
         labels = {
             "chat": "Chat", "osint": "Trace", "osint_heavy": "Bloodhound",
             "audiobook": "Narrator", "manager": "Forge",
-            "health": "Vitality", "author": "Manuscript", "webdesign": "Site Builder",
-            "music": "Maestro", "nfl_bet": "Playmaker", "wifi": "Beacon",
+            "author": "Manuscript", "webdesign": "Site Builder",
+            "music": "Maestro", "wifi": "Beacon",
             "fiverr": "Atelier", "bug_bounty": "Bug Spray",
-            "ops_identity": "Op Identity",
             # Without this the sidebar fell back to name.capitalize() and showed a
             # second "Manuscript" entry, colliding with the author agent. Every
             # other surface (header title, registry) calls this one Publisher.
@@ -1324,12 +1289,11 @@ class GodAI(QWidget):
         # and you open the one you want.
         categories = [
             ("General",            ["chat"],                                                False),
-            ("Finance & Business", ["nfl_bet", "fiverr"],                                 False),
+            ("Finance & Business", ["fiverr"],                                            False),
             ("Research",           ["osint", "osint_heavy", "wifi"],                       False),
             ("Security",           ["bug_bounty"],                                         False),
             ("Creative",           ["author", "manuscript", "music", "webdesign", "audiobook"],         False),
-            ("Wellness",           ["health"],                                              False),
-            ("System",             ["manager", "ops_identity"],                          False),
+            ("System",             ["manager"],                                           False),
         ]
 
         # Minimal sidebar row — clear separation via padding + hover fill
@@ -1748,10 +1712,6 @@ class GodAI(QWidget):
         self.build_manager_panel()
         center_layout.addWidget(self.manager_panel)
 
-
-        self.build_health_panel()
-        center_layout.addWidget(self.health_panel)
-
         self.build_author_panel()
         center_layout.addWidget(self.author_panel)
 
@@ -1760,9 +1720,6 @@ class GodAI(QWidget):
 
         self.build_music_panel()
         center_layout.addWidget(self.music_panel)
-
-        self.build_nfl_bet_panel()
-        center_layout.addWidget(self.nfl_bet_panel)
 
         self.build_osint_panel()
         center_layout.addWidget(self.osint_panel)
@@ -1781,10 +1738,6 @@ class GodAI(QWidget):
 
         self.build_bug_bounty_panel()
         center_layout.addWidget(self.bug_bounty_panel)
-
-
-        self.build_ops_identity_panel()
-        center_layout.addWidget(self.ops_identity_panel)
 
         self.output_label = QLabel("OUTPUT")
         self.output_label.setStyleSheet(
@@ -2013,334 +1966,6 @@ class GodAI(QWidget):
         self.manager_load_models()
 
 
-    def build_health_panel(self):
-        self.health_panel = QWidget()
-        self.health_panel.setObjectName("HealthPanel")
-        layout = QVBoxLayout(self.health_panel)
-        layout.setContentsMargins(8, 8, 8, 8)
-        layout.setSpacing(8)
-
-        # ── Setup form ──────────────────────────────────────────────────────
-        setup_group = QGroupBox("Quick Setup")
-        setup_group.setObjectName("HealthSetupGroup")
-        setup_layout = QGridLayout(setup_group)
-        setup_layout.setSpacing(6)
-
-        setup_layout.addWidget(QLabel("Category:"), 0, 0)
-        self.health_category_box = QComboBox()
-        self.health_category_box.addItems(["General", "Nutrition", "Fitness", "Mental Health", "Wellness", "Weight Management", "Performance"])
-        setup_layout.addWidget(self.health_category_box, 0, 1)
-
-        setup_layout.addWidget(QLabel("Goal:"), 0, 2)
-        self.health_goal_box = QComboBox()
-        self.health_goal_box.addItems(["General Advice", "Weight Loss", "Muscle Gain", "Improve Energy", "Reduce Stress", "Better Sleep", "Endurance", "Mental Clarity", "Custom"])
-        setup_layout.addWidget(self.health_goal_box, 0, 3)
-
-        setup_layout.addWidget(QLabel("Activity Level:"), 1, 0)
-        self.health_activity_box = QComboBox()
-        self.health_activity_box.addItems(["Sedentary", "Lightly Active", "Moderately Active", "Very Active", "Athlete"])
-        self.health_activity_box.setCurrentText("Moderately Active")
-        setup_layout.addWidget(self.health_activity_box, 1, 1)
-
-        setup_layout.addWidget(QLabel("Age (optional):"), 1, 2)
-        self.health_age_input = QLineEdit()
-        self.health_age_input.setPlaceholderText("e.g. 32")
-        setup_layout.addWidget(self.health_age_input, 1, 3)
-
-        setup_layout.addWidget(QLabel("Question / Goal:"), 2, 0)
-        self.health_query_input = QTextEdit()
-        self.health_query_input.setPlaceholderText(
-            "Describe your health question, goal, or concern in as much detail as you like…"
-        )
-        self.health_query_input.setFixedHeight(70)
-        setup_layout.addWidget(self.health_query_input, 2, 1, 1, 3)
-
-        layout.addWidget(setup_group)
-
-        # ── Provider row ────────────────────────────────────────────────────
-        provider_row_container = QWidget()
-        provider_row = FlowLayout(provider_row_container, spacing=6)
-
-        self.health_provider_box = QComboBox()
-        self.health_provider_box.addItems(["ollama", "openai", "deepseek", "kimi", "gemini", "anthropic", "qwen"])
-        self.health_provider_box.setCurrentText("anthropic")
-        provider_row.addWidget(self.health_provider_box)
-
-        self.health_model_box = QComboBox()
-        self.health_model_box.setMinimumWidth(200)
-        provider_row.addWidget(self.health_model_box)
-
-        self.health_analyse_btn = QPushButton("Analyse")
-        self.health_analyse_btn.setMinimumWidth(130)
-        self.health_analyse_btn.setObjectName("PrimaryAction")
-        self.health_analyse_btn.clicked.connect(self.health_analyse)
-        provider_row.addWidget(self.health_analyse_btn)
-
-        self.health_stop_btn = QPushButton("Stop")
-        self.health_stop_btn.setEnabled(False)
-        self.health_stop_btn.setObjectName("DangerAction")
-        self.health_stop_btn.clicked.connect(self.health_stop)
-        provider_row.addWidget(self.health_stop_btn)
-
-        self.health_help_btn = QPushButton("Help")
-
-
-        self.health_help_btn.setObjectName("ChipBtn")
-        self.health_help_btn.setToolTip("Open Health Agent documentation")
-        self.health_help_btn.clicked.connect(self.show_agent_docs)
-        provider_row.addWidget(self.health_help_btn)
-
-        layout.addWidget(provider_row_container)
-
-        # ── Results area (tabs + sidebar) ───────────────────────────────────
-        results_splitter = QSplitter(Qt.Horizontal)
-
-        self.health_tabs = QTabWidget()
-        self.health_overview_box = QTextBrowser()
-        self.health_overview_box.setOpenExternalLinks(False)
-        self.health_tabs.addTab(self.health_overview_box, "Overview")
-
-        self.health_plan_box = QTextBrowser()
-        self.health_tabs.addTab(self.health_plan_box, "Action Plan")
-
-        self.health_nutrition_box = QTextBrowser()
-        self.health_tabs.addTab(self.health_nutrition_box, "Nutrition & Lifestyle")
-
-        self.health_notes_box = QTextBrowser()
-        self.health_tabs.addTab(self.health_notes_box, "Important Notes")
-
-        results_splitter.addWidget(self.health_tabs)
-
-        # ── Sidebar indicators ──────────────────────────────────────────────
-        indicators_widget = QWidget()
-        indicators_layout = QVBoxLayout(indicators_widget)
-        indicators_layout.setContentsMargins(6, 6, 6, 6)
-        indicators_layout.setSpacing(8)
-
-        cat_group = QGroupBox("Category")
-        cat_group.setObjectName("HealthCatGroup")
-        cat_layout = QVBoxLayout(cat_group)
-        self.health_cat_label = QLabel("—")
-        self.health_cat_label.setAlignment(Qt.AlignCenter)
-        self.health_cat_label.setStyleSheet("font-size: 14px; font-weight: bold; color: #4db8ff;")
-        cat_layout.addWidget(self.health_cat_label)
-        indicators_layout.addWidget(cat_group)
-
-        goal_group = QGroupBox("Goal")
-        goal_group.setObjectName("HealthGoalGroup")
-        goal_layout = QVBoxLayout(goal_group)
-        self.health_goal_label = QLabel("—")
-        self.health_goal_label.setAlignment(Qt.AlignCenter)
-        self.health_goal_label.setStyleSheet("font-size: 14px; font-weight: bold; color: #3cff88;")
-        goal_layout.addWidget(self.health_goal_label)
-        indicators_layout.addWidget(goal_group)
-
-        conf_group = QGroupBox("Confidence")
-        conf_group.setObjectName("HealthConfGroup")
-        conf_layout = QVBoxLayout(conf_group)
-        self.health_conf_label = QLabel("—")
-        self.health_conf_label.setAlignment(Qt.AlignCenter)
-        self.health_conf_label.setStyleSheet("font-size: 16px; font-weight: bold;")
-        conf_layout.addWidget(self.health_conf_label)
-        indicators_layout.addWidget(conf_group)
-
-        indicators_layout.addStretch()
-
-        self.health_save_btn = QPushButton("Save Response")
-        self.health_save_btn.setEnabled(False)
-        self.health_save_btn.clicked.connect(self.health_save)
-        indicators_layout.addWidget(self.health_save_btn)
-
-        self.health_clear_btn = QPushButton("Clear")
-        self.health_clear_btn.clicked.connect(self.health_clear)
-        indicators_layout.addWidget(self.health_clear_btn)
-
-        results_splitter.addWidget(indicators_widget)
-        results_splitter.setSizes([680, 220])
-
-        layout.addWidget(results_splitter, 1)
-
-        self.health_status_label = QLabel("")
-        self.health_status_label.setStyleSheet("font-size: 12px; color: #888;")
-        layout.addWidget(self.health_status_label)
-
-        self.health_panel.hide()
-
-        self.health_provider_box.currentTextChanged.connect(self.health_load_models)
-        self.health_load_models()
-
-    # ── Health handlers ──────────────────────────────────────────────────────
-    def health_load_models(self):
-        provider = self.health_provider_box.currentText()
-        self.health_model_box.clear()
-        try:
-            if provider == "ollama":
-                models = self.ollama.list_models()
-            elif provider == "openai":
-                models = self.openai.list_models()
-            elif provider == "deepseek":
-                models = self.deepseek.list_models()
-            elif provider == "kimi":
-                models = self.kimi.list_models()
-            elif provider == "gemini":
-                models = self.gemini.list_models()
-            elif provider == "anthropic":
-                models = self.anthropic.list_models()
-            elif provider == "qwen":
-                models = self.qwen.list_models()
-            else:
-                models = []
-            for m in models:
-                self.health_model_box.addItem(m)
-        except Exception as exc:
-            self._note_failure("health: load models", exc, self.health_model_box)
-
-    def health_analyse(self):
-        category = self.health_category_box.currentText()
-        goal = self.health_goal_box.currentText()
-        activity = self.health_activity_box.currentText()
-        age = self.health_age_input.text().strip()
-        gender = self.health_gender_box.currentText()
-        dietary = self.health_dietary_box.currentText()
-        medical = self.health_medical_input.text().strip()
-        query = self.health_query_input.toPlainText().strip()
-        provider = self.health_provider_box.currentText()
-        model = self.health_model_box.currentText()
-
-        if not query:
-            QMessageBox.warning(self, "Missing Input", "Please describe your health question or goal.")
-            return
-        if not model:
-            QMessageBox.warning(self, "No Model", "Please select a model.")
-            return
-
-        prompt_parts = [
-            f"Category: {category}",
-            f"Goal: {goal}",
-            f"Activity level: {activity}",
-        ]
-        if age:
-            prompt_parts.append(f"Age: {age}")
-        if gender != "Prefer not to say":
-            prompt_parts.append(f"Gender: {gender}")
-        if dietary != "None":
-            prompt_parts.append(f"Dietary restrictions: {dietary}")
-        if medical:
-            prompt_parts.append(f"Medical notes: {medical}")
-        prompt_parts.append(f"\nQuestion / Goal detail: {query}")
-        prompt = "\n".join(prompt_parts)
-
-        agent = self.agent_instances["health"]
-        messages = agent.build_messages(prompt)
-
-        self._health_clear_displays()
-        self._last_health_response = ""
-        self.health_status_label.setText("Analysing...")
-        self.health_analyse_btn.setEnabled(False)
-        self.health_stop_btn.setEnabled(True)
-        self.health_save_btn.setEnabled(False)
-
-        if not self.authorize_request("health", provider, model, prompt):
-            return
-        self.health_worker = ChatWorker(self.run_backend, provider, model, messages, prompt)
-        self.health_worker.token_signal.connect(self._health_on_token)
-        self.health_worker.finished_signal.connect(self._health_on_finished)
-        self.health_worker.usage_signal.connect(lambda u: self.note_request_usage("health", u))
-        self.health_worker.error_signal.connect(self._health_on_error)
-        self.health_worker.start()
-
-    def _health_on_token(self, token: str):
-        self._last_health_response += token
-        self.health_overview_box.setPlainText(self._last_health_response)
-        self.health_overview_box.moveCursor(QTextCursor.End)
-
-    def _health_on_finished(self, full_response: str):
-        self.record_request("health", full_response)
-        self._last_health_response = full_response
-        self._populate_health_tabs(full_response)
-        self._update_health_indicators(full_response)
-        self.health_status_label.setText("Analysis complete.")
-        self.health_analyse_btn.setEnabled(True)
-        self.health_stop_btn.setEnabled(False)
-        self.health_save_btn.setEnabled(True)
-
-    def _health_on_error(self, error: str):
-        self.abandon_request("health")
-        self.health_overview_box.setPlainText(f"[Error] {error}")
-        self.health_status_label.setText("Error.")
-        self.health_analyse_btn.setEnabled(True)
-        self.health_stop_btn.setEnabled(False)
-
-    def health_stop(self):
-        if self.health_worker is not None and self.health_worker.isRunning():
-            self.health_worker.cancel()
-        self.health_status_label.setText("Stopped.")
-        self.health_analyse_btn.setEnabled(True)
-        self.health_stop_btn.setEnabled(False)
-
-    def health_save(self):
-        if not self._last_health_response:
-            return
-        category = self.health_category_box.currentText().lower().replace(" ", "_")
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        default_name = f"health_{category}_{ts}.txt"
-        path, _ = QFileDialog.getSaveFileName(
-            self, "Save Health Response", str(DATA_DIR / default_name), "Text files (*.txt);;All files (*)"
-        )
-        if path:
-            Path(path).write_text(self._last_health_response, encoding="utf-8")
-            self.health_status_label.setText(f"Saved to {Path(path).name}")
-
-    def health_clear(self):
-        self._health_clear_displays()
-        self.health_age_input.clear()
-        self.health_query_input.clear()
-        self.health_status_label.setText("")
-        self._last_health_response = ""
-
-    def _health_clear_displays(self):
-        for box in (self.health_overview_box, self.health_plan_box,
-                    self.health_nutrition_box, self.health_notes_box):
-            box.clear()
-        self.health_cat_label.setText("—")
-        self.health_goal_label.setText("—")
-        self.health_conf_label.setText("—")
-        self.health_conf_label.setStyleSheet("font-size: 16px; font-weight: bold;")
-        self.health_save_btn.setEnabled(False)
-
-    def _populate_health_tabs(self, text: str):
-        sections = self._parse_health_sections(text)
-        self.health_overview_box.setPlainText(sections.get("overview", text))
-        self.health_plan_box.setPlainText(sections.get("plan", ""))
-        self.health_nutrition_box.setPlainText(sections.get("nutrition", ""))
-        self.health_notes_box.setPlainText(sections.get("notes", ""))
-
-    def _parse_health_sections(self, text: str) -> dict:
-        patterns = {
-            "overview":  r"1\.\s*OVERVIEW(.*?)(?=2\.\s*ACTION PLAN|$)",
-            "plan":      r"2\.\s*ACTION PLAN(.*?)(?=3\.\s*NUTRITION|$)",
-            "nutrition": r"3\.\s*NUTRITION\s*(?:&|AND)?\s*LIFESTYLE(.*?)(?=4\.\s*IMPORTANT NOTES|$)",
-            "notes":     r"4\.\s*IMPORTANT NOTES(.*?)(?=⚠️|$)",
-        }
-        result = {}
-        for key, pat in patterns.items():
-            m = re.search(pat, text, re.DOTALL | re.IGNORECASE)
-            result[key] = m.group(1).strip() if m else ""
-        return result
-
-    def _update_health_indicators(self, text: str):
-        conf_m = re.search(r"[Cc]onfidence.*?(Low|Medium|High)", text)
-        if conf_m:
-            level = conf_m.group(1).capitalize()
-            conf_colors = {"Low": "#ff5555", "Medium": "#f0c040", "High": "#3cff88"}
-            self.health_conf_label.setText(level)
-            self.health_conf_label.setStyleSheet(
-                f"font-size: 16px; font-weight: bold; color: {conf_colors.get(level, '#ffffff')};"
-            )
-        else:
-            self.health_conf_label.setText("—")
-
-    # ── Author panel ─────────────────────────────────────────────────────────
     def build_author_panel(self):
         self.author_panel = QWidget()
         self.author_panel.setObjectName("AuthorPanel")
@@ -3083,246 +2708,6 @@ class GodAI(QWidget):
         self.music_load_models()
 
     # ── NFL Prop Bet Panel ───────────────────────────────────────────────────
-    def build_nfl_bet_panel(self):
-        self.nfl_bet_panel = QWidget()
-        self.nfl_bet_panel.setObjectName("NFLBetPanel")
-        layout = QVBoxLayout(self.nfl_bet_panel)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(10)
-
-        # ── Setup form ──────────────────────────────────────────────────────
-        setup_group = QGroupBox("Prop Bet Setup")
-        setup_group.setObjectName("NFLBetSetupBox")
-        setup_layout = QGridLayout(setup_group)
-        setup_layout.setSpacing(6)
-
-        setup_layout.addWidget(QLabel("Player / Team:"), 0, 0)
-        self.nfl_bet_player_input = QLineEdit()
-        self.nfl_bet_player_input.setPlaceholderText("e.g. Patrick Mahomes, Tyreek Hill, Kansas City Chiefs")
-        setup_layout.addWidget(self.nfl_bet_player_input, 0, 1, 1, 3)
-
-        setup_layout.addWidget(QLabel("Prop Type:"), 1, 0)
-        self.nfl_bet_prop_type_box = QComboBox()
-        self.nfl_bet_prop_type_box.addItems([
-            "Passing Yards", "Passing TDs", "Completions", "Attempts", "Interceptions",
-            "Rushing Yards", "Rushing TDs", "Rushing Attempts",
-            "Receiving Yards", "Receptions", "Targets", "Receiving TDs",
-            "Sacks", "Tackles", "Tackles + Assists",
-            "Team Total Points", "First Half Total", "Team Rushing Yards", "Team Passing Yards",
-            "Game Total (O/U)", "Spread", "Custom",
-        ])
-        setup_layout.addWidget(self.nfl_bet_prop_type_box, 1, 1)
-
-        setup_layout.addWidget(QLabel("Line:"), 1, 2)
-        self.nfl_bet_line_input = QLineEdit()
-        self.nfl_bet_line_input.setPlaceholderText("e.g. 252.5")
-        setup_layout.addWidget(self.nfl_bet_line_input, 1, 3)
-
-        setup_layout.addWidget(QLabel("Odds (American):"), 2, 0)
-        self.nfl_bet_odds_input = QLineEdit()
-        self.nfl_bet_odds_input.setPlaceholderText("e.g. -110, +115")
-        setup_layout.addWidget(self.nfl_bet_odds_input, 2, 1)
-
-        setup_layout.addWidget(QLabel("Game Context:"), 2, 2)
-        self.nfl_bet_context_input = QLineEdit()
-        self.nfl_bet_context_input.setPlaceholderText("Opponent, week, weather, injury status...")
-        setup_layout.addWidget(self.nfl_bet_context_input, 2, 3)
-
-        setup_layout.addWidget(QLabel("Stats / Data:"), 3, 0)
-        self.nfl_bet_data_input = QTextEdit()
-        self.nfl_bet_data_input.setPlaceholderText(
-            "Paste player stats, recent game logs, matchup data, injury reports, target share, "
-            "defensive rankings, snap counts — anything relevant. The LLM will analyse what you provide."
-        )
-        self.nfl_bet_data_input.setMinimumHeight(100)
-        setup_layout.addWidget(self.nfl_bet_data_input, 3, 1, 1, 3)
-
-        provider_row_container = QWidget()
-        provider_row = FlowLayout(provider_row_container, spacing=6)
-        provider_row.addWidget(QLabel("Provider:"))
-        self.nfl_bet_provider_box = QComboBox()
-        self.nfl_bet_provider_box.addItems(["ollama", "openai", "deepseek", "kimi", "gemini", "anthropic", "qwen"])
-        self.nfl_bet_provider_box.setCurrentText("anthropic")
-        provider_row.addWidget(self.nfl_bet_provider_box)
-
-        provider_row.addWidget(QLabel("Model:"))
-        self.nfl_bet_model_box = QComboBox()
-        self.nfl_bet_model_box.setMinimumWidth(200)
-        provider_row.addWidget(self.nfl_bet_model_box)
-
-
-        self.nfl_bet_analyse_btn = QPushButton("Analyse Prop")
-        self.nfl_bet_analyse_btn.setMinimumWidth(140)
-        self.nfl_bet_analyse_btn.setObjectName("PrimaryAction")
-        self.nfl_bet_analyse_btn.clicked.connect(self.nfl_bet_analyse)
-        provider_row.addWidget(self.nfl_bet_analyse_btn)
-
-        self.nfl_bet_stop_btn = QPushButton("Stop")
-        self.nfl_bet_stop_btn.setEnabled(False)
-        self.nfl_bet_stop_btn.setObjectName("DangerAction")
-        self.nfl_bet_stop_btn.clicked.connect(self.nfl_bet_stop)
-        provider_row.addWidget(self.nfl_bet_stop_btn)
-
-        setup_layout.addWidget(provider_row_container, 4, 0, 1, 4)
-        layout.addWidget(setup_group)
-
-        # ── Season Predictive Model ──────────────────────────────────────────
-        model_group = QGroupBox("Season Predictive Model")
-        model_group.setObjectName("NFLBetModelBox")
-        model_layout = QGridLayout(model_group)
-        model_layout.setSpacing(6)
-
-        model_layout.addWidget(QLabel("Player / Team:"), 0, 0)
-        self.nfl_model_player_input = QLineEdit()
-        self.nfl_model_player_input.setPlaceholderText("e.g. Lamar Jackson")
-        model_layout.addWidget(self.nfl_model_player_input, 0, 1, 1, 3)
-
-        model_layout.addWidget(QLabel("Stat Category:"), 1, 0)
-        self.nfl_model_stat_box = QComboBox()
-        self.nfl_model_stat_box.addItems([
-            "Passing Yards", "Passing TDs", "Completions", "Attempts",
-            "Rushing Yards", "Rushing TDs", "Rushing Attempts",
-            "Receiving Yards", "Receptions", "Targets", "Receiving TDs",
-            "Sacks", "Tackles", "Points Scored", "Custom",
-        ])
-        model_layout.addWidget(self.nfl_model_stat_box, 1, 1)
-
-        model_layout.addWidget(QLabel("Prop Line:"), 1, 2)
-        self.nfl_model_line_input = QLineEdit()
-        self.nfl_model_line_input.setPlaceholderText("Optional — e.g. 245.5")
-        model_layout.addWidget(self.nfl_model_line_input, 1, 3)
-
-        model_layout.addWidget(QLabel("Game Log Data:"), 2, 0)
-        self.nfl_model_data_input = QTextEdit()
-        self.nfl_model_data_input.setPlaceholderText(
-            "Paste season game-by-game stats — numbers only or labeled rows.\n"
-            "Examples:\n"
-            "  287, 312, 198, 341, 255, 303, 221, 278, 330\n"
-            "  Week 1: 287  Week 2: 312  Week 3: 198\n"
-            "  W1 287, W2 312, W3 198 vs BUF, W4 341 vs MIA"
-        )
-        self.nfl_model_data_input.setMinimumHeight(90)
-        model_layout.addWidget(self.nfl_model_data_input, 2, 1, 1, 3)
-
-        model_layout.addWidget(QLabel("Opponent / Context:"), 3, 0)
-        self.nfl_model_context_input = QLineEdit()
-        self.nfl_model_context_input.setPlaceholderText("Upcoming opponent, week, weather, injury status...")
-        model_layout.addWidget(self.nfl_model_context_input, 3, 1, 1, 3)
-
-        model_btn_row = QHBoxLayout()
-        self.nfl_model_build_btn = QPushButton("Build Projection")
-        self.nfl_model_build_btn.setMinimumWidth(150)
-        self.nfl_model_build_btn.setObjectName("PrimaryAction")
-        self.nfl_model_build_btn.clicked.connect(self.nfl_bet_build_model)
-        model_btn_row.addWidget(self.nfl_model_build_btn)
-
-        self.nfl_model_stop_btn = QPushButton("Stop")
-        self.nfl_model_stop_btn.setEnabled(False)
-        self.nfl_model_stop_btn.setObjectName("DangerAction")
-        self.nfl_model_stop_btn.clicked.connect(self.nfl_bet_model_stop)
-        model_btn_row.addWidget(self.nfl_model_stop_btn)
-
-        self.nfl_model_computed_label = QLabel("")
-        self.nfl_model_computed_label.setStyleSheet("font-size: 11px; color: #aaa;")
-        model_btn_row.addWidget(self.nfl_model_computed_label, 1)
-
-        model_layout.addLayout(model_btn_row, 4, 0, 1, 4)
-        layout.addWidget(model_group)
-
-        # ── Results splitter: tabs left, indicators right ────────────────────
-        results_splitter = QSplitter(Qt.Horizontal)
-
-        self.nfl_bet_tabs = QTabWidget()
-
-        self.nfl_bet_analysis_box = QTextBrowser()
-        self.nfl_bet_analysis_box.setOpenExternalLinks(False)
-        self.nfl_bet_tabs.addTab(self.nfl_bet_analysis_box, "Full Analysis")
-
-        self.nfl_bet_over_box = QTextBrowser()
-        self.nfl_bet_tabs.addTab(self.nfl_bet_over_box, "Over Case")
-
-        self.nfl_bet_under_box = QTextBrowser()
-        self.nfl_bet_tabs.addTab(self.nfl_bet_under_box, "Under Case")
-
-        self.nfl_bet_edge_box = QTextBrowser()
-        self.nfl_bet_tabs.addTab(self.nfl_bet_edge_box, "Edge Assessment")
-
-        self.nfl_bet_projection_box = QTextBrowser()
-        self.nfl_bet_tabs.addTab(self.nfl_bet_projection_box, "Projection")
-
-        self.nfl_bet_trends_box = QTextBrowser()
-        self.nfl_bet_tabs.addTab(self.nfl_bet_trends_box, "Season Trends")
-
-        results_splitter.addWidget(self.nfl_bet_tabs)
-
-        # Sidebar indicators
-        indicators_widget = QWidget()
-        indicators_layout = QVBoxLayout(indicators_widget)
-        indicators_layout.setContentsMargins(8, 0, 0, 0)
-        indicators_layout.setSpacing(10)
-
-        lean_group = QGroupBox("Lean")
-        lean_group.setObjectName("NFLBetLeanBox")
-        lean_layout = QVBoxLayout(lean_group)
-        self.nfl_bet_lean_label = QLabel("—")
-        self.nfl_bet_lean_label.setAlignment(Qt.AlignCenter)
-        self.nfl_bet_lean_label.setStyleSheet("font-size: 22px; font-weight: bold; color: #6bbfff;")
-        lean_layout.addWidget(self.nfl_bet_lean_label)
-        indicators_layout.addWidget(lean_group)
-
-        conf_group = QGroupBox("Confidence")
-        conf_group.setObjectName("NFLBetConfBox")
-        conf_layout = QVBoxLayout(conf_group)
-        self.nfl_bet_conf_label = QLabel("—")
-        self.nfl_bet_conf_label.setAlignment(Qt.AlignCenter)
-        self.nfl_bet_conf_label.setStyleSheet("font-size: 16px; font-weight: bold;")
-        conf_layout.addWidget(self.nfl_bet_conf_label)
-        indicators_layout.addWidget(conf_group)
-
-        ev_group = QGroupBox("Expected Value")
-        ev_group.setObjectName("NFLBetEVBox")
-        ev_layout = QVBoxLayout(ev_group)
-        self.nfl_bet_ev_label = QLabel("—")
-        self.nfl_bet_ev_label.setAlignment(Qt.AlignCenter)
-        self.nfl_bet_ev_label.setStyleSheet("font-size: 16px; font-weight: bold; color: #3cff88;")
-        ev_layout.addWidget(self.nfl_bet_ev_label)
-        indicators_layout.addWidget(ev_group)
-
-        units_group = QGroupBox("Unit Size")
-        units_group.setObjectName("NFLBetUnitsBox")
-        units_layout = QVBoxLayout(units_group)
-        self.nfl_bet_units_label = QLabel("—")
-        self.nfl_bet_units_label.setAlignment(Qt.AlignCenter)
-        self.nfl_bet_units_label.setStyleSheet("font-size: 18px; font-weight: bold; color: #f0c040;")
-        units_layout.addWidget(self.nfl_bet_units_label)
-        indicators_layout.addWidget(units_group)
-
-        indicators_layout.addStretch()
-
-        self.nfl_bet_save_btn = QPushButton("Save Analysis")
-        self.nfl_bet_save_btn.setEnabled(False)
-        self.nfl_bet_save_btn.clicked.connect(self.nfl_bet_save)
-        indicators_layout.addWidget(self.nfl_bet_save_btn)
-
-        self.nfl_bet_clear_btn = QPushButton("Clear")
-        self.nfl_bet_clear_btn.clicked.connect(self.nfl_bet_clear)
-        indicators_layout.addWidget(self.nfl_bet_clear_btn)
-
-        results_splitter.addWidget(indicators_widget)
-        results_splitter.setSizes([680, 220])
-
-        layout.addWidget(results_splitter, 1)
-
-        self.nfl_bet_status_label = QLabel("")
-        self.nfl_bet_status_label.setStyleSheet("font-size: 12px; color: #888;")
-        layout.addWidget(self.nfl_bet_status_label)
-
-        self.nfl_bet_panel.hide()
-
-        self.nfl_bet_provider_box.currentTextChanged.connect(self.nfl_bet_load_models)
-        self.nfl_bet_load_models()
-
-    # ── OSINT Light panel ────────────────────────────────────────────────────
     def build_osint_panel(self):
         self.osint_panel = QWidget()
         self.osint_panel.setObjectName("OSINTPanel")
@@ -4921,315 +4306,6 @@ class GodAI(QWidget):
         self.webdesign_lines_label.setText(str(line_count))
 
     # ── NFL Prop Bet handlers ────────────────────────────────────────────────
-    def nfl_bet_load_models(self):
-        provider = self.nfl_bet_provider_box.currentText()
-        self.nfl_bet_model_box.clear()
-        try:
-            if provider == "ollama":
-                models = self.ollama.list_models()
-            elif provider == "openai":
-                models = self.openai.list_models()
-            elif provider == "deepseek":
-                models = self.deepseek.list_models()
-            elif provider == "kimi":
-                models = self.kimi.list_models()
-            elif provider == "gemini":
-                models = self.gemini.list_models()
-            elif provider == "anthropic":
-                models = self.anthropic.list_models()
-            elif provider == "qwen":
-                models = self.qwen.list_models()
-            else:
-                models = []
-            for m in models:
-                self.nfl_bet_model_box.addItem(m)
-        except Exception as exc:
-            self._note_failure("nfl_bet: load models", exc, self.nfl_bet_model_box)
-
-    def nfl_bet_analyse(self):
-        player = self.nfl_bet_player_input.text().strip()
-        prop_type = self.nfl_bet_prop_type_box.currentText()
-        line = self.nfl_bet_line_input.text().strip()
-        odds = self.nfl_bet_odds_input.text().strip()
-        context = self.nfl_bet_context_input.text().strip()
-        data = self.nfl_bet_data_input.toPlainText().strip()
-        provider = self.nfl_bet_provider_box.currentText()
-        model = self.nfl_bet_model_box.currentText()
-
-        if not player:
-            QMessageBox.warning(self, "Missing Input", "Please enter a player or team name.")
-            return
-        if not model:
-            QMessageBox.warning(self, "No Model", "Please select a model.")
-            return
-
-        prompt_parts = [f"Player / Team: {player}", f"Prop: {prop_type}"]
-        if line:
-            prompt_parts.append(f"Line: {line}")
-        if odds:
-            prompt_parts.append(f"Odds (American): {odds}")
-        if context:
-            prompt_parts.append(f"Game context: {context}")
-        if data:
-            prompt_parts.append(f"\nSupplied stats / data:\n{data}")
-        else:
-            prompt_parts.append("\n[No stats data supplied — analyse based on general knowledge and note data gaps.]")
-
-        prompt = "\n".join(prompt_parts)
-
-        agent = self.agent_instances["nfl_bet"]
-        messages = agent.build_messages(prompt)
-
-        self._nfl_bet_clear_displays()
-        self._last_nfl_bet_response = ""
-        self.nfl_bet_status_label.setText("Analysing...")
-        self.nfl_bet_analyse_btn.setEnabled(False)
-        self.nfl_bet_stop_btn.setEnabled(True)
-        self.nfl_bet_save_btn.setEnabled(False)
-
-        if not self.authorize_request("nfl_bet", provider, model, prompt):
-            return
-        self.nfl_bet_worker = ChatWorker(self.run_backend, provider, model, messages, prompt)
-        self.nfl_bet_worker.token_signal.connect(self._nfl_bet_on_token)
-        self.nfl_bet_worker.finished_signal.connect(self._nfl_bet_on_finished)
-        self.nfl_bet_worker.usage_signal.connect(lambda u: self.note_request_usage("nfl_bet", u))
-        self.nfl_bet_worker.error_signal.connect(self._nfl_bet_on_error)
-        self.nfl_bet_worker.start()
-
-    def _nfl_bet_on_token(self, token: str):
-        self._last_nfl_bet_response += token
-        self.nfl_bet_analysis_box.setPlainText(self._last_nfl_bet_response)
-        self.nfl_bet_analysis_box.moveCursor(QTextCursor.End)
-
-    def _nfl_bet_on_finished(self, full_response: str):
-        self.record_request("nfl_bet", full_response)
-        self._last_nfl_bet_response = full_response
-        self._populate_nfl_bet_tabs(full_response)
-        self._update_nfl_bet_indicators(full_response)
-        self.nfl_bet_status_label.setText("Analysis complete.")
-        self.nfl_bet_analyse_btn.setEnabled(True)
-        self.nfl_bet_stop_btn.setEnabled(False)
-        self.nfl_bet_save_btn.setEnabled(True)
-
-    def _nfl_bet_on_error(self, error: str):
-        self.abandon_request("nfl_bet")
-        self.nfl_bet_analysis_box.setPlainText(f"[Error] {error}")
-        self.nfl_bet_status_label.setText("Error.")
-        self.nfl_bet_analyse_btn.setEnabled(True)
-        self.nfl_bet_stop_btn.setEnabled(False)
-
-    def nfl_bet_stop(self):
-        if self.nfl_bet_worker is not None and self.nfl_bet_worker.isRunning():
-            self.nfl_bet_worker.cancel()
-        self.nfl_bet_status_label.setText("Stopped.")
-        self.nfl_bet_analyse_btn.setEnabled(True)
-        self.nfl_bet_stop_btn.setEnabled(False)
-
-    def nfl_bet_save(self):
-        if not self._last_nfl_bet_response:
-            return
-        player = self.nfl_bet_player_input.text().strip().replace(" ", "_") or "prop"
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        default_name = f"nfl_prop_{player}_{ts}.txt"
-        path, _ = QFileDialog.getSaveFileName(
-            self, "Save NFL Prop Analysis", str(DATA_DIR / default_name), "Text files (*.txt);;All files (*)"
-        )
-        if path:
-            Path(path).write_text(self._last_nfl_bet_response, encoding="utf-8")
-            self.nfl_bet_status_label.setText(f"Saved to {Path(path).name}")
-
-    def nfl_bet_clear(self):
-        self._nfl_bet_clear_displays()
-        self.nfl_bet_player_input.clear()
-        self.nfl_bet_line_input.clear()
-        self.nfl_bet_odds_input.clear()
-        self.nfl_bet_context_input.clear()
-        self.nfl_bet_data_input.clear()
-        self.nfl_bet_status_label.setText("")
-        self._last_nfl_bet_response = ""
-
-    def _nfl_bet_clear_displays(self):
-        for box in (self.nfl_bet_analysis_box, self.nfl_bet_over_box, self.nfl_bet_under_box, self.nfl_bet_edge_box):
-            box.clear()
-        self.nfl_bet_lean_label.setText("—")
-        self.nfl_bet_lean_label.setStyleSheet("font-size: 22px; font-weight: bold; color: #6bbfff;")
-        self.nfl_bet_conf_label.setText("—")
-        self.nfl_bet_conf_label.setStyleSheet("font-size: 16px; font-weight: bold;")
-        self.nfl_bet_ev_label.setText("—")
-        self.nfl_bet_units_label.setText("—")
-        self.nfl_bet_save_btn.setEnabled(False)
-
-    def _populate_nfl_bet_tabs(self, text: str):
-        sections = self._parse_nfl_bet_sections(text)
-        self.nfl_bet_analysis_box.setPlainText(text)
-        self.nfl_bet_over_box.setPlainText(sections.get("over", ""))
-        self.nfl_bet_under_box.setPlainText(sections.get("under", ""))
-        self.nfl_bet_edge_box.setPlainText(sections.get("edge", ""))
-
-    def _parse_nfl_bet_sections(self, text: str) -> dict:
-        patterns = {
-            "over":  r"2\.\s*OVER CASE(.*?)(?=3\.\s*UNDER CASE|$)",
-            "under": r"3\.\s*UNDER CASE(.*?)(?=4\.\s*EDGE ASSESSMENT|$)",
-            "edge":  r"4\.\s*EDGE ASSESSMENT(.*?)(?=5\.\s*ACTIONABLE RECOMMENDATION|$)",
-        }
-        result = {}
-        for key, pat in patterns.items():
-            m = re.search(pat, text, re.DOTALL | re.IGNORECASE)
-            result[key] = m.group(1).strip() if m else ""
-        return result
-
-    def _update_nfl_bet_indicators(self, text: str):
-        # Lean: OVER / UNDER / NO EDGE / NO LEAN
-        lean_m = re.search(r"probability lean[:\s]+(OVER|UNDER|NO EDGE|NO LEAN)", text, re.IGNORECASE)
-        if not lean_m:
-            lean_m = re.search(r"\bLean[:\s]+(OVER|UNDER|NO EDGE|NO LEAN)\b", text, re.IGNORECASE)
-        if lean_m:
-            lean = lean_m.group(1).upper()
-            lean_colors = {"OVER": "#3cff88", "UNDER": "#ff5555", "NO EDGE": "#888888", "NO LEAN": "#888888"}
-            self.nfl_bet_lean_label.setText(lean)
-            color = lean_colors.get(lean, "#6bbfff")
-            self.nfl_bet_lean_label.setStyleSheet(f"font-size: 22px; font-weight: bold; color: {color};")
-
-        # Confidence
-        conf_m = re.search(r"[Cc]onfidence.*?(Low|Medium|High)", text)
-        if conf_m:
-            level = conf_m.group(1).capitalize()
-            conf_colors = {"Low": "#ff5555", "Medium": "#f0c040", "High": "#3cff88"}
-            self.nfl_bet_conf_label.setText(level)
-            self.nfl_bet_conf_label.setStyleSheet(
-                f"font-size: 16px; font-weight: bold; color: {conf_colors.get(level, '#ffffff')};"
-            )
-
-        # Expected Value
-        ev_m = re.search(r"[Ee]xpected [Vv]alue.*?([+-]?\$?[\d.]+)", text)
-        if ev_m:
-            self.nfl_bet_ev_label.setText(ev_m.group(1))
-
-        # Unit size
-        units_m = re.search(r"[Uu]nit[s]?\s*[Ss]ize[:\s]+([\d.]+)\s*unit", text)
-        if not units_m:
-            units_m = re.search(r"Suggested unit.*?(0(?:\.\d+)?|[12])\s*unit", text, re.IGNORECASE)
-        if units_m:
-            self.nfl_bet_units_label.setText(f"{units_m.group(1)}u")
-
-    # ── Season Model handlers ────────────────────────────────────────────────
-    def nfl_bet_build_model(self):
-        player = self.nfl_model_player_input.text().strip()
-        stat_name = self.nfl_model_stat_box.currentText()
-        prop_line = self.nfl_model_line_input.text().strip()
-        raw_data = self.nfl_model_data_input.toPlainText().strip()
-        context = self.nfl_model_context_input.text().strip()
-        provider = self.nfl_bet_provider_box.currentText()
-        model = self.nfl_bet_model_box.currentText()
-
-        if not player:
-            QMessageBox.warning(self, "Missing Input", "Please enter a player or team name.")
-            return
-        if not raw_data:
-            QMessageBox.warning(self, "Missing Data", "Please paste game log data before building a projection.")
-            return
-        if not model:
-            QMessageBox.warning(self, "No Model", "Please select a model in the Prop Analysis section above.")
-            return
-
-        values = parse_game_log(raw_data)
-        if len(values) < 2:
-            QMessageBox.warning(
-                self, "Insufficient Data",
-                f"Only {len(values)} numeric value(s) found. Provide at least 2 games of data."
-            )
-            return
-
-        computed = compute_stats(values)
-        computed_text = format_computed_stats(computed, stat_name)
-
-        self.nfl_model_computed_label.setText(
-            f"Parsed {computed['games_parsed']} games \u00b7 avg {computed['season_avg']} \u00b7 proj {computed['weighted_projection']}"
-        )
-
-        agent = self.agent_instances["nfl_bet"]
-        messages = agent.build_season_model_messages(
-            computed_stats_text=computed_text,
-            raw_input=raw_data,
-            player=player,
-            stat_name=stat_name,
-            prop_line=prop_line,
-            opponent_context=context,
-        )
-
-        self.nfl_bet_projection_box.clear()
-        self.nfl_bet_trends_box.clear()
-        self._last_nfl_model_response = ""
-        self.nfl_bet_tabs.setCurrentWidget(self.nfl_bet_projection_box)
-        self.nfl_bet_status_label.setText("Building projection...")
-        self.nfl_model_build_btn.setEnabled(False)
-        self.nfl_model_stop_btn.setEnabled(True)
-
-        if not self.authorize_request("nfl_bet", provider, model, messages[-1]["content"] if messages else ""):
-            return
-        self.nfl_model_worker = ChatWorker(self.run_backend, provider, model, messages, "season_model")
-        self.nfl_model_worker.token_signal.connect(self._nfl_model_on_token)
-        self.nfl_model_worker.finished_signal.connect(self._nfl_model_on_finished)
-        self.nfl_model_worker.usage_signal.connect(lambda u: self.note_request_usage("nfl_bet", u))
-        self.nfl_model_worker.error_signal.connect(self._nfl_model_on_error)
-        self.nfl_model_worker.start()
-
-    def _nfl_model_on_token(self, token: str):
-        self._last_nfl_model_response += token
-        self.nfl_bet_projection_box.setPlainText(self._last_nfl_model_response)
-        self.nfl_bet_projection_box.moveCursor(QTextCursor.End)
-
-    def _nfl_model_on_finished(self, full_response: str):
-        self.record_request("nfl_bet", full_response)
-        self._last_nfl_model_response = full_response
-        self._populate_nfl_model_tabs(full_response)
-        self.nfl_bet_status_label.setText("Projection complete.")
-        self.nfl_model_build_btn.setEnabled(True)
-        self.nfl_model_stop_btn.setEnabled(False)
-        self.nfl_bet_save_btn.setEnabled(True)
-        self._last_nfl_bet_response = full_response
-
-    def _nfl_model_on_error(self, error: str):
-        self.abandon_request("nfl_bet")
-        self.nfl_bet_projection_box.setPlainText(f"[Error] {error}")
-        self.nfl_bet_status_label.setText("Error.")
-        self.nfl_model_build_btn.setEnabled(True)
-        self.nfl_model_stop_btn.setEnabled(False)
-
-    def nfl_bet_model_stop(self):
-        if self.nfl_model_worker is not None and self.nfl_model_worker.isRunning():
-            self.nfl_model_worker.cancel()
-        self.nfl_bet_status_label.setText("Stopped.")
-        self.nfl_model_build_btn.setEnabled(True)
-        self.nfl_model_stop_btn.setEnabled(False)
-
-    def _populate_nfl_model_tabs(self, text: str):
-        self.nfl_bet_projection_box.setPlainText(text)
-        trends_m = re.search(r"2\.\s*TREND ANALYSIS(.*?)(?=3\.|$)", text, re.DOTALL | re.IGNORECASE)
-        self.nfl_bet_trends_box.setPlainText(trends_m.group(1).strip() if trends_m else "")
-        proj_m = re.search(r"3\.\s*PROJECTION.*?NEXT GAME(.*?)(?=4\.|$)", text, re.DOTALL | re.IGNORECASE)
-        if proj_m:
-            self.nfl_bet_projection_box.setPlainText(proj_m.group(1).strip())
-        self._update_nfl_model_indicators(text)
-
-    def _update_nfl_model_indicators(self, text: str):
-        lean_m = re.search(r"Lean[:\s]+(OVER|UNDER|TOO CLOSE)", text, re.IGNORECASE)
-        if lean_m:
-            lean = lean_m.group(1).upper()
-            lean_colors = {"OVER": "#3cff88", "UNDER": "#ff5555", "TOO CLOSE": "#888888"}
-            self.nfl_bet_lean_label.setText(lean)
-            color = lean_colors.get(lean, "#6bbfff")
-            self.nfl_bet_lean_label.setStyleSheet(f"font-size: 22px; font-weight: bold; color: {color};")
-        conf_m = re.search(r"[Cc]onfidence[:\s]+(Low|Medium|High)", text)
-        if conf_m:
-            level = conf_m.group(1).capitalize()
-            conf_colors = {"Low": "#ff5555", "Medium": "#f0c040", "High": "#3cff88"}
-            self.nfl_bet_conf_label.setText(level)
-            self.nfl_bet_conf_label.setStyleSheet(
-                f"font-size: 16px; font-weight: bold; color: {conf_colors.get(level, '#ffffff')};"
-            )
-
-    # ── Fiverr Agent Panel ───────────────────────────────────────────────────
     def build_fiverr_panel(self):
         self.fiverr_panel = QWidget()
         self.fiverr_panel.setObjectName("FiverrPanel")
@@ -7536,14 +6612,19 @@ class GodAI(QWidget):
         system_layout.setContentsMargins(10, 6, 10, 10)
         system_layout.setSpacing(6)
 
-        self.resource_label = QLabel()
-        self.resource_label.setTextFormat(Qt.RichText)
-        self.resource_label.setWordWrap(True)
-        # Sized to its content rather than pinned: the stat block is a fixed
-        # number of lines, and 130px left a visible gap above the button.
-        self.resource_label.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Minimum)
-        self.resource_label.setObjectName("ResourceLabel")
-        system_layout.addWidget(self.resource_label)
+        # Figures, not sentences: every one of these is "x of y", so it is drawn
+        # as a proportion. "Used: 11.3 GB · Free: 9.4 GB" cannot be read at a
+        # glance, and reading at a glance is the whole job of a status rail.
+        self.resource_meters = {
+            "RAM": Meter("RAM", "Physical memory in use"),
+            "CPU": Meter("CPU", "Processor load across all cores"),
+            "SWAP": Meter("SWAP", "Memory paged out to disk. Sustained high swap "
+                                  "means real pressure; a large idle figure is "
+                                  "usually just accumulated history."),
+            "BATT": Meter("BATT", "Charge remaining"),
+        }
+        for meter in self.resource_meters.values():
+            system_layout.addWidget(meter)
 
         self.realtime_monitor_btn = QPushButton("⚡ Realtime Monitor")
         self.realtime_monitor_btn.setEnabled(False)
@@ -7605,9 +6686,13 @@ class GodAI(QWidget):
         budget_layout.setContentsMargins(10, 6, 10, 10)
         budget_layout.setSpacing(6)
 
-        self.budget_label = QLabel("Budget: not yet calculated")
-        self.budget_label.setWordWrap(True)
-        budget_layout.addWidget(self.budget_label)
+        # Spend is "x of y" too, and the one figure worth seeing without reading.
+        self.budget_meters = {
+            "SESSION": Meter("SESSION", "Spent this session against the session cap"),
+            "DAILY": Meter("DAILY", "Spent today against the daily cap"),
+        }
+        for meter in self.budget_meters.values():
+            budget_layout.addWidget(meter)
 
         session_row = QHBoxLayout()
         session_row.setSpacing(8)
@@ -8472,452 +7557,6 @@ class GodAI(QWidget):
         ("domaintools",    "DomainTools",         "Domain",   "Paid",       "https://www.domaintools.com/",                  "DOMAINTOOLS_API_KEY"),
     ]
 
-    def build_ops_identity_panel(self):
-        import json as _json
-        from PySide6.QtGui import QClipboard
-        from PySide6.QtWidgets import QApplication as _QApp
-
-        self.ops_identity_panel = QWidget()
-        self.ops_identity_panel.setObjectName("OpsIdentityPanel")
-        outer = QVBoxLayout(self.ops_identity_panel)
-        outer.setContentsMargins(0, 0, 0, 0)
-        outer.setSpacing(16)
-
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.NoFrame)
-        scroll.setStyleSheet("QScrollArea { background: transparent; border: none; }")
-        inner_widget = QWidget()
-        inner_widget.setStyleSheet("background: transparent;")
-        layout = QVBoxLayout(inner_widget)
-        layout.setContentsMargins(0, 4, 8, 16)
-        layout.setSpacing(20)
-
-        # ── Section header helper ──────────────────────────────────────
-        def section_label(text):
-            lbl = QLabel(text)
-            lbl.setStyleSheet(
-                "font-size: 10px; font-weight: bold; color: #707070; "
-                "letter-spacing: 1.5px; padding: 0; background: transparent;"
-            )
-            return lbl
-
-        # ══════════════════════════════════════════════════════════════
-        # BLOCK 1 — Operational Email
-        # ══════════════════════════════════════════════════════════════
-        layout.addWidget(section_label("OPERATIONAL EMAIL"))
-
-        email_card = QFrame()
-        email_card.setStyleSheet(
-            "QFrame { background: #161616; border: 1px solid #242424; border-radius: 10px; }"
-        )
-        email_card_layout = QVBoxLayout(email_card)
-        email_card_layout.setContentsMargins(14, 12, 14, 12)
-        email_card_layout.setSpacing(10)
-
-        email_row = QHBoxLayout()
-        email_row.setSpacing(8)
-
-        self._ops_email_display = QLabel()
-        self._ops_email_display.setStyleSheet(
-            "font-size: 14px; color: #3cff88; background: transparent; border: none; font-weight: 600;"
-        )
-        email_row.addWidget(self._ops_email_display, 1)
-
-        copy_email_btn = QPushButton("📋 Copy")
-        copy_email_btn.setFixedWidth(80)
-        copy_email_btn.setStyleSheet(
-            "QPushButton { background: #1e1e1e; border: 1px solid #333; border-radius: 6px; "
-            "color: #aaa; font-size: 12px; padding: 4px 8px; } "
-            "QPushButton:hover { border-color: #3cff88; color: #fff; }"
-        )
-        copy_email_btn.clicked.connect(lambda: (
-            _QApp.clipboard().setText(self._ops_email_display.text()),
-            copy_email_btn.setText("✓ Copied"),
-            QTimer.singleShot(1500, lambda: copy_email_btn.setText("📋 Copy"))
-        ))
-        email_row.addWidget(copy_email_btn)
-
-        edit_email_btn = QPushButton("✏️ Edit")
-        edit_email_btn.setFixedWidth(75)
-        edit_email_btn.setStyleSheet(
-            "QPushButton { background: #1e1e1e; border: 1px solid #333; border-radius: 6px; "
-            "color: #aaa; font-size: 12px; padding: 4px 8px; } "
-            "QPushButton:hover { border-color: #3cff88; color: #fff; }"
-        )
-        email_card_layout.addLayout(email_row)
-
-        # Edit row (hidden by default)
-        edit_row = QHBoxLayout()
-        edit_row.setSpacing(8)
-        self._ops_email_input = QLineEdit()
-        self._ops_email_input.setPlaceholderText("sentinel.research@proton.me")
-        self._ops_email_input.setStyleSheet(
-            "QLineEdit { background: #0f0f0f; border: 1px solid #3cff88; border-radius: 6px; "
-            "color: #fff; font-size: 13px; padding: 6px 10px; }"
-        )
-        save_email_btn = QPushButton("Save")
-        save_email_btn.setFixedWidth(65)
-        save_email_btn.setStyleSheet(
-            "QPushButton { background: #3cff88; border: none; border-radius: 6px; "
-            "color: #000; font-size: 12px; font-weight: 700; padding: 6px 10px; } "
-            "QPushButton:hover { background: #55ffaa; }"
-        )
-        edit_row.addWidget(self._ops_email_input, 1)
-        edit_row.addWidget(save_email_btn)
-
-        edit_widget = QWidget()
-        edit_widget.setStyleSheet("background: transparent;")
-        edit_widget.setLayout(edit_row)
-        edit_widget.hide()
-
-        def toggle_email_edit():
-            if edit_widget.isHidden():
-                current = self._ops_email_display.text()
-                if current and current != "— not set —":
-                    self._ops_email_input.setText(current)
-                edit_widget.show()
-                edit_email_btn.setText("✕ Cancel")
-            else:
-                edit_widget.hide()
-                edit_email_btn.setText("✏️ Edit")
-
-        def save_email():
-            val = self._ops_email_input.text().strip()
-            if val:
-                save_setting("ops_email", val)
-                self._ops_email_display.setText(val)
-            edit_widget.hide()
-            edit_email_btn.setText("✏️ Edit")
-            self._refresh_ops_progress()
-
-        edit_email_btn.clicked.connect(toggle_email_edit)
-        save_email_btn.clicked.connect(save_email)
-
-        email_row.addWidget(edit_email_btn)
-        email_card_layout.addWidget(edit_widget)
-        layout.addWidget(email_card)
-
-        # ══════════════════════════════════════════════════════════════
-        # BLOCK 2 — Progress bar
-        # ══════════════════════════════════════════════════════════════
-        progress_row = QHBoxLayout()
-        self._ops_progress_bar = QProgressBar()
-        self._ops_progress_bar.setRange(0, len(self.OSINT_TOOLS))
-        self._ops_progress_bar.setFixedHeight(6)
-        self._ops_progress_bar.setTextVisible(False)
-        self._ops_progress_bar.setStyleSheet(
-            "QProgressBar { background: #1e1e1e; border: none; border-radius: 3px; }"
-            "QProgressBar::chunk { background: #3cff88; border-radius: 3px; }"
-        )
-        self._ops_progress_label = QLabel("0 / %d registered" % len(self.OSINT_TOOLS))
-        self._ops_progress_label.setStyleSheet(
-            "font-size: 12px; color: #707070; background: transparent;"
-        )
-        progress_row.addWidget(self._ops_progress_bar, 1)
-        progress_row.addWidget(self._ops_progress_label)
-        layout.addLayout(progress_row)
-
-        # ══════════════════════════════════════════════════════════════
-        # BLOCK 3 — Filter chips
-        # ══════════════════════════════════════════════════════════════
-        layout.addWidget(section_label("TOOL REGISTRY"))
-        filter_row = QHBoxLayout()
-        filter_row.setSpacing(6)
-        filter_row.addWidget(QLabel("Show:"))
-        filter_row.itemAt(0).widget().setStyleSheet(
-            "font-size: 12px; color: #707070; background: transparent;"
-        )
-
-        self._ops_filter = "All"
-        self._ops_filter_btns = {}
-
-        chip_style = (
-            "QPushButton {{ background: #1e1e1e; border: 1px solid #333; border-radius: 12px; "
-            "color: #aaa; font-size: 11px; padding: 3px 12px; }} "
-            "QPushButton:checked {{ background: rgba(60,255,136,0.12); border-color: #3cff88; color: #3cff88; }}"
-        )
-        for label in ("All", "Free", "Paid", "Registered", "Missing Key"):
-            btn = QPushButton(label)
-            btn.setCheckable(True)
-            btn.setChecked(label == "All")
-            btn.setStyleSheet(chip_style)
-            btn.clicked.connect(lambda _, l=label: self._ops_set_filter(l))
-            filter_row.addWidget(btn)
-            self._ops_filter_btns[label] = btn
-
-        filter_row.addStretch()
-        layout.addLayout(filter_row)
-
-        # ══════════════════════════════════════════════════════════════
-        # BLOCK 4 — Tool rows
-        # ══════════════════════════════════════════════════════════════
-        self._ops_rows_widget = QWidget()
-        self._ops_rows_widget.setStyleSheet("background: transparent;")
-        self._ops_rows_layout = QVBoxLayout(self._ops_rows_widget)
-        self._ops_rows_layout.setContentsMargins(0, 0, 0, 0)
-        self._ops_rows_layout.setSpacing(4)
-        layout.addWidget(self._ops_rows_widget)
-
-        layout.addStretch()
-        scroll.setWidget(inner_widget)
-        outer.addWidget(scroll)
-
-        self.ops_identity_panel.hide()
-        self._ops_row_widgets = {}
-        self._ops_load_data()
-
-    def _ops_load_data(self):
-        import json as _json
-        saved_email = get_setting("ops_email", "")
-        self._ops_email_display.setText(saved_email if saved_email else "— not set —")
-
-        raw = get_setting("osint_registrations", "{}")
-        try:
-            self._ops_registrations = _json.loads(raw)
-        except Exception:
-            self._ops_registrations = {}
-
-        self._ops_build_rows()
-        self._refresh_ops_progress()
-
-    def _ops_build_rows(self):
-        # Clear existing rows
-        while self._ops_rows_layout.count():
-            item = self._ops_rows_layout.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
-        self._ops_row_widgets.clear()
-
-        for tool in self.OSINT_TOOLS:
-            tid, name, category, cost, url, env_key = tool
-            reg_data = self._ops_registrations.get(tid, {})
-            registered = reg_data.get("registered", False)
-            stored_key = reg_data.get("api_key", "")
-
-            # Apply filter
-            f = self._ops_filter
-            if f == "Free" and "$" in cost and cost != "Free":
-                continue
-            if f == "Paid" and "$" not in cost:
-                continue
-            if f == "Registered" and not registered:
-                continue
-            if f == "Missing Key" and (registered or not env_key):
-                continue
-
-            row_frame = QFrame()
-            row_frame.setStyleSheet(
-                "QFrame { background: #161616; border: 1px solid #242424; "
-                "border-radius: 8px; } "
-                "QFrame:hover { border-color: #333; }"
-            )
-            row_layout = QHBoxLayout(row_frame)
-            row_layout.setContentsMargins(12, 8, 12, 8)
-            row_layout.setSpacing(10)
-
-            # Status dot
-            dot = QLabel("●")
-            dot.setFixedWidth(14)
-            dot.setStyleSheet(
-                "color: %s; font-size: 10px; background: transparent;" %
-                ("#3cff88" if registered else "#444")
-            )
-            row_layout.addWidget(dot)
-
-            # Tool name
-            name_lbl = QLabel(name)
-            name_lbl.setFixedWidth(160)
-            name_lbl.setStyleSheet(
-                "font-size: 13px; font-weight: 600; color: #e0e0e0; background: transparent;"
-            )
-            row_layout.addWidget(name_lbl)
-
-            # Category badge
-            cat_colors = {
-                "Email": "#1a3a5c", "Domain": "#1a3a3a", "Breach": "#3a1a1a",
-                "Network": "#1a2a3a", "Threat": "#2a1a3a", "Dark Web": "#2a2a1a",
-            }
-            cat_lbl = QLabel(category)
-            cat_lbl.setFixedWidth(70)
-            cat_lbl.setAlignment(Qt.AlignCenter)
-            cat_lbl.setStyleSheet(
-                "font-size: 10px; color: #aaa; background: %s; "
-                "border-radius: 4px; padding: 2px 6px;" % cat_colors.get(category, "#222")
-            )
-            row_layout.addWidget(cat_lbl)
-
-            # Cost badge
-            is_paid = "$" in cost
-            cost_lbl = QLabel(cost)
-            cost_lbl.setFixedWidth(65)
-            cost_lbl.setAlignment(Qt.AlignCenter)
-            cost_lbl.setStyleSheet(
-                "font-size: 10px; background: %s; border-radius: 4px; padding: 2px 6px; "
-                "color: %s;" % (
-                    ("#2a1a00" if is_paid else "#0f2a1a"),
-                    ("#ffaa44" if is_paid else "#3cff88"),
-                )
-            )
-            row_layout.addWidget(cost_lbl)
-
-            # API key field (only if env_key is set for this tool)
-            if env_key:
-                key_field = QLineEdit()
-                key_field.setEchoMode(QLineEdit.Password)
-                key_field.setPlaceholderText("API key...")
-                key_field.setText(stored_key)
-                key_field.setFixedWidth(180)
-                key_field.setStyleSheet(
-                    "QLineEdit { background: #0f0f0f; border: 1px solid #2a2a2a; "
-                    "border-radius: 6px; color: #ccc; font-size: 12px; padding: 4px 8px; } "
-                    "QLineEdit:focus { border-color: #3cff88; }"
-                )
-                show_btn = QPushButton("👁")
-                show_btn.setFixedSize(28, 28)
-                show_btn.setCheckable(True)
-                show_btn.setStyleSheet(
-                    "QPushButton { background: #1e1e1e; border: 1px solid #2a2a2a; "
-                    "border-radius: 6px; font-size: 13px; } "
-                    "QPushButton:checked { border-color: #3cff88; }"
-                )
-                show_btn.toggled.connect(
-                    lambda on, f=key_field: f.setEchoMode(
-                        QLineEdit.Normal if on else QLineEdit.Password
-                    )
-                )
-                save_key_btn = QPushButton("Save")
-                save_key_btn.setFixedWidth(50)
-                save_key_btn.setStyleSheet(
-                    "QPushButton { background: #1e1e1e; border: 1px solid #2a2a2a; "
-                    "border-radius: 6px; color: #aaa; font-size: 11px; padding: 3px 6px; } "
-                    "QPushButton:hover { border-color: #3cff88; color: #fff; }"
-                )
-                save_key_btn.clicked.connect(
-                    lambda _, t=tid, e=env_key, f=key_field: self._ops_save_key(t, e, f)
-                )
-                row_layout.addWidget(key_field)
-                row_layout.addWidget(show_btn)
-                row_layout.addWidget(save_key_btn)
-            else:
-                # No key needed — show "No key needed" label as spacer
-                no_key_lbl = QLabel("No key needed")
-                no_key_lbl.setFixedWidth(260)
-                no_key_lbl.setStyleSheet("font-size: 11px; color: #444; background: transparent;")
-                row_layout.addWidget(no_key_lbl)
-
-            row_layout.addStretch()
-
-            # Register / Registered button
-            if registered:
-                status_btn = QPushButton("✓ Registered")
-                status_btn.setFixedWidth(110)
-                status_btn.setStyleSheet(
-                    "QPushButton { background: rgba(60,255,136,0.08); border: 1px solid #2a5a3a; "
-                    "border-radius: 6px; color: #3cff88; font-size: 11px; padding: 4px 8px; } "
-                    "QPushButton:hover { background: rgba(60,255,136,0.15); }"
-                )
-                status_btn.clicked.connect(
-                    lambda _, t=tid: self._ops_toggle_registered(t)
-                )
-            else:
-                status_btn = QPushButton("Register →")
-                status_btn.setFixedWidth(110)
-                status_btn.setStyleSheet(
-                    "QPushButton { background: #1e1e1e; border: 1px solid #333; "
-                    "border-radius: 6px; color: #aaa; font-size: 11px; padding: 4px 8px; } "
-                    "QPushButton:hover { background: #252525; border-color: #3cff88; color: #fff; }"
-                )
-                status_btn.clicked.connect(
-                    lambda _, t=tid, u=url: self._ops_open_register(t, u)
-                )
-            row_layout.addWidget(status_btn)
-
-            self._ops_rows_layout.addWidget(row_frame)
-            self._ops_row_widgets[tid] = row_frame
-
-    def _ops_set_filter(self, label):
-        self._ops_filter = label
-        for lbl, btn in self._ops_filter_btns.items():
-            btn.setChecked(lbl == label)
-        self._ops_build_rows()
-
-    def _ops_open_register(self, tool_id: str, url: str):
-        from PySide6.QtGui import QClipboard
-        from PySide6.QtWidgets import QApplication as _QApp
-        email = get_setting("ops_email", "")
-        if email:
-            _QApp.clipboard().setText(email)
-        QDesktopServices.openUrl(QUrl(url))
-        # After a short delay, prompt user to mark as registered
-        QTimer.singleShot(3000, lambda: self._ops_prompt_mark_registered(tool_id))
-
-    def _ops_prompt_mark_registered(self, tool_id: str):
-        tool_name = next((t[1] for t in self.OSINT_TOOLS if t[0] == tool_id), tool_id)
-        msg = QMessageBox(self)
-        msg.setWindowTitle("Registration complete?")
-        msg.setText(f"Did you finish registering with <b>{tool_name}</b>?")
-        msg.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
-        msg.setDefaultButton(QMessageBox.Yes)
-        if msg.exec() == QMessageBox.Yes:
-            self._ops_toggle_registered(tool_id, force_registered=True)
-
-    def _ops_toggle_registered(self, tool_id: str, force_registered: bool = False):
-        import json as _json
-        reg = self._ops_registrations.get(tool_id, {})
-        if force_registered:
-            reg["registered"] = True
-        else:
-            reg["registered"] = not reg.get("registered", False)
-        self._ops_registrations[tool_id] = reg
-        save_setting("osint_registrations", _json.dumps(self._ops_registrations))
-        self._ops_build_rows()
-        self._refresh_ops_progress()
-
-    def _ops_save_key(self, tool_id: str, env_key: str, field: QLineEdit):
-        import json as _json
-        key_val = field.text().strip()
-        reg = self._ops_registrations.get(tool_id, {})
-        reg["api_key"] = key_val
-        if key_val:
-            reg["registered"] = True
-        self._ops_registrations[tool_id] = reg
-        save_setting("osint_registrations", _json.dumps(self._ops_registrations))
-        # Write key into .env so providers can pick it up
-        if env_key:
-            self._ops_write_env_key(env_key, key_val)
-        self._ops_build_rows()
-        self._refresh_ops_progress()
-
-    def _ops_write_env_key(self, env_key: str, value: str):
-        env_path = Path(__file__).resolve().parent / ".env"
-        try:
-            lines = env_path.read_text(encoding="utf-8").splitlines()
-            updated = False
-            new_lines = []
-            for line in lines:
-                stripped = line.strip()
-                if stripped.startswith(f"{env_key}=") or stripped.startswith(f"{env_key} ="):
-                    new_lines.append(f"{env_key}={value}")
-                    updated = True
-                else:
-                    new_lines.append(line)
-            if not updated:
-                new_lines.append(f"{env_key}={value}")
-            env_path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
-        except Exception as exc:
-            self._note_failure("ops identity: write .env (key is still saved in the database)", exc)
-
-    def _refresh_ops_progress(self):
-        count = sum(
-            1 for t in self.OSINT_TOOLS
-            if self._ops_registrations.get(t[0], {}).get("registered", False)
-        )
-        self._ops_progress_bar.setValue(count)
-        self._ops_progress_label.setText(f"{count} / {len(self.OSINT_TOOLS)} registered")
-
-    # ──────────────────────────────────────────────────────────────────
-
     def select_agent(self, agent_name):
         self.agent_box.setCurrentText(agent_name)
         for btn in self.agent_buttons.values():
@@ -8932,28 +7571,24 @@ class GodAI(QWidget):
         agent_titles = {
             "chat": "CHAT", "osint": "TRACE", "osint_heavy": "BLOODHOUND",
             "wifi": "BEACON", "bug_bounty": "BUG SPRAY",
-            "nfl_bet": "PLAYMAKER", "fiverr": "ATELIER",
-            "health": "VITALITY", "author": "MANUSCRIPT", "manuscript": "PUBLISHER",
+            "fiverr": "ATELIER",
+            "author": "MANUSCRIPT", "manuscript": "PUBLISHER",
             "music": "MAESTRO", "webdesign": "SITE BUILDER", "audiobook": "NARRATOR",
-            "manager": "FORGE", "ops_identity": "OP IDENTITY",
-        }
+            "manager": "FORGE", }
         agent_subtitles = {
             "chat":        "General-purpose conversation. Pick a tool, pick a model, talk.",
             "osint":       "Light open-source intelligence — structured research queries and summaries.",
             "osint_heavy": "Deep OSINT investigation with five-section dossier and curated tradecraft tools.",
             "wifi":        "Wireless reconnaissance, signal analysis, and Kali command generation.",
             "bug_bounty":  "Vulnerability triage with CWE classification and HackerOne-ready submission drafts.",
-            "nfl_bet":     "NFL prop bet analysis with edge assessment, EV calculation, and season projection modelling.",
             "fiverr":      "Logo gigs end-to-end — DALL·E logo prompts, gig descriptions, and client delivery messages.",
-            "health":      "Nutrition, fitness, mental wellness, and lifestyle guidance — informational, not medical advice.",
             "author":      "Long-form fiction drafting — outlines, characters, scenes, dialogue, and world-building.",
             "manuscript":  "Sales metrics, platform distribution status, and publishing todo tracker.",
             "music":       "Spotify artist setup, release planning, distribution strategy, and income roadmap.",
             "webdesign":   "Modern HTML, CSS, and JavaScript generation with responsive layout and design advice.",
             "audiobook":   "Convert ebooks (PDF / EPUB / TXT / MOBI) into MP3 audiobooks via OpenAI TTS.",
             "manager":      "Describe a new agent in plain language — Forge writes the code and registers it.",
-            "ops_identity": "Operational identity — manage your research email, track tool registrations, and store API keys.",
-        }
+            }
         if hasattr(self, "agent_title_label"):
             self.agent_title_label.setText(agent_titles.get(agent_name, agent_name.upper()))
         if hasattr(self, "agent_subtitle_label"):
@@ -8964,37 +7599,31 @@ class GodAI(QWidget):
 
         is_audiobook = agent_name == "audiobook"
         is_manager = agent_name == "manager"
-        is_health = agent_name == "health"
         is_author = agent_name == "author"
         is_manuscript = agent_name == "manuscript"
         is_music = agent_name == "music"
-        is_nfl_bet = agent_name == "nfl_bet"
         is_osint = agent_name == "osint"
         is_osint_heavy = agent_name == "osint_heavy"
         is_wifi = agent_name == "wifi"
         is_fiverr = agent_name == "fiverr"
         is_webdesign = agent_name == "webdesign"
         is_bug_bounty = agent_name == "bug_bounty"
-        is_ops_identity = agent_name == "ops_identity"
-        is_custom = (is_audiobook or is_manager or is_health or is_author or is_manuscript
-                     or is_music or is_nfl_bet or is_osint or is_osint_heavy or is_wifi or is_fiverr
-                     or is_webdesign or is_bug_bounty or is_ops_identity)
+        is_custom = (is_audiobook or is_manager or is_author or is_manuscript
+                     or is_music or is_osint or is_osint_heavy or is_wifi or is_fiverr
+                     or is_webdesign or is_bug_bounty)
 
         self.normal_panel.setVisible(not is_custom)
         self.audiobook_panel.setVisible(is_audiobook)
         self.manager_panel.setVisible(is_manager)
-        self.health_panel.setVisible(is_health)
         self.author_panel.setVisible(is_author)
         self.manuscript_panel.setVisible(is_manuscript)
         self.music_panel.setVisible(is_music)
-        self.nfl_bet_panel.setVisible(is_nfl_bet)
         self.osint_panel.setVisible(is_osint)
         self.osint_heavy_panel.setVisible(is_osint_heavy)
         self.wifi_panel.setVisible(is_wifi)
         self.fiverr_panel.setVisible(is_fiverr)
         self.webdesign_panel.setVisible(is_webdesign)
         self.bug_bounty_panel.setVisible(is_bug_bounty)
-        self.ops_identity_panel.setVisible(is_ops_identity)
         # Output area only relevant for standard (non-custom) agents like Chat.
         # Within those, auto-hide if there is no content yet — keeps the UI clean.
         standard_agent_with_output = not is_custom
@@ -9017,7 +7646,7 @@ class GodAI(QWidget):
             self._refresh_next_step_tip()
         elif is_author:
             self._refresh_next_step_tip()
-        elif is_health or is_music or is_nfl_bet or is_osint or is_osint_heavy or is_wifi or is_fiverr or is_webdesign or is_bug_bounty:
+        elif is_music or is_osint or is_osint_heavy or is_wifi or is_fiverr or is_webdesign or is_bug_bounty:
             pass
         else:
             self.output_label.setText("Output")
@@ -9850,10 +8479,6 @@ class GodAI(QWidget):
             self.stop_chat_worker()
             return
 
-        if self.health_worker is not None and self.health_worker.isRunning():
-            self.health_stop()
-            return
-
         if self.author_worker is not None and self.author_worker.isRunning():
             self.author_stop()
             return
@@ -9919,31 +8544,37 @@ class GodAI(QWidget):
             self.output_box.append("\n[Info] No running task to stop.")
 
     def update_resource_label(self):
+        """Drive the SYSTEM meters. The exact figures move to the tooltips —
+        visible on demand, rather than crowding the glanceable number."""
         stats = self.monitor.snapshot()
 
-        def colorize(text: str, level: str):
-            color_map = {"green": "#1a7f37", "yellow": "#b07d00", "red": "#b42318"}
-            return f"<span style='color:{color_map.get(level, '#ffffff')}; font-weight:600;'>{text}</span>"
-
-        cpu_text = colorize(f"{stats['cpu_percent']:5.1f}%", stats["cpu_level"])
-        ram_text = colorize(f"{stats['ram_percent']:5.1f}%", stats["ram_level"])
-        swap_text = colorize(f"{stats['swap_percent']:5.1f}%", stats["swap_level"])
+        self.resource_meters["RAM"].set(
+            stats["ram_percent"] / 100.0,
+            f"{stats['ram_percent']:.0f}%",
+            stats["ram_level"],
+            f"{stats['ram_used_gb']:.1f} GB used · {stats['ram_available_gb']:.1f} GB free",
+        )
+        self.resource_meters["CPU"].set(
+            stats["cpu_percent"] / 100.0,
+            f"{stats['cpu_percent']:.0f}%",
+            stats["cpu_level"],
+        )
+        self.resource_meters["SWAP"].set(
+            stats["swap_percent"] / 100.0,
+            f"{stats['swap_percent']:.0f}%",
+            stats["swap_level"],
+            f"{stats['swap_used_gb']:.1f} of {stats['swap_total_gb']:.1f} GB",
+        )
 
         if stats["battery_percent"] is None:
-            battery_text = "<span style='color:#666;'>n/a</span>"
+            self.resource_meters["BATT"].set_unavailable()
         else:
-            battery_text = colorize(f"{stats['battery_percent']:5.1f}% {stats['battery_note']}", stats["battery_level"])
-
-        html = f"""
-        <b>RAM</b> {ram_text}<br>
-        <small>Used: {stats['ram_used_gb']:.1f} GB · Free: {stats['ram_available_gb']:.1f} GB</small><br>
-        <b>CPU</b> {cpu_text}<br>
-        <b>SWAP</b> {swap_text}<br>
-        <small>Used: {stats['swap_used_gb']:.1f} / {stats['swap_total_gb']:.1f} GB</small><br>
-        <b>BATTERY</b> {battery_text}
-        """.strip()
-
-        self.resource_label.setText(html)
+            self.resource_meters["BATT"].set(
+                stats["battery_percent"] / 100.0,
+                f"{stats['battery_percent']:.0f}%",
+                stats["battery_level"],
+                stats["battery_note"],
+            )
 
     def update_usage_labels(self):
         today_total = self.usage_tracker.get_today_total()
@@ -9966,11 +8597,22 @@ class GodAI(QWidget):
         session_remaining = self.session_budget_eur - self.session_cost_total
         daily_remaining = self.daily_budget_eur - today_total
 
-        if hasattr(self, "budget_label"):
-            self.budget_label.setText(
-                f"Session remaining: €{session_remaining:.0f} / €{int(self.session_budget_eur)}\n"
-                f"Daily remaining: €{daily_remaining:.0f} / €{int(self.daily_budget_eur)}"
-            )
+        if hasattr(self, "budget_meters"):
+            # Filled by what is spent, not what is left: a bar that empties as
+            # you spend reads as progress towards something good.
+            for key, spent, cap in (
+                ("SESSION", self.session_cost_total, self.session_budget_eur),
+                ("DAILY", today_total, self.daily_budget_eur),
+            ):
+                fraction = (spent / cap) if cap > 0 else 0.0
+                level = "red" if fraction >= 0.9 else "yellow" if fraction >= 0.6 else "green"
+                remaining = cap - spent
+                self.budget_meters[key].set(
+                    fraction,
+                    f"€{spent:.2f} / €{cap:.0f}",
+                    level,
+                    f"€{remaining:.2f} left of the €{cap:.2f} {key.lower()} cap",
+                )
 
     def start_resource_timer(self):
         self.resource_timer = QTimer(self)
@@ -10150,11 +8792,10 @@ class GodAI(QWidget):
         doc_file_map = {
             "chat": "chat", "osint": "osint", "osint_heavy": "osint_heavy",
             "wifi": "wifi", "bug_bounty": "bug_bounty",
-            "nfl_bet": "nfl_bet", "fiverr": "fiverr",
-            "health": "health", "author": "author", "music": "music",
+            "fiverr": "fiverr",
+            "author": "author", "music": "music",
             "webdesign": "webdesign", "audiobook": "audiobook",
-            "manager": "manager", "ops_identity": "ops_identity",
-            "manuscript": "manuscript",
+            "manager": "manager", "manuscript": "manuscript",
         }
         doc_key = doc_file_map.get(agent_name, agent_name)
 
@@ -10263,11 +8904,10 @@ class GodAI(QWidget):
         agent_titles = {
             "chat": "CHAT", "osint": "TRACE", "osint_heavy": "BLOODHOUND",
             "wifi": "BEACON", "bug_bounty": "BUG SPRAY",
-            "nfl_bet": "PLAYMAKER", "fiverr": "ATELIER",
-            "health": "VITALITY", "author": "MANUSCRIPT", "manuscript": "PUBLISHER",
+            "fiverr": "ATELIER",
+            "author": "MANUSCRIPT", "manuscript": "PUBLISHER",
             "music": "MAESTRO", "webdesign": "SITE BUILDER", "audiobook": "NARRATOR",
-            "manager": "FORGE", "ops_identity": "OP IDENTITY",
-        }
+            "manager": "FORGE", }
         title = agent_titles.get(agent_name, agent_name.upper())
 
         dialog = QDialog(self)
@@ -10374,10 +9014,10 @@ if __name__ == "__main__":
     instance_server.listen(SINGLE_INSTANCE_KEY)
 
     window = GodAI()
-    # Always open filling the screen. The three panes need ~1000px before the
+    # Always open in fullscreen. The three panes need ~1000px before the
     # splitter starts squeezing panels, so a small default window is the state
     # the layout looks worst in.
-    window.showMaximized()
+    window.showFullScreen()
 
     def _raise_existing_window():
         instance_server.nextPendingConnection()      # drain the pending connection
