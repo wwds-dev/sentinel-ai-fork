@@ -52,46 +52,6 @@
       "log_path": "data/logs/runs.jsonl"
     },
     {
-      "name": "audiobook",
-      "type": "agent",
-      "label": "Audiobook",
-      "enabled": true,
-      "version": "1.0",
-      "allowed_providers": [
-        "openai",
-        "qwen"
-      ],
-      "allowed_tools": [],
-      "budget_limit_eur": 10.0,
-      "requires_approval": false,
-      "description": "Converts ebooks to audiobooks using OpenAI TTS.",
-      "log_path": "data/logs/runs.jsonl"
-    },
-    {
-      "name": "manuscript",
-      "type": "agent",
-      "label": "Publisher",
-      "enabled": true,
-      "version": "1.0",
-      "allowed_providers": [
-        "anthropic",
-        "openai",
-        "deepseek",
-        "kimi",
-        "gemini",
-        "qwen",
-        "ollama"
-      ],
-      "allowed_tools": [
-        "General Chat",
-        "Summarize"
-      ],
-      "budget_limit_eur": 2.0,
-      "requires_approval": false,
-      "description": "Book publishing metrics, platform distribution tracking, and todo management.",
-      "log_path": "data/logs/runs.jsonl"
-    },
-    {
       "name": "manager",
       "type": "agent",
       "label": "Forge",

@@ -12,6 +12,12 @@ under **Detail** — this checklist is the summary view.
 ## v2 — current
 
 - [ ] `P1` `design` `@ai` **Refactor Phase 3** — the `AgentHost` protocol and the shared `AgentPanel` base, then one module per agent panel. Phases 1 and 2 shipped (`ui/workers.py`, `ui/widgets.py`, `ui/style.py`, `ui/tooltips.py`, `ui/dialogs.py`); `main.py` went 11,902 → ~10,400 lines. This is the first phase with a design decision in it: composition over mixins.
+- [x] `P1` `design` `@ai` **GUI overhaul — section renderer.** Shipped for Trace: `SectionCard`/`SectionView` in `ui/widgets.py`, four tabbed text boxes replaced by cards with per-card copy, raw response collapsed behind a disclosure, and a separate streaming box so tokens still show live before there are sections to render. Reuse for Bloodhound next — its parser already exists.
+- [ ] `P2` `design` `@ai` **GUI overhaul — section renderer, remaining agents.** Bloodhound has a parser (`_parse_osint_heavy_sections`); Beacon, Bug Spray and Forge need one each. Original note: The change that justifies the rest, and it needs no new parsing: 12 `_parse_*_sections` methods already structure every answer and 70 text panes render it flat. Build against Trace (smallest vertical), then reuse. See `docs/gui_redesign.md`.
+- [x] `P2` `design` `@ai` **GUI overhaul — run bar.** Three stacked control rows → one: tool · command · provider · model · live cost · gear. Execution mode, the six provider permissions and the model tools moved into a popover behind the gear. Splitter minimum dropped 985 → 927px. Deferring this to Phase 4 stopped being the right call once Sentinel was down to six agents and 111 lines of control rows.
+- [x] `P3` `design` `@ai` **GUI overhaul — flat agent list.** The sidebar accordion was built for fifteen agents; there are six. Drop `CollapsibleSection` from the sidebar, keep it where panels still use it.
+- [x] `P1` `design` `@ai` **GUI overhaul — type and spacing scale.** Five sizes (four of which read as one) → three; six weights → two; documented in `ui/style.py` with the 15px section-title role reserved.
+- [x] `P1` `design` `@ai` **GUI overhaul — status rail figures.** `Meter`/`Bar` in `ui/widgets.py` drive system and budget; exact numbers moved to tooltips; budget bars fill with what is spent.
 - [ ] `P1` `bug` `@ai` Key `_pending_requests` by run-id rather than agent name. Two simultaneous runs of the same agent would overwrite each other's context; unreachable today only because the panels disable their run button mid-flight.
 - [ ] `P2` `bug` `@ai` Remove the dead `ops_identity` sidebar entry — it is listed in `agent_titles` with no agent module or panel behind it
 - [ ] `P2` `feature` `@ai` Model Kimi prompt caching in `config/pricing.json`. Cache hits are ~80% off input ($0.19/1M), so estimates for repeated context are currently conservative.
@@ -256,6 +262,35 @@ edge cases that file does not reach, one of which pins a float-precision quirk �
 `1.00 - 0.90 == 0.09999999999999998`, so a request estimated at exactly the
 remaining budget is refused. It fails safe, and a switch to `Decimal` should
 flip it.
+
+## 7. Full GUI overhaul
+
+The colours are right; hierarchy, density and information design are not. Three
+measurements rather than opinions: the type scale was five sizes of which four
+read as one; **12 `_parse_*_sections` methods** structure every agent's answer
+and **70 text panes** then render it flat; and three control rows sit between
+you and the input box.
+
+Direction and mock screens: **`docs/gui_redesign.md`** plus the published
+mockup (run bar, section-rendered Trace output, narrow-window reflow).
+
+- [x] **Type and spacing scale** — three sizes, two weights, documented in
+      `ui/style.py` with the 15px section-title role reserved.
+- [x] **Status rail figures** — `Meter`/`Bar` in `ui/widgets.py` driving system
+      and budget; exact numbers moved to tooltips.
+- [ ] **Flat agent list.** The sidebar accordion existed for fifteen agents;
+      there are six. Drop `CollapsibleSection` from the sidebar, keep it where
+      panels still use it.
+- [ ] **Run bar.** One row — agent · provider/model · live cost · Run — with
+      mode, the provider toggles and auto-apply behind a settings affordance.
+      Restructures the chat panel, so cheaper after refactor phase 4.
+- [ ] **Section renderer.** The one that justifies the rest, and it needs no new
+      parsing. Build against Trace (smallest vertical, 227 lines), then reuse
+      for the other five agents.
+
+Deliberately not proposed: a new palette (the one part that is not broken), and
+a command palette (the sidebar was never the bottleneck — the control rows
+were; revisit once the run bar exists).
 
 ---
 

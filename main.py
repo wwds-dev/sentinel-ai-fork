@@ -8,16 +8,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-# ── Frozen-app narrator worker dispatch ──────────────────────────────────────
-# The packaged app can't run `python -m services.narrator.converter`, so it
-# re-invokes its own executable with this sentinel. Handle it before importing
-# the GUI stack so the audiobook worker process stays lightweight.
-if "--narrator-worker" in sys.argv:
-    sys.argv.remove("--narrator-worker")
-    from services.narrator.converter import main as _narrator_main
-    _narrator_main()
-    sys.exit(0)
-
 from services.runtime_paths import resource_base, user_data_base, ensure_seeded, is_frozen
 ensure_seeded()
 
@@ -40,7 +30,7 @@ from PySide6.QtWidgets import (
     QLabel, QTextEdit, QPushButton, QComboBox, QListWidget, QListWidgetItem,
     QMessageBox, QCheckBox, QTextBrowser, QSplitter, QLineEdit, QFileDialog,
     QProgressBar, QDialog, QTabWidget, QFrame, QScrollArea, QStackedWidget, QLayout,
-    QInputDialog,
+    QInputDialog, QMenu, QWidgetAction,
 )
 
 from services.ollama_client import OllamaClient, MUSE_GLIMMER_VARIANTS, muse_glimmer_default
@@ -60,25 +50,15 @@ from services.registry import Registry
 from services.validator import Validator
 from services.run_logger import RunLogger
 
-from agents.audiobook_connector import AudiobookConnector
 from agents.chat_agent import ChatAgent
 from agents.writing_agent import WritingAgent
 from agents.coding_agent import CodingAgent
 from agents.osint_agent import OSINTAgent
 from agents.manager_agent import ManagerAgent
-from agents.author_agent import AuthorAgent
-from agents.manuscript_agent import ManuscriptAgent
-from agents.webdesign_agent import WebdesignAgent
-from agents.music_agent import MusicAgent
 from agents.bug_bounty_agent import BugBountyAgent
 from agents.wifi_agent import WiFiAgent, KNOWN_ADAPTERS, detect_usb_adapters, build_kali_commands, AIRPORT
 from agents.osint_heavy_agent import OsintHeavyAgent
-from agents.fiverr_agent import FiverrAgent
 from services.agent_factory import AgentFactory
-from ui.book_widgets import (
-    make_theme_box, make_size_box, make_voice_source_box,
-    theme_key, size_key, unique_output_path,
-)
 
 
 # Writable base = project root in dev, ~/Library/Application Support/Sentinel AI when frozen.
@@ -133,40 +113,10 @@ AGENT_RECOMMENDATIONS = {
         "reason": "Vulnerability triage plus a readable HackerOne write-up — Sonnet "
                   "handles both the security reasoning and the report prose.",
     },
-    "fiverr": {
-        "provider": "openai", "model": "gpt-4o-mini",
-        "reason": "Gig copy sits next to DALL·E logo generation — staying on OpenAI "
-                  "keeps prompt style and image calls on one provider, cheaply.",
-    },
-    "author": {
-        "provider": "anthropic", "model": "claude-fable-5",
-        "reason": "Fable 5 is the creative-writing member of the Claude 5 family — "
-                  "the closest fit for long-form fiction, character and dialogue work.",
-    },
-    "manuscript": {
-        "provider": "anthropic", "model": "claude-haiku-4-5-20251001",
-        "reason": "Sales metrics and todo tracking are light structured tasks — "
-                  "Haiku is the fastest and cheapest fit.",
-    },
-    "music": {
-        "provider": "anthropic", "model": "claude-sonnet-5",
-        "reason": "Release planning and distribution strategy — broad, practical "
-                  "reasoning without needing Opus depth.",
-    },
-    "webdesign": {
-        "provider": "anthropic", "model": "claude-sonnet-5",
-        "reason": "Strongest HTML/CSS/JS generation; produces working responsive "
-                  "markup in one pass more often than the cheaper models.",
-    },
     "manager": {
         "provider": "anthropic", "model": "claude-sonnet-5",
         "reason": "Forge writes real agent source files — code generation quality "
                   "matters more here than cost.",
-    },
-    "audiobook": {
-        "provider": "openai", "model": "tts-1", "voice": "alloy",
-        "reason": "Narrator is hard-wired to OpenAI TTS. Alloy is the most neutral, "
-                  "even-paced voice — the safest default for hours of narration.",
     },
 }
 
@@ -177,11 +127,6 @@ AGENT_SETUP_WIDGETS = {
     "osint_heavy": ("osint_heavy_provider_box", "osint_heavy_model_box"),
     "wifi":        ("wifi_provider_box",        "wifi_model_box"),
     "bug_bounty":  ("bb_provider_box",          "bb_model_box"),
-    "fiverr":      ("fiverr_provider_box",      "fiverr_model_box"),
-    "author":      ("author_provider_box",      "author_model_box"),
-    "manuscript":  ("manuscript_provider_box",  "manuscript_model_box"),
-    "music":       ("music_provider_box",       "music_model_box"),
-    "webdesign":   ("webdesign_provider_box",   "webdesign_model_box"),
     "manager":     ("manager_provider_box",     "manager_model_box"),
 }
 
@@ -194,27 +139,19 @@ AGENT_MODEL_LOADERS = {
     "osint_heavy": "osint_heavy_load_models",
     "wifi":        "wifi_load_models",
     "bug_bounty":  "bb_load_models",
-    "fiverr":      "fiverr_load_models",
-    "author":      "author_load_models",
-    "manuscript":  "manuscript_load_models",
-    "music":       "music_load_models",
-    "webdesign":   "webdesign_load_models",
     "manager":     "manager_load_models",
 }
 
 AGENT_PRETTY_NAMES = {
     "chat": "Chat", "osint": "Trace", "osint_heavy": "Bloodhound",
     "wifi": "Beacon", "bug_bounty": "Bug Spray",
-    "fiverr": "Atelier",
-    "author": "Manuscript", "manuscript": "Publisher",
-    "music": "Maestro", "webdesign": "Site Builder", "audiobook": "Narrator",
     "manager": "Forge", }
 
 
 from ui.workers import (
-    ChatWorker, SubprocessWorker, ModelPullWorker, FiverrImageWorker, ShortsWorker,
+    ChatWorker, SubprocessWorker, ModelPullWorker,
 )
-from ui.widgets import FlowLayout, CollapsibleSection, Meter
+from ui.widgets import FlowLayout, Meter, SectionView
 from ui.style import GLOBAL_STYLESHEET
 from ui.tooltips import seed_tooltips
 
@@ -239,7 +176,7 @@ class GodAI(QWidget):
         })
         self.agents_config = self.load_json(
             AGENTS_FILE,
-            {"agents": ["chat", "writing", "coding", "osint", "audiobook"]},
+            {"agents": ["chat", "writing", "coding", "osint"]},
         )
         self.settings = self.load_json(SETTINGS_FILE, {})
 
@@ -255,7 +192,6 @@ class GodAI(QWidget):
         self.report_exporter = ReportExporter()
         self.usage_tracker = UsageTracker()
         self.tool_runner = ToolRunner()
-        self.audiobook_connector = AudiobookConnector()
 
         self.registry = Registry()
         self.validator = Validator(self.registry)
@@ -267,25 +203,13 @@ class GodAI(QWidget):
         self.agent_factory = AgentFactory(BASE_DIR)
         self.pending_spec: dict | None = None
         self.manager_worker: Optional[ChatWorker] = None
-        self.author_worker: Optional[ChatWorker] = None
-        self._last_author_response: str = ""
-        self._author_is_continuing: bool = False
-        self._author_export_done: bool = False
-        self.author_pub_worker: Optional[ChatWorker] = None
-        self.author_mkt_worker: Optional[ChatWorker] = None
-        self.manuscript_worker: Optional[ChatWorker] = None
-        self._manuscript_last_data: str = ""
         self.shorts_worker: Optional[ShortsWorker] = None
         self._last_short_path: str = ""
         self.quote_finder_worker: Optional[ChatWorker] = None
         self.calendar_worker: Optional[ChatWorker] = None
         self._calendar_slots: list = []
-        self.music_worker: Optional[ChatWorker] = None
-        self._last_music_response: str = ""
         self.bug_bounty_worker: Optional[ChatWorker] = None
         self._last_bb_response: str = ""
-        self.webdesign_worker: Optional[ChatWorker] = None
-        self._last_webdesign_response: str = ""
         self.osint_worker: Optional[ChatWorker] = None
         self.wifi_worker: Optional[ChatWorker] = None
         self.wifi_scan_worker: Optional[SubprocessWorker] = None
@@ -294,24 +218,15 @@ class GodAI(QWidget):
         self.osint_heavy_worker: Optional[ChatWorker] = None
         self._last_osint_heavy_response: str = ""
         self._osint_heavy_image_path: str = ""
-        self.fiverr_image_worker: Optional[FiverrImageWorker] = None
-        self.fiverr_text_worker: Optional[ChatWorker] = None
-        self._fiverr_image_paths: list = []
-        self._fiverr_current_tab: int = 0
 
         self.agent_instances = {
             "chat": ChatAgent(),
             "writing": WritingAgent(),
             "coding": CodingAgent(),
             "osint": OSINTAgent(),
-            "author": AuthorAgent(),
-            "webdesign": WebdesignAgent(),
-            "music": MusicAgent(),
             "bug_bounty": BugBountyAgent(),
             "wifi": WiFiAgent(),
             "osint_heavy": OsintHeavyAgent(),
-            "fiverr": FiverrAgent(),
-            "manuscript": ManuscriptAgent(),
         }
 
         self.current_messages = []
@@ -329,8 +244,6 @@ class GodAI(QWidget):
         self.chat_started_at: Optional[float] = None
         self.chat_elapsed_seconds = 0
         self.chat_estimated_seconds = 30
-
-        self.audiobook_process: Optional[QProcess] = None
 
         self.pending_agent = ""
         self.pending_backend = ""
@@ -478,25 +391,27 @@ class GodAI(QWidget):
         if not hasattr(self, "live_estimate_label"):
             return
 
-        if self.agent_box.currentText() == "audiobook":
-            return
 
         estimated_cost, approx_tokens, backend, model = self.get_current_cost_estimate()
 
+        if hasattr(self, "runbar_cost"):
+            tokens = f"{approx_tokens/1000:.1f}k" if approx_tokens >= 1000 else str(approx_tokens)
+            if backend == "ollama":
+                self.runbar_cost.setText(f"free · {tokens} tok")
+            else:
+                self.runbar_cost.setText(f"~€{estimated_cost:.2f} · {tokens} tok")
+
         if backend == "ollama":
             self.live_estimate_label.setText(
-                f"Estimated Request Cost: FREE (local execution)\n"
                 f"{model} · ~{approx_tokens} tokens"
             )
         elif backend in {"openai", "deepseek", "kimi", "gemini"}:
             self.live_estimate_label.setText(
-                f"Estimated Request Cost: ~€{estimated_cost:.2f}\n"
                 f"{backend} · {model} · ~{approx_tokens} tokens\n"
                 f"⚠ Paid API"
             )
         else:
             self.live_estimate_label.setText(
-                f"Estimated Request Cost: ~€{estimated_cost:.2f}\n"
                 f"{backend} · {model} · ~{approx_tokens} tokens"
             )
 
@@ -733,13 +648,6 @@ class GodAI(QWidget):
 
         text = f"{agent} {tool} {command} {prompt}".lower()
 
-        if agent == "audiobook":
-            return {
-                "mode": "Cloud only",
-                "provider": "openai",
-                "model": "tts",
-                "reason": "Audiobook conversion uses OpenAI TTS only."
-            }
 
 
         if any(k in text for k in ["debug", "error", "traceback", "python", "code", "refactor", "function", "class"]):
@@ -1076,7 +984,6 @@ class GodAI(QWidget):
                 rec = self.get_recommended_setup()
             except Exception:
                 return None
-            # The audiobook branch reports a pseudo-model that has no combo entry.
             return rec if rec.get("model") != "tts" else None
 
         return AGENT_RECOMMENDATIONS.get(agent_key)
@@ -1180,31 +1087,9 @@ class GodAI(QWidget):
 
         self.refresh_recommendation_marks(agent_key)
 
-    def _install_audiobook_recommendation(self) -> None:
-        """Narrator has no provider/model choice — OpenAI TTS is hard-wired — so
-        the only thing to recommend is the narration voice."""
-        rec = AGENT_RECOMMENDATIONS.get("audiobook", {})
-        voice_box = getattr(self, "audiobook_voice_box", None)
-        voice = rec.get("voice")
-        if voice_box is None or not voice:
-            return
-
-        tooltip = f"Recommended for Narrator: voice '{voice}'\n{rec['reason']}"
-        idx = voice_box.findText(voice)
-        if idx >= 0:
-            voice_box.setCurrentIndex(idx)
-        self._paint_recommended_item(voice_box, idx, tooltip)
-        voice_box.setToolTip(tooltip)
-        voice_box.currentTextChanged.connect(
-            lambda _t: self._mark_deviation(
-                voice_box, voice_box.currentText() == voice
-            )
-        )
-
     def install_agent_recommendations(self) -> None:
         """Apply every agent's recommended setup once, at startup, and keep the
         red markings in sync as the user changes providers or models later."""
-        self._install_audiobook_recommendation()
 
         for agent_key in AGENT_SETUP_WIDGETS:
             widgets = AGENT_SETUP_WIDGETS[agent_key]
@@ -1268,33 +1153,23 @@ class GodAI(QWidget):
 
         icons = {
             "chat": "💬", "osint": "👹", "osint_heavy": "🔍",
-            "audiobook": "🎧", "manager": "🏗",
-            "author": "✍️", "webdesign": "🎨",
-            "music": "🎵", "wifi": "📡", "fiverr": "💼",
-            "bug_bounty": "🐛", "manuscript": "📚",
-        }
+            "manager": "🏗",
+            "wifi": "📡", "bug_bounty": "🐛", }
         labels = {
             "chat": "Chat", "osint": "Trace", "osint_heavy": "Bloodhound",
-            "audiobook": "Narrator", "manager": "Forge",
-            "author": "Manuscript", "webdesign": "Site Builder",
-            "music": "Maestro", "wifi": "Beacon",
-            "fiverr": "Atelier", "bug_bounty": "Bug Spray",
+            "manager": "Forge",
+            "wifi": "Beacon",
+            "bug_bounty": "Bug Spray",
             # Without this the sidebar fell back to name.capitalize() and showed a
-            # second "Manuscript" entry, colliding with the author agent. Every
             # other surface (header title, registry) calls this one Publisher.
-            "manuscript": "Publisher",
-        }
+            }
 
         # Every section starts collapsed — launch shows just the category list,
         # and you open the one you want.
-        categories = [
-            ("General",            ["chat"],                                                False),
-            ("Finance & Business", ["fiverr"],                                            False),
-            ("Research",           ["osint", "osint_heavy", "wifi"],                       False),
-            ("Security",           ["bug_bounty"],                                         False),
-            ("Creative",           ["author", "manuscript", "music", "webdesign", "audiobook"],         False),
-            ("System",             ["manager"],                                           False),
-        ]
+        # A flat list, in the order the work usually runs. The accordion this
+        # replaced was built when there were fifteen agents; at six it was a
+        # click between you and everything, and four headings for six rows.
+        sidebar_agents = ["chat", "osint", "osint_heavy", "wifi", "bug_bounty", "manager"]
 
         # Minimal sidebar row — clear separation via padding + hover fill
         agent_btn_style = """
@@ -1322,19 +1197,16 @@ class GodAI(QWidget):
         """
 
         self.agent_buttons = {}
-        for title, agent_names, expanded in categories:
-            section = CollapsibleSection(title, expanded=expanded)
-            for name in agent_names:
-                btn = QPushButton(f"{icons.get(name, '⚙️')}  {labels.get(name, name.capitalize())}")
-                btn.setObjectName("AgentBtn")
-                btn.setStyleSheet(agent_btn_style)
-                btn.setCheckable(True)
-                btn.setMinimumHeight(40)
-                btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-                btn.clicked.connect(lambda checked, n=name: self.select_agent(n))
-                section.addWidget(btn)
-                self.agent_buttons[name] = btn
-            agents_layout.addWidget(section)
+        for name in sidebar_agents:
+            btn = QPushButton(f"{icons.get(name, '⚙️')}  {labels.get(name, name.capitalize())}")
+            btn.setObjectName("AgentBtn")
+            btn.setStyleSheet(agent_btn_style)
+            btn.setCheckable(True)
+            btn.setMinimumHeight(40)
+            btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            btn.clicked.connect(lambda checked, n=name: self.select_agent(n))
+            agents_layout.addWidget(btn)
+            self.agent_buttons[name] = btn
 
         agents_layout.addStretch()
         agents_scroll.setWidget(agents_container)
@@ -1490,118 +1362,137 @@ class GodAI(QWidget):
         normal_layout.setSpacing(10)
 
         # Row 1: command only
-        top_row_1 = QHBoxLayout()
-
+        # ── Run bar ───────────────────────────────────────────────────────────
+        # One row instead of three. Everything here changes per request; the
+        # things that change weekly — execution mode, the provider permissions,
+        # the model tools — moved behind the gear. They were occupying the strip
+        # directly above the input box permanently.
         self.agent_box = QComboBox()
         agent_items = self.agents_config.get("agents", [])
-        for extra in ("manager", "author"):
+        for extra in ("manager",):
             if extra not in agent_items:
                 agent_items = list(agent_items) + [extra]
         self.agent_box.addItems(agent_items)
         self.agent_box.hide()
 
-        self.tool_label = QLabel("Tool:")
-        top_row_1.addWidget(self.tool_label)
+        runbar_container = QWidget()
+        runbar_container.setObjectName("RunBar")
+        # A plain QWidget does not paint a stylesheet background unless asked;
+        # without this the run bar has no surface and its controls float loose.
+        runbar_container.setAttribute(Qt.WA_StyledBackground, True)
+        runbar = FlowLayout(runbar_container, spacing=8)
 
         self.tool_box = QComboBox()
         self.tool_box.addItems(self.tool_prompts.keys())
-
         self.tool_box.setMinimumWidth(140)
-        top_row_1.addWidget(self.tool_box)
-
-        self.command_label = QLabel("Command:")
-        top_row_1.addWidget(self.command_label)
+        runbar.addWidget(self.tool_box)
 
         self.command_box = QComboBox()
         self.command_box.addItems(self.commands.keys())
-        self.command_box.setMinimumWidth(180)
-        top_row_1.addWidget(self.command_box)
-
-        top_row_1.addStretch()
-        normal_layout.addLayout(top_row_1)
-
-        # Row 2: provider, model, model tools
-        top_row_2_container = QWidget()
-        top_row_2 = FlowLayout(top_row_2_container, spacing=6)
+        self.command_box.setMinimumWidth(160)
+        runbar.addWidget(self.command_box)
 
         self.provider_box = QComboBox()
         self.provider_box.addItems(["ollama", "openai", "deepseek", "kimi", "gemini", "anthropic", "qwen"])
-        self.provider_box.setMinimumWidth(120)
-        top_row_2.addWidget(QLabel("Provider:"))
-        top_row_2.addWidget(self.provider_box)
+        self.provider_box.setMinimumWidth(110)
+        runbar.addWidget(self.provider_box)
 
         self.model_box = QComboBox()
-        self.model_box.setMinimumWidth(180)
-        top_row_2.addWidget(QLabel("Model:"))
-        top_row_2.addWidget(self.model_box)
+        self.model_box.setMinimumWidth(170)
+        runbar.addWidget(self.model_box)
 
-        self.refresh_models_btn = QPushButton("Refresh Models")
+        # The one number that changes with every keystroke, next to the controls
+        # that change it rather than in the far rail.
+        self.runbar_cost = QLabel("—")
+        self.runbar_cost.setObjectName("RunBarCost")
+        runbar.addWidget(self.runbar_cost)
 
+        self.runbar_settings_btn = QPushButton("⚙")
+        self.runbar_settings_btn.setObjectName("ChipBtn")
+        self.runbar_settings_btn.setToolTip("Execution mode, provider permissions and model tools")
+        runbar.addWidget(self.runbar_settings_btn)
 
+        normal_layout.addWidget(runbar_container)
+
+        # Labels other code still addresses, now unused on screen.
+        self.tool_label = QLabel("Tool:")
+        self.tool_label.hide()
+        self.command_label = QLabel("Command:")
+        self.command_label.hide()
+
+        # ── Behind the gear ───────────────────────────────────────────────────
+        settings_panel = QWidget()
+        settings_panel.setObjectName("RunBarPopover")
+        settings_panel.setAttribute(Qt.WA_StyledBackground, True)
+        sp = QVBoxLayout(settings_panel)
+        sp.setContentsMargins(12, 10, 12, 12)
+        sp.setSpacing(8)
+
+        mode_row = QHBoxLayout()
+        mode_row.setSpacing(8)
+        mode_row.addWidget(QLabel("Mode"))
+        self.execution_mode_box = QComboBox()
+        self.execution_mode_box.addItems(["Local only", "Hybrid allowed", "Cloud only"])
+        self.execution_mode_box.setMinimumWidth(150)
+        mode_row.addWidget(self.execution_mode_box)
+        mode_row.addStretch()
+        sp.addLayout(mode_row)
+
+        perms_label = QLabel("ALLOWED PAID PROVIDERS")
+        perms_label.setObjectName("PopoverHeading")
+        sp.addWidget(perms_label)
+
+        perms_container = QWidget()
+        perms = FlowLayout(perms_container, spacing=6)
+        self.allow_openai_checkbox = QCheckBox("OpenAI")
+        self.allow_deepseek_checkbox = QCheckBox("DeepSeek")
+        self.allow_kimi_checkbox = QCheckBox("Kimi")
+        self.allow_gemini_checkbox = QCheckBox("Gemini")
+        self.allow_anthropic_checkbox = QCheckBox("Anthropic")
+        self.allow_qwen_checkbox = QCheckBox("Qwen")
+        for box in (self.allow_openai_checkbox, self.allow_deepseek_checkbox,
+                    self.allow_kimi_checkbox, self.allow_gemini_checkbox,
+                    self.allow_anthropic_checkbox, self.allow_qwen_checkbox):
+            box.setChecked(False)
+            perms.addWidget(box)
+        sp.addWidget(perms_container)
+
+        tools_label = QLabel("MODELS")
+        tools_label.setObjectName("PopoverHeading")
+        sp.addWidget(tools_label)
+
+        tools_container = QWidget()
+        tools = FlowLayout(tools_container, spacing=6)
+        self.refresh_models_btn = QPushButton("Refresh models")
         self.refresh_models_btn.setObjectName("ChipBtn")
         self.refresh_models_btn.clicked.connect(self.load_provider_models)
-        top_row_2.addWidget(self.refresh_models_btn)
+        tools.addWidget(self.refresh_models_btn)
 
-        # Offers a one-click pull of Meta's Muse Glimmer. Hidden once the model
-        # is installed, since it is then just another entry in the model box.
+        # Hidden once Muse Glimmer is installed — it is then just another entry
+        # in the model box.
         self.get_muse_btn = QPushButton("⬇ Get Muse Glimmer")
         self.get_muse_btn.setObjectName("ChipBtn")
         self.get_muse_btn.clicked.connect(self.pull_muse_glimmer)
-        top_row_2.addWidget(self.get_muse_btn)
+        tools.addWidget(self.get_muse_btn)
 
-        self.model_guide_btn = QPushButton("Model Guide")
-
-
+        self.model_guide_btn = QPushButton("Model guide")
         self.model_guide_btn.setObjectName("ChipBtn")
         self.model_guide_btn.clicked.connect(self.show_model_guide)
-        top_row_2.addWidget(self.model_guide_btn)
+        tools.addWidget(self.model_guide_btn)
 
         self.docs_btn = QPushButton("Docs")
-
-
         self.docs_btn.setObjectName("ChipBtn")
         self.docs_btn.clicked.connect(self.show_docs)
-        top_row_2.addWidget(self.docs_btn)
+        tools.addWidget(self.docs_btn)
+        sp.addWidget(tools_container)
 
-        normal_layout.addWidget(top_row_2_container)
-        
+        self.runbar_menu = QMenu(self)
+        action = QWidgetAction(self.runbar_menu)
+        action.setDefaultWidget(settings_panel)
+        self.runbar_menu.addAction(action)
+        self.runbar_settings_btn.setMenu(self.runbar_menu)
+
         self.model_box.currentTextChanged.connect(self.save_provider_model_preference)
-
-        # Row 3: execution mode and API permissions — wraps when the pane narrows.
-        top_row_3_container = QWidget()
-        top_row_3 = FlowLayout(top_row_3_container, spacing=6)
-
-        self.execution_mode_box = QComboBox()
-        self.execution_mode_box.addItems(["Local only", "Hybrid allowed", "Cloud only"])
-        self.execution_mode_box.setMinimumWidth(120)
-        top_row_3.addWidget(QLabel("Mode:"))
-        top_row_3.addWidget(self.execution_mode_box)
-
-        self.allow_openai_checkbox = QCheckBox("OpenAI")
-        self.allow_openai_checkbox.setChecked(False)
-        top_row_3.addWidget(self.allow_openai_checkbox)
-
-        self.allow_deepseek_checkbox = QCheckBox("DeepSeek")
-        self.allow_deepseek_checkbox.setChecked(False)
-        top_row_3.addWidget(self.allow_deepseek_checkbox)
-
-        self.allow_kimi_checkbox = QCheckBox("Kimi")
-        self.allow_kimi_checkbox.setChecked(False)
-        top_row_3.addWidget(self.allow_kimi_checkbox)
-
-        self.allow_gemini_checkbox = QCheckBox("Gemini")
-        self.allow_gemini_checkbox.setChecked(False)
-        top_row_3.addWidget(self.allow_gemini_checkbox)
-
-        self.allow_anthropic_checkbox = QCheckBox("Anthropic")
-        self.allow_anthropic_checkbox.setChecked(False)
-        top_row_3.addWidget(self.allow_anthropic_checkbox)
-
-        self.allow_qwen_checkbox = QCheckBox("Qwen")
-        self.allow_qwen_checkbox.setChecked(False)
-        top_row_3.addWidget(self.allow_qwen_checkbox)
-
-        normal_layout.addWidget(top_row_3_container)
 
         self.input_box = QTextEdit()
         self.input_box.setPlaceholderText("Type your message here...")
@@ -1706,20 +1597,8 @@ class GodAI(QWidget):
 
         center_layout.addWidget(self.normal_panel)
 
-        self.build_audiobook_panel()
-        center_layout.addWidget(self.audiobook_panel)
-
         self.build_manager_panel()
         center_layout.addWidget(self.manager_panel)
-
-        self.build_author_panel()
-        center_layout.addWidget(self.author_panel)
-
-        self.build_manuscript_panel()
-        center_layout.addWidget(self.manuscript_panel)
-
-        self.build_music_panel()
-        center_layout.addWidget(self.music_panel)
 
         self.build_osint_panel()
         center_layout.addWidget(self.osint_panel)
@@ -1727,14 +1606,8 @@ class GodAI(QWidget):
         self.build_osint_heavy_panel()
         center_layout.addWidget(self.osint_heavy_panel)
 
-        self.build_webdesign_panel()
-        center_layout.addWidget(self.webdesign_panel)
-
         self.build_wifi_panel()
         center_layout.addWidget(self.wifi_panel)
-
-        self.build_fiverr_panel()
-        center_layout.addWidget(self.fiverr_panel)
 
         self.build_bug_bounty_panel()
         center_layout.addWidget(self.bug_bounty_panel)
@@ -1769,106 +1642,6 @@ class GodAI(QWidget):
             self.output_label.setVisible(False)
             self.output_box.setVisible(False)
     
-    def build_audiobook_panel(self):
-        self.audiobook_panel = QWidget()
-        panel_layout = QVBoxLayout(self.audiobook_panel)
-        panel_layout.setContentsMargins(0, 4, 0, 0)
-        panel_layout.setSpacing(6)
-
-        top_row = QHBoxLayout()
-        top_row.setSpacing(8)
-
-        books_group = QGroupBox("Select a Book to Convert")
-        books_layout = QVBoxLayout(books_group)
-        books_layout.setSpacing(4)
-
-        self.audiobook_book_list = QListWidget()
-        self.audiobook_book_list.setMinimumHeight(150)
-        self.audiobook_book_list.currentItemChanged.connect(lambda *_: self.estimate_audiobook_cost_from_selection())
-        books_layout.addWidget(self.audiobook_book_list)
-
-        books_btn_row = QHBoxLayout()
-        books_btn_row.setSpacing(6)
-
-        self.audiobook_refresh_btn = QPushButton("🔄 Refresh List")
-        self.audiobook_refresh_btn.clicked.connect(self.refresh_audiobook_books)
-        books_btn_row.addWidget(self.audiobook_refresh_btn)
-
-        books_btn_row.addStretch()
-
-        self.stop_btn = QPushButton("⛔ Stop")
-        self.stop_btn.clicked.connect(self.stop_current_task)
-        self.stop_btn.setEnabled(False)
-        self.stop_btn.setObjectName("DangerAction")
-        books_btn_row.addWidget(self.stop_btn)
-
-        self.audiobook_start_btn = QPushButton("▶ Start")
-        self.audiobook_start_btn.clicked.connect(self.start_selected_audiobook_book)
-        self.audiobook_start_btn.setMinimumWidth(130)
-        self.audiobook_start_btn.setObjectName("PrimaryAction")
-        books_btn_row.addWidget(self.audiobook_start_btn)
-        books_layout.addLayout(books_btn_row)
-
-        settings_group = QGroupBox("Conversion Settings")
-        settings_layout = QGridLayout(settings_group)
-        settings_layout.setVerticalSpacing(4)
-        settings_layout.setHorizontalSpacing(6)
-
-        settings_layout.addWidget(QLabel("Input Folder:"), 0, 0, 1, 2)
-        self.audiobook_input_path = QLineEdit()
-        self.audiobook_input_path.setReadOnly(True)
-        settings_layout.addWidget(self.audiobook_input_path, 1, 0)
-
-        self.audiobook_open_input_btn = QPushButton("Open")
-        self.audiobook_open_input_btn.clicked.connect(self.open_audiobook_input_folder)
-        settings_layout.addWidget(self.audiobook_open_input_btn, 1, 1)
-
-        settings_layout.addWidget(QLabel("Output Folder:"), 2, 0, 1, 2)
-        self.audiobook_output_path = QLineEdit()
-        self.audiobook_output_path.setReadOnly(True)
-        settings_layout.addWidget(self.audiobook_output_path, 3, 0)
-
-        self.audiobook_change_output_btn = QPushButton("Change")
-        self.audiobook_change_output_btn.clicked.connect(self.change_audiobook_output_folder)
-        settings_layout.addWidget(self.audiobook_change_output_btn, 3, 1)
-
-        voice_chunk_row = QHBoxLayout()
-        voice_chunk_row.setSpacing(8)
-        voice_chunk_row.addWidget(QLabel("Voice:"))
-        self.audiobook_voice_box = QComboBox()
-        self.audiobook_voice_box.addItems(["alloy", "verse", "aria", "coral", "sage"])
-        voice_chunk_row.addWidget(self.audiobook_voice_box)
-        voice_chunk_row.addWidget(QLabel("Chunk Tokens:"))
-        self.audiobook_chunk_input = QLineEdit("1400")
-        self.audiobook_chunk_input.setMaximumWidth(80)
-        voice_chunk_row.addWidget(self.audiobook_chunk_input)
-        settings_layout.addLayout(voice_chunk_row, 4, 0, 1, 2)
-
-        self.audiobook_cost_label = QLabel("Estimated cost: not calculated")
-        self.audiobook_cost_label.setWordWrap(True)
-        settings_layout.addWidget(self.audiobook_cost_label, 5, 0, 1, 2)
-
-        top_row.addWidget(books_group, 1)
-        top_row.addWidget(settings_group, 1)
-        panel_layout.addLayout(top_row)
-
-        progress_group = QGroupBox("Progress")
-        progress_layout = QVBoxLayout(progress_group)
-        progress_layout.setSpacing(4)
-
-        self.tool_progress = QProgressBar()
-        self.tool_progress.setMinimum(0)
-        self.tool_progress.setMaximum(100)
-        self.tool_progress.setValue(0)
-        self.tool_progress.setTextVisible(True)
-        progress_layout.addWidget(self.tool_progress)
-
-        self.audiobook_status_label = QLabel("[Ready] Select a book and click Start.")
-        progress_layout.addWidget(self.audiobook_status_label)
-
-        panel_layout.addWidget(progress_group)
-        self.audiobook_panel.hide()
-
     def build_manager_panel(self):
         self.manager_panel = QWidget()
         self.manager_panel.setObjectName("ManagerPanel")
@@ -1966,748 +1739,6 @@ class GodAI(QWidget):
         self.manager_load_models()
 
 
-    def build_author_panel(self):
-        self.author_panel = QWidget()
-        self.author_panel.setObjectName("AuthorPanel")
-        layout = QVBoxLayout(self.author_panel)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(4)
-
-        # ── Project bar ──────────────────────────────────────────────────────
-        project_bar = QWidget()
-        project_bar.setObjectName("AuthorProjectBar")
-        pb_layout = FlowLayout(project_bar, spacing=8)
-        pb_layout.setContentsMargins(4, 4, 4, 4)
-        pb_layout.setSpacing(8)
-
-        pb_layout.addWidget(QLabel("Title:"))
-        self.author_title_input = QLineEdit()
-        self.author_title_input.setPlaceholderText("Project title…")
-        self.author_title_input.setMinimumWidth(160)
-        pb_layout.addWidget(self.author_title_input)
-
-        pb_layout.addWidget(QLabel("Author:"))
-        self.author_name_input = QLineEdit()
-        self.author_name_input.setPlaceholderText("Pen name…")
-        pb_layout.addWidget(self.author_name_input)
-
-        pb_layout.addWidget(QLabel("Type:"))
-        self.author_content_type_box = QComboBox()
-        self.author_content_type_box.addItems(["Fiction", "Non-Fiction"])
-        self.author_content_type_box.currentTextChanged.connect(self._author_on_content_type_changed)
-        pb_layout.addWidget(self.author_content_type_box)
-
-        pb_layout.addWidget(QLabel("Genre:"))
-        self.author_genre_box = QComboBox()
-        self.author_genre_box.addItems([
-            "Literary Fiction", "Thriller", "Fantasy", "Sci-Fi", "Horror",
-            "Romance", "Historical", "Mystery", "Short Story", "Screenplay",
-            "Poetry", "Blog / Essay", "Other",
-        ])
-        pb_layout.addWidget(self.author_genre_box)
-
-        pb_layout.addWidget(QLabel("Tone:"))
-        self.author_tone_box = QComboBox()
-        self.author_tone_box.addItems([
-            "Neutral", "Dark", "Humorous", "Lyrical", "Tense", "Romantic",
-            "Gritty", "Whimsical", "Philosophical", "Commercial",
-        ])
-        pb_layout.addWidget(self.author_tone_box)
-
-        pb_layout.addWidget(QLabel("POV:"))
-        self.author_pov_box = QComboBox()
-        self.author_pov_box.addItems([
-            "Third Person Limited", "First Person",
-            "Third Person Omniscient", "Second Person",
-        ])
-        pb_layout.addWidget(self.author_pov_box)
-
-        layout.addWidget(project_bar)
-
-        divider = QFrame()
-        divider.setFrameShape(QFrame.HLine)
-        divider.setFrameShadow(QFrame.Sunken)
-        divider.setStyleSheet("color: #444;")
-        layout.addWidget(divider)
-
-        self.author_next_step_label = QLabel("")
-        self.author_next_step_label.setWordWrap(True)
-        self.author_next_step_label.setStyleSheet(
-            "background: rgba(60,255,136,0.08); border: 1px solid rgba(60,255,136,0.25); "
-            "border-radius: 6px; padding: 8px 10px; color: #3cff88; font-size: 12px;"
-        )
-        layout.addWidget(self.author_next_step_label)
-
-        # ── Book Profile (collapsed by default — persisted, injected into every mode) ──
-        profile_section = CollapsibleSection("📖  Book Profile", expanded=False)
-
-        profile_row1 = QWidget()
-        pr1 = QHBoxLayout(profile_row1)
-        pr1.setContentsMargins(4, 0, 4, 0)
-        pr1.setSpacing(8)
-        pr1.addWidget(QLabel("Hook:"))
-        self.author_profile_hook_input = QLineEdit()
-        self.author_profile_hook_input.setPlaceholderText("One-sentence pitch — the core promise of the book…")
-        pr1.addWidget(self.author_profile_hook_input)
-        profile_section.addWidget(profile_row1)
-
-        profile_row2 = QWidget()
-        pr2 = QHBoxLayout(profile_row2)
-        pr2.setContentsMargins(4, 0, 4, 0)
-        pr2.setSpacing(8)
-        pr2.addWidget(QLabel("Target reader:"))
-        self.author_profile_reader_input = QLineEdit()
-        self.author_profile_reader_input.setPlaceholderText("e.g. Women 25-40 navigating modern dating apps")
-        pr2.addWidget(self.author_profile_reader_input)
-        profile_section.addWidget(profile_row2)
-
-        profile_row3 = QWidget()
-        pr3 = QHBoxLayout(profile_row3)
-        pr3.setContentsMargins(4, 0, 4, 0)
-        pr3.setSpacing(8)
-        pr3.addWidget(QLabel("Comp titles:"))
-        self.author_profile_comps_input = QLineEdit()
-        self.author_profile_comps_input.setPlaceholderText("e.g. For readers of [Title A] and [Title B]")
-        pr3.addWidget(self.author_profile_comps_input)
-        profile_section.addWidget(profile_row3)
-
-        profile_row4 = QWidget()
-        pr4 = QHBoxLayout(profile_row4)
-        pr4.setContentsMargins(4, 0, 4, 0)
-        pr4.setSpacing(8)
-        pr4.addWidget(QLabel("Publishing path:"))
-        self.author_profile_path_box = QComboBox()
-        self.author_profile_path_box.addItems(["Undecided", "Self-Publishing (KDP)", "Traditional"])
-        pr4.addWidget(self.author_profile_path_box)
-        pr4.addStretch()
-        self.author_profile_save_btn = QPushButton("💾  Save Profile")
-        self.author_profile_save_btn.clicked.connect(self.author_save_profile)
-        pr4.addWidget(self.author_profile_save_btn)
-        profile_section.addWidget(profile_row4)
-
-        layout.addWidget(profile_section)
-
-        # ── Main workspace ────────────────────────────────────────────────────
-        workspace_splitter = QSplitter(Qt.Horizontal)
-
-        # Left: editable manuscript tabs
-        self.author_tabs = QTabWidget()
-
-        self.author_draft_box = QTextEdit()
-        self.author_draft_box.setPlaceholderText(
-            "Your draft appears here. You can type and edit directly alongside the AI."
-        )
-        self.author_tabs.addTab(self.author_draft_box, "✍️  Draft")
-
-        self.author_outline_box = QTextEdit()
-        self.author_outline_box.setPlaceholderText("Chapter and scene outline…")
-        self.author_tabs.addTab(self.author_outline_box, "📋  Outline")
-
-        self.author_characters_box = QTextEdit()
-        self.author_characters_box.setPlaceholderText("Character profiles, arcs, relationships…")
-        self.author_tabs.addTab(self.author_characters_box, "👤  Characters")
-
-        self.author_world_box = QTextEdit()
-        self.author_world_box.setPlaceholderText("World-building notes, lore, setting, rules…")
-        self.author_tabs.addTab(self.author_world_box, "🌍  World Notes")
-
-        self.author_chapters_tab = QWidget()
-        ct_layout = QVBoxLayout(self.author_chapters_tab)
-        ct_layout.setContentsMargins(6, 6, 6, 6)
-        ct_layout.setSpacing(6)
-
-        self.author_chapters_stats_label = QLabel("No chapters detected yet.")
-        self.author_chapters_stats_label.setStyleSheet("font-size: 12px; color: #888;")
-        ct_layout.addWidget(self.author_chapters_stats_label)
-
-        self.author_chapters_list = QListWidget()
-        self.author_chapters_list.itemDoubleClicked.connect(self._author_jump_to_chapter)
-        ct_layout.addWidget(self.author_chapters_list, 1)
-
-        author_chapters_refresh_btn = QPushButton("🔄  Refresh Chapters")
-        author_chapters_refresh_btn.clicked.connect(self._author_refresh_chapters)
-        ct_layout.addWidget(author_chapters_refresh_btn)
-
-        self._author_chapter_offsets: list = []
-        self.author_tabs.addTab(self.author_chapters_tab, "📑  Chapters")
-        self.author_tabs.currentChanged.connect(self._author_on_tab_changed)
-
-        workspace_splitter.addWidget(self.author_tabs)
-
-        # Right: control sidebar
-        sidebar = QWidget()
-        sidebar.setObjectName("AuthorSidebar")
-        sidebar.setMinimumWidth(210)
-        sidebar.setMaximumWidth(270)
-        sb = QVBoxLayout(sidebar)
-        sb.setContentsMargins(8, 4, 4, 4)
-        sb.setSpacing(6)
-
-        sb.addWidget(QLabel("Direction:"))
-        self.author_direction_input = QTextEdit()
-        self.author_direction_input.setPlaceholderText(
-            "Describe what to write, the next scene, or give revision instructions…"
-        )
-        self.author_direction_input.setFixedHeight(90)
-        sb.addWidget(self.author_direction_input)
-
-        sb.addWidget(QLabel("Task:"))
-        self.author_task_box = QComboBox()
-        # Populated by _author_on_content_type_changed() once the panel finishes building —
-        # the task list depends on the Type combo (Fiction/Non-Fiction) in the Project Bar.
-        sb.addWidget(self.author_task_box)
-
-        sb.addWidget(QLabel("Provider:"))
-        self.author_provider_box = QComboBox()
-        self.author_provider_box.addItems(["ollama", "openai", "deepseek", "kimi", "gemini", "anthropic", "qwen"])
-        self.author_provider_box.setCurrentText("anthropic")
-        sb.addWidget(self.author_provider_box)
-
-        sb.addWidget(QLabel("Model:"))
-        self.author_model_box = QComboBox()
-        sb.addWidget(self.author_model_box)
-
-        self.author_write_btn = QPushButton("✍️  Write")
-        self.author_write_btn.setMinimumHeight(34)
-        self.author_write_btn.setStyleSheet(
-            "QPushButton { background-color: #1a1a4d; border: 1px solid #7c7cff;"
-            " font-weight: bold; color: #c0c0ff; }"
-            "QPushButton:hover { background-color: #22227a; }"
-        )
-        self.author_write_btn.clicked.connect(self.author_write)
-        sb.addWidget(self.author_write_btn)
-
-        self.author_continue_btn = QPushButton("▶  Continue")
-        self.author_continue_btn.setMinimumHeight(34)
-        self.author_continue_btn.setStyleSheet(
-            "QPushButton { background-color: #1a2d1a; border: 1px solid #3cff88;"
-            " font-weight: bold; color: #3cff88; }"
-            "QPushButton:hover { background-color: #1e3d1e; }"
-        )
-        self.author_continue_btn.clicked.connect(self.author_continue)
-        sb.addWidget(self.author_continue_btn)
-
-        self.author_stop_btn = QPushButton("⬛  Stop")
-        self.author_stop_btn.setEnabled(False)
-        self.author_stop_btn.setMinimumHeight(34)
-        self.author_stop_btn.setStyleSheet(
-            "QPushButton { background-color: #2b1010; border: 1px solid #ff4444;"
-            " color: #ff5555; font-weight: bold; }"
-            "QPushButton:hover { background-color: #3d1515; }"
-        )
-        self.author_stop_btn.clicked.connect(self.author_stop)
-        sb.addWidget(self.author_stop_btn)
-
-        sep1 = QFrame()
-        sep1.setFrameShape(QFrame.HLine)
-        sep1.setStyleSheet("color: #444;")
-        sb.addWidget(sep1)
-
-        word_group = QGroupBox("Words")
-        word_group.setObjectName("AuthorWordGroup")
-        wg_layout = QVBoxLayout(word_group)
-        wg_layout.setContentsMargins(4, 4, 4, 4)
-        self.author_word_count_label = QLabel("0")
-        self.author_word_count_label.setAlignment(Qt.AlignCenter)
-        self.author_word_count_label.setStyleSheet(
-            "font-size: 26px; font-weight: bold; color: #f0c040;"
-        )
-        wg_layout.addWidget(self.author_word_count_label)
-        sb.addWidget(word_group)
-
-        scene_group = QGroupBox("Scenes / Chapters")
-        scene_group.setObjectName("AuthorSceneGroup")
-        sg_layout = QVBoxLayout(scene_group)
-        sg_layout.setContentsMargins(4, 4, 4, 4)
-        self.author_scene_count_label = QLabel("0")
-        self.author_scene_count_label.setAlignment(Qt.AlignCenter)
-        self.author_scene_count_label.setStyleSheet(
-            "font-size: 20px; font-weight: bold; color: #a0a0ff;"
-        )
-        sg_layout.addWidget(self.author_scene_count_label)
-        sb.addWidget(scene_group)
-
-        sb.addStretch()
-
-        sep2 = QFrame()
-        sep2.setFrameShape(QFrame.HLine)
-        sep2.setStyleSheet("color: #444;")
-        sb.addWidget(sep2)
-
-        self.author_save_btn = QPushButton("💾  Save Draft")
-        self.author_save_btn.setEnabled(False)
-        self.author_save_btn.clicked.connect(self.author_save)
-        sb.addWidget(self.author_save_btn)
-
-        sb.addWidget(QLabel("Author name (for export):"))
-        self.author_export_author_input = QLineEdit()
-        self.author_export_author_input.setPlaceholderText("e.g. Celeste Morgan")
-        sb.addWidget(self.author_export_author_input)
-
-        export_row = QHBoxLayout()
-        self.author_export_format_box = QComboBox()
-        self.author_export_format_box.addItems(["EPUB", "DOCX", "PDF"])
-        export_row.addWidget(self.author_export_format_box)
-        self.author_export_btn = QPushButton("📤  Export Book")
-        self.author_export_btn.clicked.connect(self.author_export_book)
-        export_row.addWidget(self.author_export_btn)
-        sb.addLayout(export_row)
-
-        self.author_clear_btn = QPushButton("Clear All")
-        self.author_clear_btn.clicked.connect(self.author_clear)
-        sb.addWidget(self.author_clear_btn)
-
-        workspace_splitter.addWidget(sidebar)
-        workspace_splitter.setSizes([760, 240])
-
-        # ── Mode toggle row: Write | Publish & Market ────────────────────────
-        mode_row = QHBoxLayout()
-        mode_row.setSpacing(0)
-
-        self.author_mode_write_btn = QPushButton("✍️  Write")
-        self.author_mode_write_btn.setCheckable(True)
-        self.author_mode_write_btn.setChecked(True)
-        self.author_mode_write_btn.setMinimumHeight(32)
-        self.author_mode_write_btn.setStyleSheet(
-            "QPushButton { background-color: #1a1a4d; border: 1px solid #7c7cff;"
-            " font-weight: bold; color: #c0c0ff; border-radius: 0; }"
-            "QPushButton:checked { background-color: #22227a; border: 2px solid #a0a0ff; }"
-            "QPushButton:hover { background-color: #22227a; }"
-        )
-        self.author_mode_write_btn.clicked.connect(lambda: self._author_set_mode("write"))
-        mode_row.addWidget(self.author_mode_write_btn)
-
-        self.author_mode_pubmkt_btn = QPushButton("📣  Publish & Market")
-        self.author_mode_pubmkt_btn.setCheckable(True)
-        self.author_mode_pubmkt_btn.setMinimumHeight(32)
-        self.author_mode_pubmkt_btn.setStyleSheet(
-            "QPushButton { background-color: #2d1a0e; border: 1px solid #ff9944;"
-            " font-weight: bold; color: #ffb366; border-radius: 0; }"
-            "QPushButton:checked { background-color: #3d2210; border: 2px solid #ffa855; }"
-            "QPushButton:hover { background-color: #3d2210; }"
-        )
-        self.author_mode_pubmkt_btn.clicked.connect(lambda: self._author_set_mode("pubmkt"))
-        mode_row.addWidget(self.author_mode_pubmkt_btn)
-
-        layout.addLayout(mode_row)
-
-        # ── Content stack (Write / Publish & Market) ─────────────────────────
-        self.author_content_stack = QStackedWidget()
-        self.author_content_stack.addWidget(workspace_splitter)   # page 0: write
-
-        # ── Publish & Market composite widget ────────────────────────────────
-        pubmkt_widget = QWidget()
-        pm_layout = QVBoxLayout(pubmkt_widget)
-        pm_layout.setContentsMargins(0, 4, 0, 0)
-        pm_layout.setSpacing(6)
-
-        # Sub-mode toggle: Publish | Market
-        sub_row = QHBoxLayout()
-        sub_row.setSpacing(0)
-
-        self.author_sub_publish_btn = QPushButton("📄  Publish")
-        self.author_sub_publish_btn.setCheckable(True)
-        self.author_sub_publish_btn.setChecked(True)
-        self.author_sub_publish_btn.setMinimumHeight(28)
-        self.author_sub_publish_btn.setStyleSheet(
-            "QPushButton { background-color: #1a2d1a; border: 1px solid #3cff88;"
-            " font-weight: bold; color: #3cff88; border-radius: 0; }"
-            "QPushButton:checked { background-color: #1e3d1e; border: 2px solid #3cff88; }"
-            "QPushButton:hover { background-color: #1e3d1e; }"
-        )
-        self.author_sub_publish_btn.clicked.connect(lambda: self._author_set_sub_mode("publish"))
-        sub_row.addWidget(self.author_sub_publish_btn)
-
-        self.author_sub_market_btn = QPushButton("📢  Market")
-        self.author_sub_market_btn.setCheckable(True)
-        self.author_sub_market_btn.setMinimumHeight(28)
-        self.author_sub_market_btn.setStyleSheet(
-            "QPushButton { background-color: #2d1a0e; border: 1px solid #ff9944;"
-            " font-weight: bold; color: #ffb366; border-radius: 0; }"
-            "QPushButton:checked { background-color: #3d2210; border: 2px solid #ffa855; }"
-            "QPushButton:hover { background-color: #3d2210; }"
-        )
-        self.author_sub_market_btn.clicked.connect(lambda: self._author_set_sub_mode("market"))
-        sub_row.addWidget(self.author_sub_market_btn)
-
-        pm_layout.addLayout(sub_row)
-
-        self.author_sub_stack = QStackedWidget()
-
-        # ── Publish page ──────────────────────────────────────────────────────
-        publish_page = QWidget()
-        pub_outer = QHBoxLayout(publish_page)
-        pub_outer.setContentsMargins(0, 0, 0, 0)
-        pub_outer.setSpacing(8)
-
-        self.author_pub_output = QTextEdit()
-        self.author_pub_output.setPlaceholderText(
-            "Generated publishing document appears here. Fully editable."
-        )
-        pub_outer.addWidget(self.author_pub_output, 1)
-
-        pub_ctrl = QWidget()
-        pub_ctrl.setObjectName("AuthorPubCtrl")
-        pub_ctrl.setMinimumWidth(210)
-        pub_ctrl.setMaximumWidth(270)
-        pc = QVBoxLayout(pub_ctrl)
-        pc.setContentsMargins(6, 0, 0, 0)
-        pc.setSpacing(5)
-
-        pc.addWidget(QLabel("Output Type:"))
-        self.author_pub_type_box = QComboBox()
-        self.author_pub_type_box.addItems([
-            "Synopsis — 1 Page", "Synopsis — 3 Page", "Query Letter",
-            "Book Proposal", "Back-Cover Blurb", "Author Bio", "Chapter Breakdown",
-        ])
-        pc.addWidget(self.author_pub_type_box)
-
-        pc.addWidget(QLabel("Word Count Target:"))
-        self.author_pub_wordcount_input = QLineEdit()
-        self.author_pub_wordcount_input.setPlaceholderText("e.g. 80,000")
-        pc.addWidget(self.author_pub_wordcount_input)
-
-        pc.addWidget(QLabel("Comp Titles:"))
-        self.author_pub_comps_input = QLineEdit()
-        self.author_pub_comps_input.setPlaceholderText("e.g. Gone Girl meets Dark Places")
-        pc.addWidget(self.author_pub_comps_input)
-
-        pc.addWidget(QLabel("Pitch Tone:"))
-        self.author_pub_pitch_tone_box = QComboBox()
-        self.author_pub_pitch_tone_box.addItems(["Professional", "Conversational", "High-Concept"])
-        pc.addWidget(self.author_pub_pitch_tone_box)
-
-        pc.addWidget(QLabel("Extra Notes:"))
-        self.author_pub_notes_input = QTextEdit()
-        self.author_pub_notes_input.setPlaceholderText("Target audience, themes, hook, extra context…")
-        self.author_pub_notes_input.setFixedHeight(65)
-        pc.addWidget(self.author_pub_notes_input)
-
-        pc.addStretch()
-
-        self.author_pub_generate_btn = QPushButton("Generate")
-        self.author_pub_generate_btn.setMinimumHeight(34)
-        self.author_pub_generate_btn.setStyleSheet(
-            "QPushButton { background-color: #1a2d1a; border: 1px solid #3cff88;"
-            " font-weight: bold; color: #3cff88; }"
-            "QPushButton:hover { background-color: #1e3d1e; }"
-        )
-        self.author_pub_generate_btn.clicked.connect(self.author_pub_generate)
-        pc.addWidget(self.author_pub_generate_btn)
-
-        self.author_pub_stop_btn = QPushButton("Stop")
-        self.author_pub_stop_btn.setEnabled(False)
-        self.author_pub_stop_btn.setStyleSheet(
-            "QPushButton { background-color: #2b1010; border: 1px solid #ff4444;"
-            " color: #ff5555; font-weight: bold; }"
-            "QPushButton:hover { background-color: #3d1515; }"
-        )
-        self.author_pub_stop_btn.clicked.connect(self.author_pub_stop)
-        pc.addWidget(self.author_pub_stop_btn)
-
-        self.author_pub_copy_btn = QPushButton("Copy to Clipboard")
-        self.author_pub_copy_btn.clicked.connect(self.author_pub_copy)
-        pc.addWidget(self.author_pub_copy_btn)
-
-        self.author_pub_save_btn = QPushButton("Save as File")
-        self.author_pub_save_btn.setEnabled(False)
-        self.author_pub_save_btn.clicked.connect(self.author_pub_save)
-        pc.addWidget(self.author_pub_save_btn)
-
-        pub_outer.addWidget(pub_ctrl)
-        self.author_sub_stack.addWidget(publish_page)   # sub-page 0
-
-        # ── Market page ───────────────────────────────────────────────────────
-        market_page = QWidget()
-        mkt_outer = QHBoxLayout(market_page)
-        mkt_outer.setContentsMargins(0, 0, 0, 0)
-        mkt_outer.setSpacing(8)
-
-        self.author_mkt_output = QTextEdit()
-        self.author_mkt_output.setPlaceholderText(
-            "Generated marketing copy appears here. Fully editable."
-        )
-        mkt_outer.addWidget(self.author_mkt_output, 1)
-
-        mkt_ctrl = QWidget()
-        mkt_ctrl.setObjectName("AuthorMktCtrl")
-        mkt_ctrl.setMinimumWidth(210)
-        mkt_ctrl.setMaximumWidth(270)
-        mc = QVBoxLayout(mkt_ctrl)
-        mc.setContentsMargins(6, 0, 0, 0)
-        mc.setSpacing(5)
-
-        mc.addWidget(QLabel("Platform:"))
-        self.author_mkt_platform_box = QComboBox()
-        self.author_mkt_platform_box.addItems([
-            "Amazon Description", "KDP Listing", "Goodreads Blurb", "Instagram Post",
-            "Twitter / X Thread", "TikTok Caption", "Pinterest Pin Description",
-            "YouTube Description", "Newsletter", "Press Release", "Book Club Questions",
-            "ARC Outreach Email", "Launch Team Email", "Podcast Pitch", "Author Website Bio",
-        ])
-        mc.addWidget(self.author_mkt_platform_box)
-
-        mc.addWidget(QLabel("Hook / Logline:"))
-        self.author_mkt_hook_input = QLineEdit()
-        self.author_mkt_hook_input.setPlaceholderText("One sentence that sells the book")
-        mc.addWidget(self.author_mkt_hook_input)
-
-        mc.addWidget(QLabel("Comp Titles:"))
-        self.author_mkt_comps_input = QLineEdit()
-        self.author_mkt_comps_input.setPlaceholderText("e.g. Reaper's Creek meets Harlan Coben")
-        mc.addWidget(self.author_mkt_comps_input)
-
-        mc.addWidget(QLabel("Tone:"))
-        self.author_mkt_tone_box = QComboBox()
-        self.author_mkt_tone_box.addItems(["Punchy", "Literary", "Warm", "Hype", "Mysterious"])
-        mc.addWidget(self.author_mkt_tone_box)
-
-        mc.addWidget(QLabel("Extra Notes:"))
-        self.author_mkt_notes_input = QTextEdit()
-        self.author_mkt_notes_input.setPlaceholderText("Target audience, mood, key themes…")
-        self.author_mkt_notes_input.setFixedHeight(65)
-        mc.addWidget(self.author_mkt_notes_input)
-
-        mc.addStretch()
-
-        self.author_mkt_generate_btn = QPushButton("Generate")
-        self.author_mkt_generate_btn.setMinimumHeight(34)
-        self.author_mkt_generate_btn.setStyleSheet(
-            "QPushButton { background-color: #2d1a0e; border: 1px solid #ff9944;"
-            " font-weight: bold; color: #ffb366; }"
-            "QPushButton:hover { background-color: #3d2210; }"
-        )
-        self.author_mkt_generate_btn.clicked.connect(self.author_mkt_generate)
-        mc.addWidget(self.author_mkt_generate_btn)
-
-        self.author_mkt_stop_btn = QPushButton("Stop")
-        self.author_mkt_stop_btn.setEnabled(False)
-        self.author_mkt_stop_btn.setStyleSheet(
-            "QPushButton { background-color: #2b1010; border: 1px solid #ff4444;"
-            " color: #ff5555; font-weight: bold; }"
-            "QPushButton:hover { background-color: #3d1515; }"
-        )
-        self.author_mkt_stop_btn.clicked.connect(self.author_mkt_stop)
-        mc.addWidget(self.author_mkt_stop_btn)
-
-        self.author_mkt_copy_btn = QPushButton("Copy to Clipboard")
-        self.author_mkt_copy_btn.clicked.connect(self.author_mkt_copy)
-        mc.addWidget(self.author_mkt_copy_btn)
-
-        self.author_mkt_save_btn = QPushButton("Save as File")
-        self.author_mkt_save_btn.setEnabled(False)
-        self.author_mkt_save_btn.clicked.connect(self.author_mkt_save)
-        mc.addWidget(self.author_mkt_save_btn)
-
-        mkt_outer.addWidget(mkt_ctrl)
-        self.author_sub_stack.addWidget(market_page)   # sub-page 1
-
-        pm_layout.addWidget(self.author_sub_stack, 1)
-        self.author_content_stack.addWidget(pubmkt_widget)   # page 1
-
-        layout.addWidget(self.author_content_stack, 1)
-
-        self.author_status_label = QLabel("")
-        self.author_status_label.setStyleSheet("font-size: 12px; color: #888; padding: 2px 4px;")
-        layout.addWidget(self.author_status_label)
-
-        self.author_draft_box.textChanged.connect(self._author_update_counts)
-
-        self.author_panel.hide()
-
-        self.author_provider_box.currentTextChanged.connect(self.author_load_models)
-        self.author_load_models()
-
-        self._author_on_content_type_changed(self.author_content_type_box.currentText())
-        self._author_load_profile()
-
-    # ── Music Agent Panel ─────────────────────────────────────────────────────
-    def build_music_panel(self):
-        self.music_panel = QWidget()
-        self.music_panel.setObjectName("MusicPanel")
-        layout = QVBoxLayout(self.music_panel)
-        layout.setContentsMargins(8, 8, 8, 8)
-        layout.setSpacing(8)
-
-        # ── Setup form ──────────────────────────────────────────────────────
-        setup_group = QGroupBox("Artist Setup")
-        setup_group.setObjectName("MusicSetupGroup")
-        setup_layout = QGridLayout(setup_group)
-        setup_layout.setSpacing(6)
-
-        setup_layout.addWidget(QLabel("Artist / Project Name:"), 0, 0)
-        self.music_artist_input = QLineEdit()
-        self.music_artist_input.setPlaceholderText("e.g. Nova Drift, DJ Phantom, The Hollow Road")
-        setup_layout.addWidget(self.music_artist_input, 0, 1)
-
-        setup_layout.addWidget(QLabel("Genre:"), 0, 2)
-        self.music_genre_box = QComboBox()
-        self.music_genre_box.addItems([
-            "Pop", "Rock", "Hip-Hop", "Electronic", "Jazz", "Classical",
-            "R&B", "Metal", "Indie", "Folk", "Country", "Latin", "Reggae",
-            "Ambient", "World", "Other",
-        ])
-        setup_layout.addWidget(self.music_genre_box, 0, 3)
-
-        setup_layout.addWidget(QLabel("Release Type:"), 1, 0)
-        self.music_release_type_box = QComboBox()
-        self.music_release_type_box.addItems(["Single", "EP (3–6 tracks)", "Album (7+ tracks)", "Mixtape"])
-        setup_layout.addWidget(self.music_release_type_box, 1, 1)
-
-        setup_layout.addWidget(QLabel("Distributor:"), 1, 2)
-        self.music_distributor_box = QComboBox()
-        self.music_distributor_box.addItems([
-            "Not signed up yet", "DistroKid", "TuneCore", "CD Baby", "Amuse", "AWAL", "Other",
-        ])
-        setup_layout.addWidget(self.music_distributor_box, 1, 3)
-
-        setup_layout.addWidget(QLabel("Target Audience (optional):"), 2, 0)
-        self.music_audience_input = QLineEdit()
-        self.music_audience_input.setPlaceholderText(
-            "e.g. 18–25 fans of lo-fi hip-hop, gym-goers, indie bedroom pop listeners"
-        )
-        setup_layout.addWidget(self.music_audience_input, 2, 1, 1, 3)
-
-        setup_layout.addWidget(QLabel("Describe Your Music:"), 3, 0)
-        self.music_query_input = QTextEdit()
-        self.music_query_input.setPlaceholderText(
-            "Describe your sound, influences, vibe, and anything specific about this release "
-            "(e.g. dark trap beats with melodic hooks, influenced by Travis Scott and Frank Ocean, "
-            "releasing a 4-track EP about late-night city life)…"
-        )
-        self.music_query_input.setFixedHeight(70)
-        setup_layout.addWidget(self.music_query_input, 3, 1, 1, 3)
-
-        layout.addWidget(setup_group)
-
-        # ── Provider row ────────────────────────────────────────────────────
-        provider_row_container = QWidget()
-        provider_row = FlowLayout(provider_row_container, spacing=6)
-
-        self.music_provider_box = QComboBox()
-        self.music_provider_box.addItems(["ollama", "openai", "deepseek", "kimi", "gemini", "anthropic", "qwen"])
-        self.music_provider_box.setCurrentText("anthropic")
-        provider_row.addWidget(self.music_provider_box)
-
-        self.music_model_box = QComboBox()
-        self.music_model_box.setMinimumWidth(200)
-        provider_row.addWidget(self.music_model_box)
-
-        self.music_analyse_btn = QPushButton("Generate Plan")
-        self.music_analyse_btn.setMinimumWidth(140)
-        self.music_analyse_btn.setObjectName("PrimaryAction")
-        self.music_analyse_btn.clicked.connect(self.music_analyse)
-        provider_row.addWidget(self.music_analyse_btn)
-
-        self.music_stop_btn = QPushButton("Stop")
-        self.music_stop_btn.setEnabled(False)
-        self.music_stop_btn.setObjectName("DangerAction")
-        self.music_stop_btn.clicked.connect(self.music_stop)
-        provider_row.addWidget(self.music_stop_btn)
-
-        self.music_help_btn = QPushButton("Help")
-
-
-        self.music_help_btn.setObjectName("ChipBtn")
-        self.music_help_btn.setToolTip("Open Music Agent documentation")
-        self.music_help_btn.clicked.connect(self.show_agent_docs)
-        provider_row.addWidget(self.music_help_btn)
-
-        layout.addWidget(provider_row_container)
-
-        # ── Results area (tabs + sidebar) ───────────────────────────────────
-        results_splitter = QSplitter(Qt.Horizontal)
-
-        self.music_tabs = QTabWidget()
-
-        self.music_profile_box = QTextBrowser()
-        self.music_profile_box.setOpenExternalLinks(False)
-        self.music_tabs.addTab(self.music_profile_box, "Artist Profile")
-
-        self.music_release_box = QTextBrowser()
-        self.music_tabs.addTab(self.music_release_box, "Release Setup")
-
-        self.music_distribution_box = QTextBrowser()
-        self.music_tabs.addTab(self.music_distribution_box, "Distribution")
-
-        self.music_strategy_box = QTextBrowser()
-        self.music_tabs.addTab(self.music_strategy_box, "Spotify Strategy")
-
-        self.music_income_box = QTextBrowser()
-        self.music_tabs.addTab(self.music_income_box, "Income Roadmap")
-
-        results_splitter.addWidget(self.music_tabs)
-
-        # ── Sidebar indicators ──────────────────────────────────────────────
-        indicators_widget = QWidget()
-        indicators_layout = QVBoxLayout(indicators_widget)
-        indicators_layout.setContentsMargins(6, 6, 6, 6)
-        indicators_layout.setSpacing(8)
-
-        release_group = QGroupBox("Release Type")
-        release_group.setObjectName("MusicReleaseGroup")
-        release_layout = QVBoxLayout(release_group)
-        self.music_release_label = QLabel("—")
-        self.music_release_label.setAlignment(Qt.AlignCenter)
-        self.music_release_label.setStyleSheet("font-size: 14px; font-weight: bold; color: #3cff88;")
-        release_layout.addWidget(self.music_release_label)
-        indicators_layout.addWidget(release_group)
-
-        genre_group = QGroupBox("Genre")
-        genre_group.setObjectName("MusicGenreGroup")
-        genre_layout = QVBoxLayout(genre_group)
-        self.music_genre_label = QLabel("—")
-        self.music_genre_label.setAlignment(Qt.AlignCenter)
-        self.music_genre_label.setStyleSheet("font-size: 14px; font-weight: bold; color: #4db8ff;")
-        genre_layout.addWidget(self.music_genre_label)
-        indicators_layout.addWidget(genre_group)
-
-        dist_group = QGroupBox("Distributor")
-        dist_group.setObjectName("MusicDistGroup")
-        dist_layout = QVBoxLayout(dist_group)
-        self.music_dist_label = QLabel("—")
-        self.music_dist_label.setAlignment(Qt.AlignCenter)
-        self.music_dist_label.setWordWrap(True)
-        self.music_dist_label.setStyleSheet("font-size: 13px; font-weight: bold; color: #f0c040;")
-        dist_layout.addWidget(self.music_dist_label)
-        indicators_layout.addWidget(dist_group)
-
-        steps_group = QGroupBox("Procedure")
-        steps_group.setObjectName("MusicStepsGroup")
-        steps_layout = QVBoxLayout(steps_group)
-        self.music_steps_label = QLabel(
-            "1. Artist Profile\n2. Release Setup\n3. Distribution\n4. Spotify Strategy\n5. Income Roadmap"
-        )
-        self.music_steps_label.setStyleSheet("font-size: 11px; color: #aaa;")
-        steps_layout.addWidget(self.music_steps_label)
-        indicators_layout.addWidget(steps_group)
-
-        indicators_layout.addStretch()
-
-        self.music_save_btn = QPushButton("Save Full Plan")
-        self.music_save_btn.setEnabled(False)
-        self.music_save_btn.clicked.connect(self.music_save)
-        indicators_layout.addWidget(self.music_save_btn)
-
-        self.music_clear_btn = QPushButton("Clear")
-        self.music_clear_btn.clicked.connect(self.music_clear)
-        indicators_layout.addWidget(self.music_clear_btn)
-
-        results_splitter.addWidget(indicators_widget)
-        results_splitter.setSizes([700, 200])
-
-        layout.addWidget(results_splitter, 1)
-
-        self.music_status_label = QLabel("")
-        self.music_status_label.setStyleSheet("font-size: 12px; color: #888;")
-        layout.addWidget(self.music_status_label)
-
-        self.music_panel.hide()
-
-        self.music_provider_box.currentTextChanged.connect(self.music_load_models)
-        self.music_load_models()
-
-    # ── NFL Prop Bet Panel ───────────────────────────────────────────────────
     def build_osint_panel(self):
         self.osint_panel = QWidget()
         self.osint_panel.setObjectName("OSINTPanel")
@@ -2765,35 +1796,17 @@ class GodAI(QWidget):
         setup_layout.addWidget(provider_row_container, 2, 0, 1, 4)
         layout.addWidget(setup_group)
 
-        # ── Output tabs ───────────────────────────────────────────────────────
-        self.osint_tabs = QTabWidget()
+        # ── Output ────────────────────────────────────────────────────────────
+        # The answer is already parsed into four sections; render it as those
+        # sections rather than pouring each into its own tabbed text box. Copy
+        # lives per card, so the dorks are still one click from the clipboard.
+        self.osint_stream_box = QTextBrowser()
+        self.osint_stream_box.setOpenExternalLinks(False)
+        self.osint_stream_box.setVisible(False)
+        layout.addWidget(self.osint_stream_box, 1)
 
-        self.osint_structure_box = QTextBrowser()
-        self.osint_structure_box.setOpenExternalLinks(False)
-        self.osint_tabs.addTab(self.osint_structure_box, "Query Structure")
-
-        dorks_widget = QWidget()
-        dorks_layout = QVBoxLayout(dorks_widget)
-        dorks_layout.setContentsMargins(0, 4, 0, 0)
-        dorks_layout.setSpacing(4)
-        self.osint_dorks_box = QTextBrowser()
-        self.osint_dorks_box.setOpenExternalLinks(False)
-        dorks_layout.addWidget(self.osint_dorks_box, 1)
-        copy_dorks_btn = QPushButton("Copy Dorks")
-        copy_dorks_btn.setMaximumWidth(120)
-        copy_dorks_btn.clicked.connect(self._osint_copy_dorks)
-        dorks_layout.addWidget(copy_dorks_btn)
-        self.osint_tabs.addTab(dorks_widget, "Google Dorks")
-
-        self.osint_sources_box = QTextBrowser()
-        self.osint_sources_box.setOpenExternalLinks(False)
-        self.osint_tabs.addTab(self.osint_sources_box, "Public Sources")
-
-        self.osint_summary_box = QTextBrowser()
-        self.osint_summary_box.setOpenExternalLinks(False)
-        self.osint_tabs.addTab(self.osint_summary_box, "Summary & Next Steps")
-
-        layout.addWidget(self.osint_tabs, 1)
+        self.osint_sections = SectionView()
+        layout.addWidget(self.osint_sections, 1)
 
         # ── Bottom bar ────────────────────────────────────────────────────────
         bottom_row = QHBoxLayout()
@@ -3085,13 +2098,19 @@ class GodAI(QWidget):
         self.osint_worker.start()
 
     def _osint_on_token(self, token: str):
+        # While tokens arrive there are no sections to show yet, so the raw
+        # stream is the view; the cards replace it once the answer is whole.
         self._last_osint_response = getattr(self, "_last_osint_response", "") + token
-        self.osint_structure_box.setPlainText(self._last_osint_response)
-        self.osint_structure_box.moveCursor(QTextCursor.End)
+        self.osint_sections.setVisible(False)
+        self.osint_stream_box.setVisible(True)
+        self.osint_stream_box.setPlainText(self._last_osint_response)
+        self.osint_stream_box.moveCursor(QTextCursor.End)
 
     def _osint_on_finished(self, full_response: str):
         self._last_osint_response = full_response
         self.record_request("osint", full_response)
+        self.osint_stream_box.setVisible(False)
+        self.osint_sections.setVisible(True)
         self._populate_osint_tabs(full_response)
         self.osint_status_label.setText("Done.")
         self.osint_analyse_btn.setEnabled(True)
@@ -3100,7 +2119,9 @@ class GodAI(QWidget):
     def _osint_on_error(self, error: str):
         self.abandon_request("osint")
         separator = "─" * 50
-        self.osint_structure_box.setPlainText(
+        self.osint_stream_box.setVisible(True)
+        self.osint_sections.setVisible(False)
+        self.osint_stream_box.setPlainText(
             f"⚠  ERROR\n{separator}\n{error}\n{separator}"
         )
         self.osint_status_label.setText("Error.")
@@ -3121,26 +2142,22 @@ class GodAI(QWidget):
         self._last_osint_response = ""
 
     def _osint_clear_tabs(self):
-        for box in (
-            self.osint_structure_box,
-            self.osint_dorks_box,
-            self.osint_sources_box,
-            self.osint_summary_box,
-        ):
-            box.clear()
-
-    def _osint_copy_dorks(self):
-        text = self.osint_dorks_box.toPlainText().strip()
-        if text:
-            QApplication.clipboard().setText(text)
-            self.osint_status_label.setText("Dorks copied to clipboard.")
+        self.osint_sections.clear()
+        self.osint_stream_box.clear()
+        self.osint_stream_box.setVisible(False)
+        self.osint_sections.setVisible(True)
 
     def _populate_osint_tabs(self, text: str):
         sections = self._parse_osint_sections(text)
-        self.osint_structure_box.setPlainText(sections.get("structure", text))
-        self.osint_dorks_box.setPlainText(sections.get("dorks", ""))
-        self.osint_sources_box.setPlainText(sections.get("sources", ""))
-        self.osint_summary_box.setPlainText(sections.get("summary", ""))
+        self.osint_sections.show_sections(
+            [
+                ("Query structure", sections.get("structure", "")),
+                ("Google dorks", sections.get("dorks", ""), True),
+                ("Public sources", sections.get("sources", "")),
+                ("Summary and next steps", sections.get("summary", "")),
+            ],
+            raw=text,
+        )
 
     def _parse_osint_sections(self, text: str) -> dict:
         import re
@@ -3471,162 +2488,6 @@ class GodAI(QWidget):
         self.osint_heavy_tabs.setCurrentIndex(self.osint_heavy_tabs.indexOf(self.osint_heavy_image_tab))
 
     # ── Web Design panel ────────────────────────────────────────────────────
-    def build_webdesign_panel(self):
-        self.webdesign_panel = QWidget()
-        self.webdesign_panel.setObjectName("WebdesignPanel")
-        layout = QVBoxLayout(self.webdesign_panel)
-        layout.setContentsMargins(0, 0, 0, 10)
-        layout.setSpacing(10)
-
-        # ── Quick Setup ──────────────────────────────────────────────
-        setup_group = QGroupBox("Quick Setup")
-        setup_group.setObjectName("WebdesignSetupBox")
-        setup_layout = QGridLayout(setup_group)
-        setup_layout.setSpacing(6)
-
-        setup_layout.addWidget(QLabel("Page Type:"), 0, 0)
-        self.webdesign_type_box = QComboBox()
-        self.webdesign_type_box.addItems([
-            "Landing Page", "Portfolio", "Dashboard", "Form", "Blog", "Component / Widget", "Other"
-        ])
-        setup_layout.addWidget(self.webdesign_type_box, 0, 1)
-
-        setup_layout.addWidget(QLabel("Style:"), 0, 2)
-        self.webdesign_style_box = QComboBox()
-        self.webdesign_style_box.addItems(["Minimal", "Dark", "Corporate", "Playful", "Brutalist"])
-        setup_layout.addWidget(self.webdesign_style_box, 0, 3)
-
-        setup_layout.addWidget(QLabel("Colour Palette:"), 1, 0)
-        self.webdesign_palette_input = QLineEdit()
-        self.webdesign_palette_input.setPlaceholderText("e.g. #1a1a2e, #e94560  or  'ocean blues'")
-        setup_layout.addWidget(self.webdesign_palette_input, 1, 1)
-
-        setup_layout.addWidget(QLabel("Framework:"), 1, 2)
-        self.webdesign_framework_box = QComboBox()
-        self.webdesign_framework_box.addItems(["Vanilla", "Tailwind", "Bootstrap"])
-        setup_layout.addWidget(self.webdesign_framework_box, 1, 3)
-
-        setup_layout.addWidget(QLabel("Brief:"), 2, 0)
-        self.webdesign_brief_input = QTextEdit()
-        self.webdesign_brief_input.setPlaceholderText(
-            "Describe what you want built — sections, features, content, interactions, etc."
-        )
-        self.webdesign_brief_input.setFixedHeight(70)
-        setup_layout.addWidget(self.webdesign_brief_input, 2, 1, 1, 3)
-
-        provider_row_container = QWidget()
-        provider_row = FlowLayout(provider_row_container, spacing=6)
-        provider_row.addWidget(QLabel("Provider:"))
-        self.webdesign_provider_box = QComboBox()
-        self.webdesign_provider_box.addItems(["ollama", "openai", "deepseek", "kimi", "gemini", "anthropic", "qwen"])
-        self.webdesign_provider_box.setCurrentText("anthropic")
-        provider_row.addWidget(self.webdesign_provider_box)
-
-        provider_row.addWidget(QLabel("Model:"))
-        self.webdesign_model_box = QComboBox()
-        self.webdesign_model_box.setMinimumWidth(200)
-        provider_row.addWidget(self.webdesign_model_box)
-
-
-        self.webdesign_generate_btn = QPushButton("Generate")
-        self.webdesign_generate_btn.setMinimumWidth(140)
-        self.webdesign_generate_btn.setObjectName("PrimaryAction")
-        self.webdesign_generate_btn.clicked.connect(self.webdesign_generate)
-        provider_row.addWidget(self.webdesign_generate_btn)
-
-        self.webdesign_stop_btn = QPushButton("Stop")
-        self.webdesign_stop_btn.setEnabled(False)
-        self.webdesign_stop_btn.setObjectName("DangerAction")
-        self.webdesign_stop_btn.clicked.connect(self.webdesign_stop)
-        provider_row.addWidget(self.webdesign_stop_btn)
-
-        setup_layout.addWidget(provider_row_container, 3, 0, 1, 4)
-        layout.addWidget(setup_group)
-
-        # ── Results: tabs left, sidebar right ───────────────────────
-        results_splitter = QSplitter(Qt.Horizontal)
-
-        self.webdesign_tabs = QTabWidget()
-
-        self.webdesign_html_box = QTextEdit()
-        self.webdesign_html_box.setReadOnly(True)
-        self.webdesign_tabs.addTab(self.webdesign_html_box, "HTML")
-
-        self.webdesign_css_box = QTextEdit()
-        self.webdesign_css_box.setReadOnly(True)
-        self.webdesign_tabs.addTab(self.webdesign_css_box, "CSS")
-
-        self.webdesign_js_box = QTextEdit()
-        self.webdesign_js_box.setReadOnly(True)
-        self.webdesign_tabs.addTab(self.webdesign_js_box, "JS")
-
-        results_splitter.addWidget(self.webdesign_tabs)
-
-        # Sidebar
-        sidebar = QWidget()
-        sidebar_layout = QVBoxLayout(sidebar)
-        sidebar_layout.setContentsMargins(8, 0, 0, 0)
-        sidebar_layout.setSpacing(10)
-
-        responsive_group = QGroupBox("Responsive")
-        responsive_group.setObjectName("WebdesignResponsiveBox")
-        responsive_layout = QVBoxLayout(responsive_group)
-        self.webdesign_responsive_label = QLabel("—")
-        self.webdesign_responsive_label.setAlignment(Qt.AlignCenter)
-        self.webdesign_responsive_label.setStyleSheet("font-size: 14px; font-weight: bold; color: #4db8ff;")
-        responsive_layout.addWidget(self.webdesign_responsive_label)
-        sidebar_layout.addWidget(responsive_group)
-
-        framework_group = QGroupBox("Framework Used")
-        framework_group.setObjectName("WebdesignFrameworkBox")
-        framework_layout = QVBoxLayout(framework_group)
-        self.webdesign_framework_label = QLabel("—")
-        self.webdesign_framework_label.setAlignment(Qt.AlignCenter)
-        self.webdesign_framework_label.setStyleSheet("font-size: 14px; font-weight: bold;")
-        framework_layout.addWidget(self.webdesign_framework_label)
-        sidebar_layout.addWidget(framework_group)
-
-        lines_group = QGroupBox("Lines of Code")
-        lines_group.setObjectName("WebdesignLinesBox")
-        lines_layout = QVBoxLayout(lines_group)
-        self.webdesign_lines_label = QLabel("—")
-        self.webdesign_lines_label.setAlignment(Qt.AlignCenter)
-        self.webdesign_lines_label.setStyleSheet("font-size: 20px; font-weight: bold; color: #3cff88;")
-        lines_layout.addWidget(self.webdesign_lines_label)
-        sidebar_layout.addWidget(lines_group)
-
-        sidebar_layout.addStretch()
-
-        self.webdesign_copy_btn = QPushButton("Copy All")
-        self.webdesign_copy_btn.setEnabled(False)
-        self.webdesign_copy_btn.clicked.connect(self.webdesign_copy_all)
-        sidebar_layout.addWidget(self.webdesign_copy_btn)
-
-        self.webdesign_save_btn = QPushButton("Save .html")
-        self.webdesign_save_btn.setEnabled(False)
-        self.webdesign_save_btn.clicked.connect(self.webdesign_save)
-        sidebar_layout.addWidget(self.webdesign_save_btn)
-
-        self.webdesign_clear_btn = QPushButton("Clear")
-        self.webdesign_clear_btn.clicked.connect(self.webdesign_clear)
-        sidebar_layout.addWidget(self.webdesign_clear_btn)
-
-        results_splitter.addWidget(sidebar)
-        results_splitter.setSizes([680, 200])
-
-        layout.addWidget(results_splitter, 1)
-
-        self.webdesign_status_label = QLabel("")
-        self.webdesign_status_label.setStyleSheet("font-size: 12px; color: #888;")
-        layout.addWidget(self.webdesign_status_label)
-
-        self.webdesign_panel.hide()
-
-        self.webdesign_provider_box.currentTextChanged.connect(self.webdesign_load_models)
-        self.webdesign_load_models()
-
-
-    # ── Wi-Fi Adapter panel ──────────────────────────────────────────────────
     def build_wifi_panel(self):
         self.wifi_panel = QWidget()
         self.wifi_panel.setObjectName("WiFiPanel")
@@ -4131,658 +2992,10 @@ class GodAI(QWidget):
 
 
     # ── Web Design handlers ──────────────────────────────────────────────────
-    def webdesign_load_models(self):
-        provider = self.webdesign_provider_box.currentText()
-        self.webdesign_model_box.clear()
-        try:
-            if provider == "ollama":
-                models = self.ollama.list_models()
-            elif provider == "openai":
-                models = self.openai.list_models()
-            elif provider == "deepseek":
-                models = self.deepseek.list_models()
-            elif provider == "kimi":
-                models = self.kimi.list_models()
-            elif provider == "gemini":
-                models = self.gemini.list_models()
-            elif provider == "anthropic":
-                models = self.anthropic.list_models()
-            elif provider == "qwen":
-                models = self.qwen.list_models()
-            else:
-                models = []
-            for m in models:
-                self.webdesign_model_box.addItem(m)
-        except Exception as exc:
-            self._note_failure("webdesign: load models", exc, self.webdesign_model_box)
-
-    def webdesign_generate(self):
-        page_type = self.webdesign_type_box.currentText()
-        style = self.webdesign_style_box.currentText()
-        palette = self.webdesign_palette_input.text().strip()
-        framework = self.webdesign_framework_box.currentText()
-        brief = self.webdesign_brief_input.toPlainText().strip()
-        provider = self.webdesign_provider_box.currentText()
-        model = self.webdesign_model_box.currentText()
-
-        if not brief:
-            QMessageBox.warning(self, "Missing Input", "Please enter a brief describing what you want built.")
-            return
-        if not model:
-            QMessageBox.warning(self, "No Model", "Please select a model.")
-            return
-
-        prompt_parts = [
-            f"Page Type: {page_type}",
-            f"Style: {style}",
-            f"Framework: {framework}",
-        ]
-        if palette:
-            prompt_parts.append(f"Colour Palette: {palette}")
-        prompt_parts.append(f"\nBrief:\n{brief}")
-
-        prompt = "\n".join(prompt_parts)
-        agent = self.agent_instances["webdesign"]
-        messages = agent.build_messages(prompt)
-
-        self._webdesign_clear_displays()
-        self._last_webdesign_response = ""
-        self.webdesign_status_label.setText("Generating...")
-        self.webdesign_generate_btn.setEnabled(False)
-        self.webdesign_stop_btn.setEnabled(True)
-        self.webdesign_save_btn.setEnabled(False)
-        self.webdesign_copy_btn.setEnabled(False)
-
-        if not self.authorize_request("webdesign", provider, model, prompt):
-            return
-        self.webdesign_worker = ChatWorker(self.run_backend, provider, model, messages, prompt)
-        self.webdesign_worker.token_signal.connect(self._webdesign_on_token)
-        self.webdesign_worker.finished_signal.connect(self._webdesign_on_finished)
-        self.webdesign_worker.usage_signal.connect(lambda u: self.note_request_usage("webdesign", u))
-        self.webdesign_worker.error_signal.connect(self._webdesign_on_error)
-        self.webdesign_worker.start()
-
-    def _webdesign_on_token(self, token: str):
-        self._last_webdesign_response += token
-        self.webdesign_html_box.setPlainText(self._last_webdesign_response)
-        self.webdesign_html_box.moveCursor(QTextCursor.End)
-
-    def _webdesign_on_finished(self, full_response: str):
-        self.record_request("webdesign", full_response)
-        self._last_webdesign_response = full_response
-        self._populate_webdesign_tabs(full_response)
-        self._update_webdesign_indicators(full_response)
-        self.webdesign_status_label.setText("Generation complete.")
-        self.webdesign_generate_btn.setEnabled(True)
-        self.webdesign_stop_btn.setEnabled(False)
-        self.webdesign_save_btn.setEnabled(True)
-        self.webdesign_copy_btn.setEnabled(True)
-
-    def _webdesign_on_error(self, error: str):
-        self.abandon_request("webdesign")
-        self.webdesign_html_box.setPlainText(f"[Error] {error}")
-        self.webdesign_status_label.setText("Error.")
-        self.webdesign_generate_btn.setEnabled(True)
-        self.webdesign_stop_btn.setEnabled(False)
-
-    def webdesign_stop(self):
-        if self.webdesign_worker is not None and self.webdesign_worker.isRunning():
-            self.webdesign_worker.cancel()
-        self.webdesign_status_label.setText("Stopped.")
-        self.webdesign_generate_btn.setEnabled(True)
-        self.webdesign_stop_btn.setEnabled(False)
-
-    def webdesign_save(self):
-        if not self._last_webdesign_response:
-            return
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        default_name = f"webdesign_{ts}.html"
-        path, _ = QFileDialog.getSaveFileName(
-            self, "Save HTML File", str(DATA_DIR / default_name),
-            "HTML files (*.html);;All files (*)"
-        )
-        if path:
-            full_html = self._extract_full_html(self._last_webdesign_response)
-            Path(path).write_text(full_html, encoding="utf-8")
-
-    def webdesign_copy_all(self):
-        if not self._last_webdesign_response:
-            return
-        full_html = self._extract_full_html(self._last_webdesign_response)
-        QApplication.clipboard().setText(full_html)
-        self.webdesign_status_label.setText("Copied to clipboard.")
-
-    def webdesign_clear(self):
-        self._webdesign_clear_displays()
-        self.webdesign_brief_input.clear()
-        self.webdesign_status_label.setText("")
-        self._last_webdesign_response = ""
-
-    def _webdesign_clear_displays(self):
-        self.webdesign_html_box.clear()
-        self.webdesign_css_box.clear()
-        self.webdesign_js_box.clear()
-        self.webdesign_responsive_label.setText("—")
-        self.webdesign_framework_label.setText("—")
-        self.webdesign_lines_label.setText("—")
-        self.webdesign_save_btn.setEnabled(False)
-        self.webdesign_copy_btn.setEnabled(False)
-
     def _extract_full_html(self, text: str) -> str:
         import re as _re
         m = _re.search("```(?:html)?\\s*\\n(.*?)```", text, _re.DOTALL | _re.IGNORECASE)
         return m.group(1).strip() if m else text.strip()
-
-    def _populate_webdesign_tabs(self, text: str):
-        import re as _re
-        # Full HTML in first tab
-        full = self._extract_full_html(text)
-        self.webdesign_html_box.setPlainText(full)
-
-        # Extract <style> blocks into CSS tab
-        css_parts = _re.findall(r"<style[^>]*>(.*?)</style>", full, _re.DOTALL | _re.IGNORECASE)
-        self.webdesign_css_box.setPlainText("\n\n".join(p.strip() for p in css_parts) if css_parts else "")
-
-        # Extract <script> blocks into JS tab
-        js_parts = _re.findall(r"<script[^>]*>(.*?)</script>", full, _re.DOTALL | _re.IGNORECASE)
-        self.webdesign_js_box.setPlainText("\n\n".join(p.strip() for p in js_parts) if js_parts else "")
-
-    def _update_webdesign_indicators(self, text: str):
-        import re as _re
-        full = self._extract_full_html(text)
-
-        # Responsive detection
-        if "viewport" in full.lower() or "@media" in full.lower():
-            self.webdesign_responsive_label.setText("Mobile-first")
-        else:
-            self.webdesign_responsive_label.setText("Desktop")
-
-        # Framework
-        fw = self.webdesign_framework_box.currentText()
-        self.webdesign_framework_label.setText(fw)
-
-        # Line count
-        line_count = len(full.splitlines())
-        self.webdesign_lines_label.setText(str(line_count))
-
-    # ── NFL Prop Bet handlers ────────────────────────────────────────────────
-    def build_fiverr_panel(self):
-        self.fiverr_panel = QWidget()
-        self.fiverr_panel.setObjectName("FiverrPanel")
-        layout = QVBoxLayout(self.fiverr_panel)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(10)
-
-        brief_group = QGroupBox("Client Brief")
-        brief_group.setObjectName("FiverrBriefBox")
-        brief_layout = QGridLayout(brief_group)
-        brief_layout.setSpacing(6)
-
-        brief_layout.addWidget(QLabel("Business Name:"), 0, 0)
-        self.fiverr_name_input = QLineEdit()
-        self.fiverr_name_input.setPlaceholderText("e.g. Apex Fitness Studio")
-        brief_layout.addWidget(self.fiverr_name_input, 0, 1, 1, 3)
-
-        brief_layout.addWidget(QLabel("Industry / Niche:"), 1, 0)
-        self.fiverr_industry_input = QLineEdit()
-        self.fiverr_industry_input.setPlaceholderText("e.g. fitness, law firm, bakery")
-        brief_layout.addWidget(self.fiverr_industry_input, 1, 1)
-
-        brief_layout.addWidget(QLabel("Style:"), 1, 2)
-        self.fiverr_style_box = QComboBox()
-        self.fiverr_style_box.addItems(["Minimalist", "Bold", "Vintage", "Playful", "Corporate", "Luxury", "Futuristic"])
-        brief_layout.addWidget(self.fiverr_style_box, 1, 3)
-
-        brief_layout.addWidget(QLabel("Primary Colors:"), 2, 0)
-        self.fiverr_colors_input = QLineEdit()
-        self.fiverr_colors_input.setPlaceholderText("e.g. navy blue and gold")
-        brief_layout.addWidget(self.fiverr_colors_input, 2, 1)
-
-        brief_layout.addWidget(QLabel("# Concepts:"), 2, 2)
-        from PySide6.QtWidgets import QSpinBox
-        self.fiverr_count_spin = QSpinBox()
-        self.fiverr_count_spin.setRange(1, 4)
-        self.fiverr_count_spin.setValue(2)
-        brief_layout.addWidget(self.fiverr_count_spin, 2, 3)
-
-        brief_layout.addWidget(QLabel("Notes:"), 3, 0)
-        self.fiverr_notes_input = QTextEdit()
-        self.fiverr_notes_input.setPlaceholderText("Optional: tagline, mood, target audience, competitors to avoid...")
-        self.fiverr_notes_input.setFixedHeight(55)
-        brief_layout.addWidget(self.fiverr_notes_input, 3, 1, 1, 3)
-
-        # Row 1: Provider + Model (their own row so they don't squeeze the action buttons)
-        provider_row_container = QWidget()
-        provider_row = FlowLayout(provider_row_container, spacing=6)
-        provider_row.addWidget(QLabel("Text Provider:"))
-        self.fiverr_provider_box = QComboBox()
-        self.fiverr_provider_box.addItems(["anthropic", "openai", "deepseek", "kimi", "gemini", "qwen", "ollama"])
-        self.fiverr_provider_box.setCurrentText("anthropic")
-        provider_row.addWidget(self.fiverr_provider_box)
-
-        provider_row.addWidget(QLabel("Model:"))
-        self.fiverr_model_box = QComboBox()
-        self.fiverr_model_box.setMinimumWidth(180)
-        provider_row.addWidget(self.fiverr_model_box, 1)
-        brief_layout.addWidget(provider_row_container, 4, 0, 1, 4)
-
-        # Row 2: All four action buttons get their own row with full width
-        action_row = QHBoxLayout()
-        action_row.addStretch()
-
-        self.fiverr_generate_btn = QPushButton("Generate Logos")
-        self.fiverr_generate_btn.setMinimumWidth(140)
-        self.fiverr_generate_btn.setObjectName("PrimaryAction")
-        self.fiverr_generate_btn.clicked.connect(self.fiverr_generate_logos)
-        action_row.addWidget(self.fiverr_generate_btn)
-
-        self.fiverr_delivery_btn = QPushButton("Delivery Msg")
-        self.fiverr_delivery_btn.setMinimumWidth(130)
-        self.fiverr_delivery_btn.setObjectName("PrimaryAction")
-        self.fiverr_delivery_btn.clicked.connect(self.fiverr_write_delivery)
-        action_row.addWidget(self.fiverr_delivery_btn)
-
-        self.fiverr_gig_btn = QPushButton("Gig Description")
-        self.fiverr_gig_btn.setMinimumWidth(140)
-        self.fiverr_gig_btn.setObjectName("PrimaryAction")
-        self.fiverr_gig_btn.clicked.connect(self.fiverr_write_gig)
-        action_row.addWidget(self.fiverr_gig_btn)
-
-        self.fiverr_stop_btn = QPushButton("Stop")
-        self.fiverr_stop_btn.setEnabled(False)
-        self.fiverr_stop_btn.setObjectName("DangerAction")
-        self.fiverr_stop_btn.clicked.connect(self.fiverr_stop)
-        action_row.addWidget(self.fiverr_stop_btn)
-
-        brief_layout.addLayout(action_row, 5, 0, 1, 4)
-        layout.addWidget(brief_group)
-
-        results_splitter = QSplitter(Qt.Horizontal)
-        self.fiverr_tabs = QTabWidget()
-
-        preview_widget = QWidget()
-        preview_layout = QVBoxLayout(preview_widget)
-        preview_layout.setContentsMargins(4, 4, 4, 4)
-        preview_layout.setSpacing(6)
-        preview_top_container = QWidget()
-        preview_top = FlowLayout(preview_top_container, spacing=6)
-        self.fiverr_preview_status = QLabel("No logos generated yet.")
-        self.fiverr_preview_status.setStyleSheet("color: #888; font-style: italic;")
-        preview_top.addWidget(self.fiverr_preview_status)
-        self.fiverr_save_images_btn = QPushButton("Save All Images")
-        self.fiverr_save_images_btn.setEnabled(False)
-        self.fiverr_save_images_btn.clicked.connect(self.fiverr_save_images)
-        preview_top.addWidget(self.fiverr_save_images_btn)
-        preview_layout.addWidget(preview_top_container)
-        self.fiverr_logo_grid = QWidget()
-        self.fiverr_logo_grid_layout = QHBoxLayout(self.fiverr_logo_grid)
-        self.fiverr_logo_grid_layout.setContentsMargins(0, 0, 0, 0)
-        self.fiverr_logo_grid_layout.setSpacing(12)
-        preview_layout.addWidget(self.fiverr_logo_grid)
-        preview_layout.addStretch()
-        self.fiverr_tabs.addTab(preview_widget, "Logo Preview")
-
-        self.fiverr_delivery_box = QTextEdit()
-        self.fiverr_delivery_box.setPlaceholderText(
-            "Click 'Write Delivery Msg' to generate a professional client delivery message..."
-        )
-        self.fiverr_tabs.addTab(self.fiverr_delivery_box, "Delivery Message")
-
-        self.fiverr_gig_box = QTextEdit()
-        self.fiverr_gig_box.setPlaceholderText(
-            "Click 'Write Gig Description' to generate a Fiverr listing..."
-        )
-        self.fiverr_tabs.addTab(self.fiverr_gig_box, "Gig Description")
-
-        results_splitter.addWidget(self.fiverr_tabs)
-
-        from PySide6.QtWidgets import QTableWidget, QHeaderView
-        sidebar = QWidget()
-        sidebar_layout = QVBoxLayout(sidebar)
-        sidebar_layout.setContentsMargins(8, 0, 0, 0)
-        sidebar_layout.setSpacing(10)
-        sidebar.setMaximumWidth(190)
-
-        status_group = QGroupBox("Status")
-        status_group.setObjectName("FiverrStatusBox")
-        status_layout = QVBoxLayout(status_group)
-        self.fiverr_status_label = QLabel("Idle")
-        self.fiverr_status_label.setWordWrap(True)
-        self.fiverr_status_label.setStyleSheet("font-size: 12px; color: #888;")
-        status_layout.addWidget(self.fiverr_status_label)
-        sidebar_layout.addWidget(status_group)
-
-        cost_group = QGroupBox("Est. Cost")
-        cost_group.setObjectName("FiverrCostBox")
-        cost_layout = QVBoxLayout(cost_group)
-        self.fiverr_cost_label = QLabel("—")
-        self.fiverr_cost_label.setStyleSheet("font-size: 14px; font-weight: bold; color: #3cff88;")
-        cost_note = QLabel("DALL-E 3: ~$0.04/image\n(standard quality)")
-        cost_note.setStyleSheet("font-size: 10px; color: #666;")
-        cost_note.setWordWrap(True)
-        cost_layout.addWidget(self.fiverr_cost_label)
-        cost_layout.addWidget(cost_note)
-        sidebar_layout.addWidget(cost_group)
-
-        order_group = QGroupBox("Order Log")
-        order_group.setObjectName("FiverrOrderBox")
-        order_layout = QVBoxLayout(order_group)
-        self.fiverr_order_table = QTableWidget(0, 3)
-        self.fiverr_order_table.setHorizontalHeaderLabels(["Business", "#", "Status"])
-        self.fiverr_order_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
-        self.fiverr_order_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
-        self.fiverr_order_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
-        self.fiverr_order_table.setEditTriggers(QTableWidget.NoEditTriggers)
-        self.fiverr_order_table.setSelectionBehavior(QTableWidget.SelectRows)
-        self.fiverr_order_table.setAlternatingRowColors(True)
-        self.fiverr_order_table.verticalHeader().setVisible(False)
-        order_layout.addWidget(self.fiverr_order_table)
-        self.fiverr_clear_btn = QPushButton("Clear")
-        self.fiverr_clear_btn.clicked.connect(self.fiverr_clear)
-        order_layout.addWidget(self.fiverr_clear_btn)
-        sidebar_layout.addWidget(order_group)
-
-        results_splitter.addWidget(sidebar)
-        results_splitter.setSizes([700, 180])
-        layout.addWidget(results_splitter)
-
-        self.fiverr_panel.hide()
-        self.fiverr_provider_box.currentTextChanged.connect(self.fiverr_load_models)
-        self.fiverr_load_models()
-
-    # ── Fiverr handlers ──────────────────────────────────────────────────────
-    def fiverr_load_models(self):
-        provider = self.fiverr_provider_box.currentText()
-        self.fiverr_model_box.clear()
-        try:
-            if provider == "ollama":
-                models = self.ollama.list_models()
-            elif provider == "openai":
-                models = self.openai.list_models()
-            elif provider == "deepseek":
-                models = self.deepseek.list_models()
-            elif provider == "kimi":
-                models = self.kimi.list_models()
-            elif provider == "gemini":
-                models = self.gemini.list_models()
-            elif provider == "anthropic":
-                models = self.anthropic.list_models()
-            elif provider == "qwen":
-                models = self.qwen.list_models()
-            else:
-                models = []
-            for m in models:
-                self.fiverr_model_box.addItem(m)
-        except Exception as exc:
-            self._note_failure("fiverr: load models", exc, self.fiverr_model_box)
-
-    def _fiverr_get_brief(self) -> dict:
-        return {
-            "business_name": self.fiverr_name_input.text().strip(),
-            "industry": self.fiverr_industry_input.text().strip(),
-            "style": self.fiverr_style_box.currentText(),
-            "colors": self.fiverr_colors_input.text().strip(),
-            "notes": self.fiverr_notes_input.toPlainText().strip(),
-        }
-
-    def fiverr_generate_logos(self):
-        brief = self._fiverr_get_brief()
-        if not brief["business_name"]:
-            QMessageBox.warning(self, "Missing Input", "Please enter a business name.")
-            return
-        if not OpenAIClientWrapper.key_available():
-            QMessageBox.warning(self, "No API Key", "OPENAI_API_KEY is required for DALL-E 3 image generation.")
-            return
-
-        count = self.fiverr_count_spin.value()
-        provider = self.fiverr_provider_box.currentText()
-        model = self.fiverr_model_box.currentText()
-
-        agent = self.agent_instances["fiverr"]
-        messages = agent.build_image_prompt_request(brief)
-
-        self.fiverr_status_label.setText("Building image prompt...")
-        self.fiverr_generate_btn.setEnabled(False)
-        self.fiverr_delivery_btn.setEnabled(False)
-        self.fiverr_gig_btn.setEnabled(False)
-        self.fiverr_stop_btn.setEnabled(True)
-        self._fiverr_clear_logo_grid()
-
-        if not self.authorize_request("fiverr", provider, model, messages[-1]["content"] if messages else ""):
-            return
-        self.fiverr_text_worker = ChatWorker(self.run_backend, provider, model, messages, "")
-        self.fiverr_text_worker.finished_signal.connect(self._fiverr_on_prompt_ready)
-        self.fiverr_text_worker.usage_signal.connect(lambda u: self.note_request_usage("fiverr", u))
-        self.fiverr_text_worker.error_signal.connect(self._fiverr_on_text_error)
-        self.fiverr_text_worker.start()
-        self._fiverr_pending_count = count
-        self._fiverr_pending_brief = brief
-
-    def _fiverr_on_prompt_ready(self, image_prompt: str):
-        self.record_request("fiverr", image_prompt)
-        image_prompt = image_prompt.strip()
-        count = self._fiverr_pending_count
-        brief = self._fiverr_pending_brief
-        save_dir = DATA_DIR / "fiverr_output" / datetime.now().strftime("%Y%m%d_%H%M%S")
-        self.fiverr_status_label.setText(f"Generating {count} concept(s)...")
-        self.fiverr_cost_label.setText(f"~${0.04 * count:.2f}")
-
-        self.fiverr_image_worker = FiverrImageWorker(self.openai, image_prompt, count, save_dir)
-        self.fiverr_image_worker.image_ready_signal.connect(self._fiverr_on_image_ready)
-        self.fiverr_image_worker.all_done_signal.connect(self._fiverr_on_all_done)
-        self.fiverr_image_worker.error_signal.connect(self._fiverr_on_image_error)
-        self.fiverr_image_worker.status_signal.connect(lambda s: self.fiverr_status_label.setText(s))
-        self.fiverr_image_worker.start()
-
-        row = self.fiverr_order_table.rowCount()
-        self.fiverr_order_table.insertRow(row)
-        from PySide6.QtWidgets import QTableWidgetItem
-        self.fiverr_order_table.setItem(row, 0, QTableWidgetItem(brief.get("business_name", "")))
-        self.fiverr_order_table.setItem(row, 1, QTableWidgetItem(str(count)))
-        self.fiverr_order_table.setItem(row, 2, QTableWidgetItem("Generating"))
-        self._fiverr_order_row = row
-
-    def _fiverr_on_image_ready(self, path: str, index: int):
-        from PySide6.QtGui import QPixmap
-        lbl = QLabel()
-        pixmap = QPixmap(path)
-        if not pixmap.isNull():
-            pixmap = pixmap.scaled(280, 280, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-            lbl.setPixmap(pixmap)
-        else:
-            lbl.setText(f"[Concept {index + 1}]")
-        lbl.setToolTip(path)
-        lbl.setAlignment(Qt.AlignCenter)
-        self.fiverr_logo_grid_layout.addWidget(lbl)
-        self._fiverr_image_paths.append(path)
-        self.fiverr_preview_status.setText(f"Concept {index + 1} ready — {Path(path).name}")
-        self.fiverr_tabs.setCurrentIndex(0)
-
-    def _fiverr_on_all_done(self, paths: list):
-        self._fiverr_image_paths = paths
-        self.fiverr_status_label.setText(f"Done — {len(paths)} logo(s) generated.")
-        self.fiverr_generate_btn.setEnabled(True)
-        self.fiverr_delivery_btn.setEnabled(True)
-        self.fiverr_gig_btn.setEnabled(True)
-        self.fiverr_stop_btn.setEnabled(False)
-        self.fiverr_save_images_btn.setEnabled(True)
-        if hasattr(self, "_fiverr_order_row"):
-            from PySide6.QtWidgets import QTableWidgetItem
-            self.fiverr_order_table.setItem(self._fiverr_order_row, 2, QTableWidgetItem("Done"))
-
-    def _fiverr_on_image_error(self, error: str):
-        self.fiverr_status_label.setText(f"Error: {error}")
-        self.fiverr_preview_status.setText(f"[Error] {error}")
-        self.fiverr_generate_btn.setEnabled(True)
-        self.fiverr_delivery_btn.setEnabled(True)
-        self.fiverr_gig_btn.setEnabled(True)
-        self.fiverr_stop_btn.setEnabled(False)
-        if hasattr(self, "_fiverr_order_row"):
-            from PySide6.QtWidgets import QTableWidgetItem
-            self.fiverr_order_table.setItem(self._fiverr_order_row, 2, QTableWidgetItem("Error"))
-
-    def _fiverr_on_text_error(self, error: str):
-        self.abandon_request("fiverr")
-        self.fiverr_status_label.setText(f"Error: {error}")
-        self.fiverr_generate_btn.setEnabled(True)
-        self.fiverr_delivery_btn.setEnabled(True)
-        self.fiverr_gig_btn.setEnabled(True)
-        self.fiverr_stop_btn.setEnabled(False)
-
-    def fiverr_write_delivery(self):
-        brief = self._fiverr_get_brief()
-        provider = self.fiverr_provider_box.currentText()
-        model = self.fiverr_model_box.currentText()
-        if not model:
-            QMessageBox.warning(self, "No Model", "Please select a model.")
-            return
-        agent = self.agent_instances["fiverr"]
-        messages = agent.build_messages("Write a professional delivery message for this logo order.", brief)
-        self.fiverr_delivery_box.clear()
-        self.fiverr_status_label.setText("Writing delivery message...")
-        self.fiverr_generate_btn.setEnabled(False)
-        self.fiverr_delivery_btn.setEnabled(False)
-        self.fiverr_gig_btn.setEnabled(False)
-        self.fiverr_stop_btn.setEnabled(True)
-        self.fiverr_tabs.setCurrentIndex(1)
-        if not self.authorize_request("fiverr", provider, model, messages[-1]["content"] if messages else ""):
-            return
-        self.fiverr_text_worker = ChatWorker(self.run_backend, provider, model, messages, "")
-        self.fiverr_text_worker.token_signal.connect(self._fiverr_on_delivery_token)
-        self.fiverr_text_worker.finished_signal.connect(self._fiverr_on_delivery_done)
-        self.fiverr_text_worker.usage_signal.connect(lambda u: self.note_request_usage("fiverr", u))
-        self.fiverr_text_worker.error_signal.connect(self._fiverr_on_text_error)
-        self.fiverr_text_worker.start()
-
-    def _fiverr_on_delivery_token(self, token: str):
-        self.fiverr_delivery_box.moveCursor(QTextCursor.End)
-        self.fiverr_delivery_box.insertPlainText(token)
-
-    def _fiverr_on_delivery_done(self, _full: str):
-        self.record_request("fiverr", _full)
-        self.fiverr_status_label.setText("Delivery message ready.")
-        self.fiverr_generate_btn.setEnabled(True)
-        self.fiverr_delivery_btn.setEnabled(True)
-        self.fiverr_gig_btn.setEnabled(True)
-        self.fiverr_stop_btn.setEnabled(False)
-
-    def fiverr_write_gig(self):
-        brief = self._fiverr_get_brief()
-        provider = self.fiverr_provider_box.currentText()
-        model = self.fiverr_model_box.currentText()
-        if not model:
-            QMessageBox.warning(self, "No Model", "Please select a model.")
-            return
-        agent = self.agent_instances["fiverr"]
-        messages = agent.build_messages("Write a complete Fiverr gig description for logo design services.", brief)
-        self.fiverr_gig_box.clear()
-        self.fiverr_status_label.setText("Writing gig description...")
-        self.fiverr_generate_btn.setEnabled(False)
-        self.fiverr_delivery_btn.setEnabled(False)
-        self.fiverr_gig_btn.setEnabled(False)
-        self.fiverr_stop_btn.setEnabled(True)
-        self.fiverr_tabs.setCurrentIndex(2)
-        if not self.authorize_request("fiverr", provider, model, messages[-1]["content"] if messages else ""):
-            return
-        self.fiverr_text_worker = ChatWorker(self.run_backend, provider, model, messages, "")
-        self.fiverr_text_worker.token_signal.connect(self._fiverr_on_gig_token)
-        self.fiverr_text_worker.finished_signal.connect(self._fiverr_on_gig_done)
-        self.fiverr_text_worker.usage_signal.connect(lambda u: self.note_request_usage("fiverr", u))
-        self.fiverr_text_worker.error_signal.connect(self._fiverr_on_text_error)
-        self.fiverr_text_worker.start()
-
-    def _fiverr_on_gig_token(self, token: str):
-        self.fiverr_gig_box.moveCursor(QTextCursor.End)
-        self.fiverr_gig_box.insertPlainText(token)
-
-    def _fiverr_on_gig_done(self, _full: str):
-        self.record_request("fiverr", _full)
-        self.fiverr_status_label.setText("Gig description ready.")
-        self.fiverr_generate_btn.setEnabled(True)
-        self.fiverr_delivery_btn.setEnabled(True)
-        self.fiverr_gig_btn.setEnabled(True)
-        self.fiverr_stop_btn.setEnabled(False)
-
-    def fiverr_stop(self):
-        if self.fiverr_image_worker is not None and self.fiverr_image_worker.isRunning():
-            self.fiverr_image_worker.cancel()
-        if self.fiverr_text_worker is not None and self.fiverr_text_worker.isRunning():
-            self.fiverr_text_worker.cancel()
-        self.fiverr_status_label.setText("Stopped.")
-        self.fiverr_generate_btn.setEnabled(True)
-        self.fiverr_delivery_btn.setEnabled(True)
-        self.fiverr_gig_btn.setEnabled(True)
-        self.fiverr_stop_btn.setEnabled(False)
-
-    def fiverr_save_images(self):
-        if not self._fiverr_image_paths:
-            return
-        dest_dir = QFileDialog.getExistingDirectory(self, "Choose folder to save logos")
-        if not dest_dir:
-            return
-        import shutil
-        for src in self._fiverr_image_paths:
-            shutil.copy(src, dest_dir)
-        self.fiverr_status_label.setText(f"Saved {len(self._fiverr_image_paths)} image(s).")
-
-    def fiverr_clear(self):
-        self._fiverr_clear_logo_grid()
-        self.fiverr_delivery_box.clear()
-        self.fiverr_gig_box.clear()
-        self.fiverr_status_label.setText("Idle")
-        self.fiverr_cost_label.setText("—")
-        self.fiverr_preview_status.setText("No logos generated yet.")
-        self.fiverr_save_images_btn.setEnabled(False)
-        self._fiverr_image_paths = []
-
-    def _fiverr_clear_logo_grid(self):
-        while self.fiverr_logo_grid_layout.count():
-            item = self.fiverr_logo_grid_layout.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
-
-    def author_load_models(self):
-        provider = self.author_provider_box.currentText()
-        self.author_model_box.clear()
-        try:
-            if provider == "ollama":
-                models = self.ollama.list_models()
-            elif provider == "openai":
-                models = self.openai.list_models()
-            elif provider == "deepseek":
-                models = self.deepseek.list_models()
-            elif provider == "kimi":
-                models = self.kimi.list_models()
-            elif provider == "gemini":
-                models = self.gemini.list_models()
-            elif provider == "anthropic":
-                models = self.anthropic.list_models()
-            elif provider == "qwen":
-                models = self.qwen.list_models()
-            else:
-                models = []
-            for m in models:
-                self.author_model_box.addItem(m)
-        except Exception as exc:
-            self._note_failure("author: load models", exc, self.author_model_box)
-
-    def _author_on_content_type_changed(self, content_type: str):
-        fiction_tasks = [
-            "Write Scene", "Continue Draft", "Generate Outline",
-            "Develop Characters", "Build World", "Write Dialogue", "Revise / Improve",
-        ]
-        nonfiction_tasks = [
-            "Write Chapter", "Continue Draft", "Generate Outline",
-            "Strengthen Argument", "Add Case Study / Example", "Tighten Structure", "Revise / Improve",
-        ]
-        tasks = nonfiction_tasks if content_type == "Non-Fiction" else fiction_tasks
-        current = self.author_task_box.currentText()
-        self.author_task_box.blockSignals(True)
-        self.author_task_box.clear()
-        self.author_task_box.addItems(tasks)
-        if current in tasks:
-            self.author_task_box.setCurrentText(current)
-        self.author_task_box.blockSignals(False)
 
     def _compute_next_step_tip(self) -> str:
         """Pick the single most useful next action, checked against real app state.
@@ -4859,1009 +3072,6 @@ class GodAI(QWidget):
             if label is not None:
                 label.setText(f"Next step:   {tip}")
 
-    def _author_get_book_profile(self) -> dict:
-        return {
-            "title": self.author_title_input.text().strip(),
-            "author": self.author_name_input.text().strip(),
-            "content_type": self.author_content_type_box.currentText(),
-            "genre": self.author_genre_box.currentText(),
-            "hook": self.author_profile_hook_input.text().strip(),
-            "target_reader": self.author_profile_reader_input.text().strip(),
-            "comp_titles": self.author_profile_comps_input.text().strip(),
-            "publishing_path": self.author_profile_path_box.currentText(),
-        }
-
-    def _author_build_book_profile_block(self) -> str:
-        """Formats the Book Profile into a system-prompt block shared by Write/Publish/Market
-        — the point being you set this once and stop re-explaining the book on every request."""
-        p = self._author_get_book_profile()
-        lines = []
-        if p["title"]:
-            lines.append(f"Title: {p['title']}")
-        if p["author"]:
-            lines.append(f"Author: {p['author']}")
-        lines.append(f"Content type: {p['content_type']}")
-        if p["genre"]:
-            lines.append(f"Genre: {p['genre']}")
-        if p["hook"]:
-            lines.append(f"Hook: {p['hook']}")
-        if p["target_reader"]:
-            lines.append(f"Target reader: {p['target_reader']}")
-        if p["comp_titles"]:
-            lines.append(f"Comp titles: {p['comp_titles']}")
-        if p["publishing_path"] and p["publishing_path"] != "Undecided":
-            lines.append(f"Publishing path: {p['publishing_path']}")
-        if not lines:
-            return ""
-        return (
-            "BOOK CONTEXT — ground every response in this; don't ask the user to re-explain it.\n\n"
-            + "\n".join(lines)
-        )
-
-    def author_save_profile(self):
-        import json
-        from services.database import save_setting
-        save_setting("author_book_profile", json.dumps(self._author_get_book_profile()))
-        self.author_status_label.setText("[Saved] Book profile.")
-        self._refresh_next_step_tip()
-
-    def _author_load_profile(self):
-        import json
-        from services.database import get_setting
-        raw = get_setting("author_book_profile", "")
-        if not raw:
-            return
-        try:
-            profile = json.loads(raw)
-        except Exception:
-            return
-        self.author_title_input.setText(profile.get("title", ""))
-        self.author_name_input.setText(profile.get("author", ""))
-        if profile.get("content_type"):
-            self.author_content_type_box.setCurrentText(profile["content_type"])
-        if profile.get("genre"):
-            idx = self.author_genre_box.findText(profile["genre"])
-            if idx >= 0:
-                self.author_genre_box.setCurrentIndex(idx)
-        self.author_profile_hook_input.setText(profile.get("hook", ""))
-        self.author_profile_reader_input.setText(profile.get("target_reader", ""))
-        self.author_profile_comps_input.setText(profile.get("comp_titles", ""))
-        if profile.get("publishing_path"):
-            self.author_profile_path_box.setCurrentText(profile["publishing_path"])
-
-    def _author_build_prompt(self, direction: str) -> str:
-        task = self.author_task_box.currentText()
-        genre = self.author_genre_box.currentText()
-        tone = self.author_tone_box.currentText()
-        pov = self.author_pov_box.currentText()
-        title = self.author_title_input.text().strip()
-        parts = [f"Task: {task}"]
-        if title:
-            parts.append(f"Project: {title}")
-        parts += [f"Genre: {genre}", f"Tone: {tone}", f"POV: {pov}"]
-        if direction:
-            parts.append(f"Direction:\n{direction}")
-        return "\n".join(parts)
-
-    def _author_build_consistency_context(self, recent_draft_text: str = "") -> str:
-        """Auto-inject established Characters/World + a recent-draft excerpt so every
-        Write/Continue call stays consistent with the story so far."""
-        characters = self.author_characters_box.toPlainText().strip()
-        world = self.author_world_box.toPlainText().strip()
-        sections = []
-        if characters:
-            sections.append(f"ESTABLISHED CHARACTERS (stay consistent — do not contradict):\n{characters}")
-        if world:
-            sections.append(f"ESTABLISHED WORLD (stay consistent — do not contradict):\n{world}")
-        if recent_draft_text:
-            sections.append(
-                "RECENT STORY TEXT (end of the current draft — continue consistently, don't repeat it):\n"
-                + recent_draft_text[-3000:]
-            )
-        if not sections:
-            return ""
-        return (
-            "CONTINUITY CONTEXT — ground every response in this; do not contradict "
-            "established characters, world rules, or recent events.\n\n" + "\n\n".join(sections)
-        )
-
-    def _author_start_worker(self, provider: str, model: str, prompt: str, recent_draft_text: str = ""):
-        agent = self.agent_instances["author"]
-        consistency_context = self._author_build_consistency_context(recent_draft_text)
-        book_profile_context = self._author_build_book_profile_block()
-        content_type = self.author_content_type_box.currentText()
-        messages = agent.build_messages(
-            prompt, consistency_context=consistency_context,
-            book_profile_context=book_profile_context, content_type=content_type,
-        )
-        self.author_status_label.setText("[Working…]")
-        self.author_write_btn.setEnabled(False)
-        self.author_continue_btn.setEnabled(False)
-        self.author_stop_btn.setEnabled(True)
-        if not self.authorize_request("author", provider, model, prompt):
-            return
-        self.author_worker = ChatWorker(self.run_backend, provider, model, messages, prompt)
-        self.author_worker.token_signal.connect(self._author_on_token)
-        self.author_worker.finished_signal.connect(self._author_on_finished)
-        self.author_worker.usage_signal.connect(lambda u: self.note_request_usage("author", u))
-        self.author_worker.error_signal.connect(self._author_on_error)
-        self.author_worker.start()
-
-    def author_write(self):
-        direction = self.author_direction_input.toPlainText().strip()
-        if not direction:
-            QMessageBox.warning(self, "Missing Input", "Please enter a direction.")
-            return
-        provider = self.author_provider_box.currentText()
-        model = self.author_model_box.currentText()
-        if not model:
-            QMessageBox.warning(self, "No Model", "Please select a model.")
-            return
-        self._author_is_continuing = False
-        existing = self.author_draft_box.toPlainText().strip()
-        self.author_draft_box.clear()
-        self._last_author_response = ""
-        prompt = self._author_build_prompt(direction)
-        self._author_start_worker(provider, model, prompt, recent_draft_text=existing)
-
-    def author_continue(self):
-        direction = self.author_direction_input.toPlainText().strip()
-        provider = self.author_provider_box.currentText()
-        model = self.author_model_box.currentText()
-        if not model:
-            QMessageBox.warning(self, "No Model", "Please select a model.")
-            return
-        existing = self.author_draft_box.toPlainText().strip()
-        parts = []
-        if existing:
-            parts.append(f"Existing draft so far:\n\n{existing}")
-        if direction:
-            parts.append(f"Continue with:\n{direction}")
-        else:
-            parts.append("Continue from where the draft left off.")
-        continuation_note = "\n\n".join(parts)
-        self._author_is_continuing = True
-        self._last_author_response = ""
-        # Append a separator then stream new content
-        if existing:
-            cursor = self.author_draft_box.textCursor()
-            cursor.movePosition(QTextCursor.End)
-            cursor.insertText("\n\n")
-            self.author_draft_box.setTextCursor(cursor)
-        prompt = self._author_build_prompt(continuation_note)
-        # Recent draft text is already embedded in full inside `continuation_note` above —
-        # don't pass it again here, that would just duplicate it in the prompt.
-        self._author_start_worker(provider, model, prompt)
-
-    def _author_on_token(self, token: str):
-        self._last_author_response += token
-        cursor = self.author_draft_box.textCursor()
-        cursor.movePosition(QTextCursor.End)
-        cursor.insertText(token)
-        self.author_draft_box.setTextCursor(cursor)
-
-    def _author_update_counts(self):
-        text = self.author_draft_box.toPlainText()
-        word_count = len(text.split()) if text.strip() else 0
-        self.author_word_count_label.setText(str(word_count))
-        scene_count = len(re.findall(
-            r"^(chapter|scene|act|part|prologue|epilogue|---|\*\*\*)",
-            text, re.MULTILINE | re.IGNORECASE,
-        ))
-        self.author_scene_count_label.setText(str(scene_count))
-
-    def _author_on_finished(self, full_response: str):
-        self.record_request("author", full_response)
-        self._populate_author_tabs(full_response)
-        word_count = len(self.author_draft_box.toPlainText().split())
-        self.author_status_label.setText(f"[Done] {word_count:,} words")
-        self.author_write_btn.setEnabled(True)
-        self.author_continue_btn.setEnabled(True)
-        self.author_stop_btn.setEnabled(False)
-        self.author_save_btn.setEnabled(True)
-        self._refresh_next_step_tip()
-
-    def _author_on_error(self, error: str):
-        self.abandon_request("author")
-        self.author_status_label.setText(f"[Error] {error}")
-        self.author_write_btn.setEnabled(True)
-        self.author_continue_btn.setEnabled(True)
-        self.author_stop_btn.setEnabled(False)
-
-    def author_stop(self):
-        if self.author_worker is not None and self.author_worker.isRunning():
-            self.author_worker.cancel()
-        self.author_write_btn.setEnabled(True)
-        self.author_continue_btn.setEnabled(True)
-        self.author_stop_btn.setEnabled(False)
-        self.author_status_label.setText("[Stopped]")
-
-    def author_save(self):
-        text = self.author_draft_box.toPlainText()
-        if not text.strip():
-            return
-        title = self.author_title_input.text().strip() or "author_draft"
-        safe = re.sub(r"[^\w\s-]", "", title).strip().replace(" ", "_")
-        path, _ = QFileDialog.getSaveFileName(
-            self, "Save Draft", str(BASE_DIR / f"{safe}.txt"),
-            "Text Files (*.txt);;Markdown Files (*.md)"
-        )
-        if path:
-            Path(path).write_text(text, encoding="utf-8")
-            self.author_status_label.setText(f"[Saved] {path}")
-
-    def author_export_book(self):
-        text = self.author_draft_box.toPlainText()
-        if not text.strip():
-            QMessageBox.warning(self, "Nothing to Export", "The Draft tab is empty.")
-            return
-        fmt = self.author_export_format_box.currentText().lower()
-        title = self.author_title_input.text().strip() or "Untitled Manuscript"
-        author_name = self.author_export_author_input.text().strip() or "Unknown Author"
-
-        safe = re.sub(r"[^\w\s-]", "", title).strip().replace(" ", "_")
-        filters = {"epub": "EPUB Files (*.epub)", "docx": "DOCX Files (*.docx)", "pdf": "PDF Files (*.pdf)"}
-        path, _ = QFileDialog.getSaveFileName(
-            self, "Export Book", str(BASE_DIR / f"{safe}.{fmt}"), filters[fmt]
-        )
-        if not path:
-            return
-
-        from services.book_exporter import export_book
-        try:
-            export_book(text, title, author_name, fmt, Path(path))
-            self.author_status_label.setText(f"[Done] Exported {fmt.upper()} to {Path(path).name}")
-            self._author_export_done = True
-            self._refresh_next_step_tip()
-        except Exception as e:
-            self.author_status_label.setText(f"[Error] {e}")
-
-    def author_clear(self):
-        self._author_clear_displays()
-        self.author_direction_input.clear()
-        self.author_title_input.clear()
-        self.author_status_label.setText("")
-        self._last_author_response = ""
-
-    def _author_clear_displays(self):
-        for box in (self.author_draft_box, self.author_outline_box,
-                    self.author_characters_box, self.author_world_box):
-            box.clear()
-        self.author_word_count_label.setText("0")
-        self.author_scene_count_label.setText("0")
-        self.author_save_btn.setEnabled(False)
-
-    def _populate_author_tabs(self, response: str):
-        task = self.author_task_box.currentText()
-        sections = self._parse_author_sections(response)
-        if sections.get("outline"):
-            self.author_outline_box.setPlainText(sections["outline"])
-        if sections.get("characters"):
-            self.author_characters_box.setPlainText(sections["characters"])
-        if sections.get("world"):
-            self.author_world_box.setPlainText(sections["world"])
-        # Route clean content to the appropriate tab based on task
-        if task == "Generate Outline" and not sections.get("outline"):
-            self.author_outline_box.setPlainText(response)
-        elif task == "Develop Characters" and not sections.get("characters"):
-            self.author_characters_box.setPlainText(response)
-        elif task == "Build World" and not sections.get("world"):
-            self.author_world_box.setPlainText(response)
-        elif not self._author_is_continuing and not sections.get("outline") and not sections.get("characters"):
-            # Fresh write with no section markers — put full response in draft
-            self.author_draft_box.setPlainText(sections.get("draft") or response)
-
-    def _parse_author_sections(self, text: str) -> dict:
-        patterns = {
-            "draft":      r"\[DRAFT\](.*?)(?=\[OUTLINE\]|\[CHARACTER\]|\[WORLD\]|$)",
-            "outline":    r"\[OUTLINE\](.*?)(?=\[DRAFT\]|\[CHARACTER\]|\[WORLD\]|$)",
-            "characters": r"\[CHARACTER\](.*?)(?=\[DRAFT\]|\[OUTLINE\]|\[WORLD\]|$)",
-            "world":      r"\[WORLD\](.*?)(?=\[DRAFT\]|\[OUTLINE\]|\[CHARACTER\]|$)",
-        }
-        result = {}
-        for key, pat in patterns.items():
-            m = re.search(pat, text, re.DOTALL | re.IGNORECASE)
-            result[key] = m.group(1).strip() if m else ""
-        return result
-
-    def _author_on_tab_changed(self, index: int):
-        if self.author_tabs.widget(index) is self.author_chapters_tab:
-            self._author_refresh_chapters()
-
-    def _author_refresh_chapters(self):
-        """Re-derive the chapter list from the current Draft text — chapters aren't a
-        separate stored model, they're parsed live from Draft using the same heading
-        detection as book export, so there's never a second source of truth to drift."""
-        from services.book_exporter import split_into_chapters, find_chapter_offsets
-
-        text = self.author_draft_box.toPlainText()
-        self.author_chapters_list.clear()
-        self._author_chapter_offsets = []
-
-        if not text.strip():
-            self.author_chapters_stats_label.setText("No chapters detected yet — write something in Draft first.")
-            return
-
-        chapters = split_into_chapters(text)
-        heading_offsets = find_chapter_offsets(text)
-        total_words = len(text.split())
-
-        offsets = []
-        oi = 0
-        for heading, _body in chapters:
-            if heading:
-                offsets.append(heading_offsets[oi] if oi < len(heading_offsets) else 0)
-                oi += 1
-            else:
-                offsets.append(0)
-        self._author_chapter_offsets = offsets
-
-        for i, (heading, body) in enumerate(chapters):
-            label = heading or "(untitled opening — no chapter headings found yet)"
-            words = len(body.split())
-            item = QListWidgetItem(f"{i + 1}. {label}   —   {words:,} words")
-            self.author_chapters_list.addItem(item)
-
-        chapter_word = "chapter" if len(chapters) == 1 else "chapters"
-        self.author_chapters_stats_label.setText(
-            f"{len(chapters)} {chapter_word} · {total_words:,} words total"
-        )
-
-    def _author_jump_to_chapter(self, item):
-        row = self.author_chapters_list.row(item)
-        if row < 0 or row >= len(self._author_chapter_offsets):
-            return
-        cursor = self.author_draft_box.textCursor()
-        cursor.setPosition(self._author_chapter_offsets[row])
-        self.author_draft_box.setTextCursor(cursor)
-        self.author_tabs.setCurrentWidget(self.author_draft_box)
-        self.author_draft_box.ensureCursorVisible()
-
-    # ── Author mode / sub-mode switching ─────────────────────────────────────
-    def _author_set_mode(self, mode: str):
-        is_write = mode == "write"
-        self.author_mode_write_btn.setChecked(is_write)
-        self.author_mode_pubmkt_btn.setChecked(not is_write)
-        self.author_content_stack.setCurrentIndex(0 if is_write else 1)
-
-    def _author_set_sub_mode(self, mode: str):
-        is_pub = mode == "publish"
-        self.author_sub_publish_btn.setChecked(is_pub)
-        self.author_sub_market_btn.setChecked(not is_pub)
-        self.author_sub_stack.setCurrentIndex(0 if is_pub else 1)
-
-    # ── Publish handlers ──────────────────────────────────────────────────────
-    def author_pub_generate(self):
-        provider = self.author_provider_box.currentText()
-        model = self.author_model_box.currentText()
-        if not model:
-            QMessageBox.warning(self, "No Model", "Please select a model in the Write sidebar.")
-            return
-
-        title   = self.author_title_input.text().strip()
-        genre   = self.author_genre_box.currentText()
-        tone    = self.author_tone_box.currentText()
-        doc_type = self.author_pub_type_box.currentText()
-        wc      = self.author_pub_wordcount_input.text().strip()
-        comps   = self.author_pub_comps_input.text().strip()
-        pitch_tone = self.author_pub_pitch_tone_box.currentText()
-        notes   = self.author_pub_notes_input.toPlainText().strip()
-
-        parts = [f"Task: Generate a {doc_type}"]
-        if title:
-            parts.append(f"Book Title: {title}")
-        parts += [f"Genre: {genre}", f"Tone: {tone}", f"Pitch Tone: {pitch_tone}"]
-        if wc:
-            parts.append(f"Manuscript Word Count: {wc}")
-        if comps:
-            parts.append(f"Comp Titles: {comps}")
-        if notes:
-            parts.append(f"Additional Notes:\n{notes}")
-
-        prompt = "\n".join(parts)
-        agent = self.agent_instances["author"]
-        messages = agent.build_publish_messages(prompt, book_profile_context=self._author_build_book_profile_block())
-
-        self.author_pub_output.clear()
-        self.author_status_label.setText(f"[Working…] Generating {doc_type}…")
-        self.author_pub_generate_btn.setEnabled(False)
-        self.author_pub_stop_btn.setEnabled(True)
-        self.author_pub_save_btn.setEnabled(False)
-
-        if not self.authorize_request("author", provider, model, prompt):
-            return
-        self.author_pub_worker = ChatWorker(self.run_backend, provider, model, messages, prompt)
-        self.author_pub_worker.token_signal.connect(self._author_pub_on_token)
-        self.author_pub_worker.finished_signal.connect(self._author_pub_on_finished)
-        self.author_pub_worker.usage_signal.connect(lambda u: self.note_request_usage("author", u))
-        self.author_pub_worker.error_signal.connect(self._author_pub_on_error)
-        self.author_pub_worker.start()
-
-    def _author_pub_on_token(self, token: str):
-        cursor = self.author_pub_output.textCursor()
-        cursor.movePosition(QTextCursor.End)
-        cursor.insertText(token)
-        self.author_pub_output.setTextCursor(cursor)
-
-    def _author_pub_on_finished(self, full_response: str):
-        self.record_request("author", full_response)
-        self.author_status_label.setText(
-            f"[Done] {self.author_pub_type_box.currentText()} generated"
-        )
-        self.author_pub_generate_btn.setEnabled(True)
-        self.author_pub_stop_btn.setEnabled(False)
-        self.author_pub_save_btn.setEnabled(True)
-
-    def _author_pub_on_error(self, error: str):
-        self.abandon_request("author")
-        self.author_status_label.setText(f"[Error] {error}")
-        self.author_pub_generate_btn.setEnabled(True)
-        self.author_pub_stop_btn.setEnabled(False)
-
-    def author_pub_stop(self):
-        if self.author_pub_worker is not None and self.author_pub_worker.isRunning():
-            self.author_pub_worker.cancel()
-        self.author_pub_generate_btn.setEnabled(True)
-        self.author_pub_stop_btn.setEnabled(False)
-        self.author_status_label.setText("[Stopped]")
-
-    def author_pub_copy(self):
-        text = self.author_pub_output.toPlainText().strip()
-        if text:
-            QApplication.clipboard().setText(text)
-            self.author_status_label.setText("[Copied to clipboard]")
-
-    def author_pub_save(self):
-        text = self.author_pub_output.toPlainText().strip()
-        if not text:
-            return
-        title = self.author_title_input.text().strip() or "publish"
-        safe = re.sub(r"[^\w\s-]", "", title).strip().replace(" ", "_")
-        doc_type = re.sub(r"\s+", "_", self.author_pub_type_box.currentText().lower())
-        default_name = f"{safe}_{doc_type}.txt"
-        path, _ = QFileDialog.getSaveFileName(
-            self, "Save Publishing Document", str(BASE_DIR / default_name),
-            "Text Files (*.txt);;Markdown Files (*.md)"
-        )
-        if path:
-            Path(path).write_text(text, encoding="utf-8")
-            self.author_status_label.setText(f"[Saved] {path}")
-
-    # ── Market handlers ───────────────────────────────────────────────────────
-    def author_mkt_generate(self):
-        provider = self.author_provider_box.currentText()
-        model = self.author_model_box.currentText()
-        if not model:
-            QMessageBox.warning(self, "No Model", "Please select a model in the Write sidebar.")
-            return
-
-        title    = self.author_title_input.text().strip()
-        genre    = self.author_genre_box.currentText()
-        platform = self.author_mkt_platform_box.currentText()
-        hook     = self.author_mkt_hook_input.text().strip()
-        comps    = self.author_mkt_comps_input.text().strip()
-        mkt_tone = self.author_mkt_tone_box.currentText()
-        notes    = self.author_mkt_notes_input.toPlainText().strip()
-
-        parts = [f"Task: Generate {platform} copy"]
-        if title:
-            parts.append(f"Book Title: {title}")
-        parts += [f"Genre: {genre}", f"Tone: {mkt_tone}"]
-        if hook:
-            parts.append(f"Hook / Logline: {hook}")
-        if comps:
-            parts.append(f"Comp Titles: {comps}")
-        if notes:
-            parts.append(f"Additional Notes:\n{notes}")
-
-        prompt = "\n".join(parts)
-        agent = self.agent_instances["author"]
-        messages = agent.build_market_messages(prompt, book_profile_context=self._author_build_book_profile_block())
-
-        self.author_mkt_output.clear()
-        self.author_status_label.setText(f"[Working…] Generating {platform} copy…")
-        self.author_mkt_generate_btn.setEnabled(False)
-        self.author_mkt_stop_btn.setEnabled(True)
-        self.author_mkt_save_btn.setEnabled(False)
-
-        if not self.authorize_request("author", provider, model, prompt):
-            return
-        self.author_mkt_worker = ChatWorker(self.run_backend, provider, model, messages, prompt)
-        self.author_mkt_worker.token_signal.connect(self._author_mkt_on_token)
-        self.author_mkt_worker.finished_signal.connect(self._author_mkt_on_finished)
-        self.author_mkt_worker.usage_signal.connect(lambda u: self.note_request_usage("author", u))
-        self.author_mkt_worker.error_signal.connect(self._author_mkt_on_error)
-        self.author_mkt_worker.start()
-
-    def _author_mkt_on_token(self, token: str):
-        cursor = self.author_mkt_output.textCursor()
-        cursor.movePosition(QTextCursor.End)
-        cursor.insertText(token)
-        self.author_mkt_output.setTextCursor(cursor)
-
-    def _author_mkt_on_finished(self, full_response: str):
-        self.record_request("author", full_response)
-        self.author_status_label.setText(
-            f"[Done] {self.author_mkt_platform_box.currentText()} copy generated"
-        )
-        self.author_mkt_generate_btn.setEnabled(True)
-        self.author_mkt_stop_btn.setEnabled(False)
-        self.author_mkt_save_btn.setEnabled(True)
-
-    def _author_mkt_on_error(self, error: str):
-        self.abandon_request("author")
-        self.author_status_label.setText(f"[Error] {error}")
-        self.author_mkt_generate_btn.setEnabled(True)
-        self.author_mkt_stop_btn.setEnabled(False)
-
-    def author_mkt_stop(self):
-        if self.author_mkt_worker is not None and self.author_mkt_worker.isRunning():
-            self.author_mkt_worker.cancel()
-        self.author_mkt_generate_btn.setEnabled(True)
-        self.author_mkt_stop_btn.setEnabled(False)
-        self.author_status_label.setText("[Stopped]")
-
-    def author_mkt_copy(self):
-        text = self.author_mkt_output.toPlainText().strip()
-        if text:
-            QApplication.clipboard().setText(text)
-            self.author_status_label.setText("[Copied to clipboard]")
-
-    def author_mkt_save(self):
-        text = self.author_mkt_output.toPlainText().strip()
-        if not text:
-            return
-        title = self.author_title_input.text().strip() or "marketing"
-        safe = re.sub(r"[^\w\s-]", "", title).strip().replace(" ", "_")
-        platform = re.sub(r"[\s/]+", "_", self.author_mkt_platform_box.currentText().lower())
-        default_name = f"{safe}_{platform}.txt"
-        path, _ = QFileDialog.getSaveFileName(
-            self, "Save Marketing Copy", str(BASE_DIR / default_name),
-            "Text Files (*.txt);;Markdown Files (*.md)"
-        )
-        if path:
-            Path(path).write_text(text, encoding="utf-8")
-            self.author_status_label.setText(f"[Saved] {path}")
-
-    # ── Manuscript panel builder ──────────────────────────────────────────────
-    def build_manuscript_panel(self):
-        self.manuscript_panel = QWidget()
-        self.manuscript_panel.setObjectName("ManuscriptPanel")
-        layout = QVBoxLayout(self.manuscript_panel)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(6)
-
-        # ── Top bar: period selector + refresh button ─────────────────────────
-        top_bar = QWidget()
-        tb = QHBoxLayout(top_bar)
-        tb.setContentsMargins(4, 4, 4, 4)
-        tb.setSpacing(8)
-
-        tb.addWidget(QLabel("Period:"))
-        self.manuscript_period_box = QComboBox()
-        self.manuscript_period_box.addItems(["Last 30 days", "This month", "Last 7 days", "All time"])
-        tb.addWidget(self.manuscript_period_box)
-
-        self.manuscript_refresh_btn = QPushButton("⟳  Refresh Data")
-        self.manuscript_refresh_btn.clicked.connect(self.manuscript_refresh)
-        tb.addWidget(self.manuscript_refresh_btn)
-
-        self.manuscript_ingest_btn = QPushButton("📥  Ingest KDP CSV")
-        self.manuscript_ingest_btn.clicked.connect(self.manuscript_ingest_kdp)
-        tb.addWidget(self.manuscript_ingest_btn)
-
-        tb.addStretch()
-        layout.addWidget(top_bar)
-
-        self.manuscript_next_step_label = QLabel("")
-        self.manuscript_next_step_label.setWordWrap(True)
-        self.manuscript_next_step_label.setStyleSheet(
-            "background: rgba(60,255,136,0.08); border: 1px solid rgba(60,255,136,0.25); "
-            "border-radius: 6px; padding: 8px 10px; color: #3cff88; font-size: 12px;"
-        )
-        layout.addWidget(self.manuscript_next_step_label)
-
-        # ── Connections: which 3rd-party services are actually configured ─────
-        connections_section = CollapsibleSection("🔌  Connections", expanded=False)
-        self.manuscript_connections_layout = QVBoxLayout()
-        self.manuscript_connections_layout.setContentsMargins(4, 2, 4, 2)
-        self.manuscript_connections_layout.setSpacing(3)
-        connections_container = QWidget()
-        connections_container.setLayout(self.manuscript_connections_layout)
-        connections_section.addWidget(connections_container)
-
-        connections_refresh_btn = QPushButton("🔄  Refresh Status")
-        connections_refresh_btn.clicked.connect(self._refresh_connections_status)
-        connections_section.addWidget(connections_refresh_btn)
-
-        layout.addWidget(connections_section)
-        self._refresh_connections_status()
-
-        self.manuscript_tabs = QTabWidget()
-        layout.addWidget(self.manuscript_tabs, 1)
-
-        overview_tab = QWidget()
-        overview_layout = QVBoxLayout(overview_tab)
-        overview_layout.setContentsMargins(0, 0, 0, 0)
-
-        # ── Main area: metrics display + Q&A sidebar ─────────────────────────
-        splitter = QSplitter(Qt.Horizontal)
-
-        # Left: metrics summary display
-        self.manuscript_metrics_box = QTextBrowser()
-        self.manuscript_metrics_box.setPlaceholderText("Click Refresh Data to load publishing metrics…")
-        splitter.addWidget(self.manuscript_metrics_box)
-
-        # Right: Q&A sidebar
-        sidebar = QWidget()
-        sb = QVBoxLayout(sidebar)
-        sb.setContentsMargins(8, 4, 4, 4)
-        sb.setSpacing(6)
-        sidebar.setMinimumWidth(220)
-        sidebar.setMaximumWidth(280)
-
-        sb.addWidget(QLabel("Ask about your book:"))
-        self.manuscript_query_input = QTextEdit()
-        self.manuscript_query_input.setPlaceholderText(
-            "e.g. What did I earn this month?\nWhich platform is performing best?"
-        )
-        self.manuscript_query_input.setFixedHeight(90)
-        sb.addWidget(self.manuscript_query_input)
-
-        sb.addWidget(QLabel("Provider:"))
-        self.manuscript_provider_box = QComboBox()
-        self.manuscript_provider_box.addItems(["anthropic", "openai", "deepseek", "kimi", "gemini", "qwen"])
-        self.manuscript_provider_box.currentTextChanged.connect(self.manuscript_load_models)
-        sb.addWidget(self.manuscript_provider_box)
-
-        sb.addWidget(QLabel("Model:"))
-        self.manuscript_model_box = QComboBox()
-        sb.addWidget(self.manuscript_model_box)
-
-        self.manuscript_ask_btn = QPushButton("💬  Ask")
-        self.manuscript_ask_btn.setMinimumHeight(34)
-        self.manuscript_ask_btn.clicked.connect(self.manuscript_ask)
-        sb.addWidget(self.manuscript_ask_btn)
-
-        sb.addStretch()
-
-        # Todos section
-        sep = QFrame()
-        sep.setFrameShape(QFrame.HLine)
-        sep.setStyleSheet("color: #444;")
-        sb.addWidget(sep)
-
-        sb.addWidget(QLabel("Publishing Todos:"))
-        self.manuscript_todo_list = QListWidget()
-        self.manuscript_todo_list.setMinimumHeight(120)
-        sb.addWidget(self.manuscript_todo_list)
-
-        self.manuscript_todo_input = QLineEdit()
-        self.manuscript_todo_input.setPlaceholderText("Add todo…")
-        sb.addWidget(self.manuscript_todo_input)
-
-        todo_btn_row = QHBoxLayout()
-        self.manuscript_add_todo_btn = QPushButton("Add")
-        self.manuscript_add_todo_btn.clicked.connect(self.manuscript_add_todo)
-        self.manuscript_done_todo_btn = QPushButton("Done")
-        self.manuscript_done_todo_btn.clicked.connect(self.manuscript_mark_todo_done)
-        todo_btn_row.addWidget(self.manuscript_add_todo_btn)
-        todo_btn_row.addWidget(self.manuscript_done_todo_btn)
-        sb.addLayout(todo_btn_row)
-
-        splitter.addWidget(sidebar)
-        overview_layout.addWidget(splitter)
-        self.manuscript_tabs.addTab(overview_tab, "Overview")
-
-        self.build_manuscript_quote_finder_tab()
-        self.manuscript_tabs.addTab(self.manuscript_quote_finder_tab, "Quote Finder")
-
-        self.build_manuscript_graphics_tab()
-        self.manuscript_tabs.addTab(self.manuscript_graphics_tab, "Quote Graphics")
-
-        self.build_manuscript_shorts_tab()
-        self.manuscript_tabs.addTab(self.manuscript_shorts_tab, "Shorts")
-
-        self.build_manuscript_calendar_tab()
-        self.manuscript_tabs.addTab(self.manuscript_calendar_tab, "Calendar")
-
-        # Status bar
-        self.manuscript_status_label = QLabel("")
-        self.manuscript_status_label.setStyleSheet("font-size: 12px; color: #888; padding: 2px 4px;")
-        layout.addWidget(self.manuscript_status_label)
-
-        self.manuscript_panel.hide()
-
-    def build_manuscript_quote_finder_tab(self):
-        self.manuscript_quote_finder_tab = QWidget()
-        layout = QVBoxLayout(self.manuscript_quote_finder_tab)
-        layout.setContentsMargins(8, 8, 8, 8)
-        layout.setSpacing(8)
-
-        layout.addWidget(QLabel("Manuscript text:"))
-        self.quote_finder_text = QTextEdit()
-        self.quote_finder_text.setPlaceholderText(
-            "Paste a chapter or excerpt here, or load a file below…"
-        )
-        self.quote_finder_text.setFixedHeight(140)
-        layout.addWidget(self.quote_finder_text)
-
-        load_row = QHBoxLayout()
-        self.quote_finder_load_btn = QPushButton("📄  Load File…")
-        self.quote_finder_load_btn.clicked.connect(self.quote_finder_load_file)
-        load_row.addWidget(self.quote_finder_load_btn)
-        load_row.addWidget(QLabel("Supports .txt, .pdf, .epub, .mobi"))
-        load_row.addStretch()
-        layout.addLayout(load_row)
-
-        settings_row_container = QWidget()
-        settings_row = FlowLayout(settings_row_container, spacing=6)
-        settings_row.addWidget(QLabel("Quotes:"))
-        self.quote_finder_count_box = QComboBox()
-        self.quote_finder_count_box.addItems(["5", "10", "15", "20"])
-        self.quote_finder_count_box.setCurrentText("10")
-        settings_row.addWidget(self.quote_finder_count_box)
-
-        settings_row.addWidget(QLabel("Theme:"))
-        self.quote_finder_theme_box = make_theme_box()
-        settings_row.addWidget(self.quote_finder_theme_box)
-
-        settings_row.addWidget(QLabel("Voice:"))
-        self.quote_finder_voice_source_box = make_voice_source_box()
-        self.quote_finder_voice_source_box.currentTextChanged.connect(self.quote_finder_load_voices)
-        settings_row.addWidget(self.quote_finder_voice_source_box)
-
-        self.quote_finder_voice_box = QComboBox()
-        settings_row.addWidget(self.quote_finder_voice_box)
-
-        settings_row.addWidget(QLabel("Attribution:"))
-        self.quote_finder_attribution = QLineEdit()
-        self.quote_finder_attribution.setPlaceholderText("You Don't Chase")
-        settings_row.addWidget(self.quote_finder_attribution)
-
-        layout.addWidget(settings_row_container)
-
-        self.quote_finder_suggest_btn = QPushButton("🔍  Suggest Quotes")
-        self.quote_finder_suggest_btn.setMinimumHeight(34)
-        self.quote_finder_suggest_btn.clicked.connect(self.quote_finder_suggest)
-        layout.addWidget(self.quote_finder_suggest_btn)
-
-        layout.addWidget(QLabel("Candidates — 🖼 makes a graphic, 🎬 makes a narrated short:"))
-        self.quote_finder_list = QListWidget()
-        layout.addWidget(self.quote_finder_list, 1)
-
-        self._quote_finder_short_buttons: list = []
-        self._quote_finder_busy = False
-        self.quote_finder_load_voices()
-
-    def build_manuscript_graphics_tab(self):
-        self.manuscript_graphics_tab = QWidget()
-        row = QHBoxLayout(self.manuscript_graphics_tab)
-        row.setContentsMargins(8, 8, 8, 8)
-        row.setSpacing(12)
-
-        # Left: controls
-        controls = QWidget()
-        cl = QVBoxLayout(controls)
-        cl.setContentsMargins(0, 0, 0, 0)
-        cl.setSpacing(6)
-        controls.setMaximumWidth(280)
-
-        cl.addWidget(QLabel("Quote:"))
-        self.quote_graphic_text = QTextEdit()
-        self.quote_graphic_text.setPlaceholderText("You over-text. You explain yourself. You wait.")
-        self.quote_graphic_text.setFixedHeight(90)
-        cl.addWidget(self.quote_graphic_text)
-
-        cl.addWidget(QLabel("Attribution (optional):"))
-        self.quote_graphic_attribution = QLineEdit()
-        self.quote_graphic_attribution.setPlaceholderText("You Don't Chase")
-        cl.addWidget(self.quote_graphic_attribution)
-
-        cl.addWidget(QLabel("Theme:"))
-        self.quote_graphic_theme_box = make_theme_box()
-        cl.addWidget(self.quote_graphic_theme_box)
-
-        cl.addWidget(QLabel("Size:"))
-        self.quote_graphic_size_box = make_size_box()
-        cl.addWidget(self.quote_graphic_size_box)
-
-        self.quote_graphic_generate_btn = QPushButton("✨  Generate Graphic")
-        self.quote_graphic_generate_btn.setMinimumHeight(34)
-        self.quote_graphic_generate_btn.clicked.connect(self.manuscript_generate_quote_graphic)
-        cl.addWidget(self.quote_graphic_generate_btn)
-
-        self.quote_graphic_open_folder_btn = QPushButton("📂  Open Folder")
-        self.quote_graphic_open_folder_btn.clicked.connect(self.manuscript_open_graphics_folder)
-        cl.addWidget(self.quote_graphic_open_folder_btn)
-
-        cl.addStretch()
-        row.addWidget(controls)
-
-        # Right: preview
-        self.quote_graphic_preview = QLabel("Preview will appear here.")
-        self.quote_graphic_preview.setAlignment(Qt.AlignCenter)
-        self.quote_graphic_preview.setStyleSheet(
-            "background: #1a1a1a; border: 1px solid #333; color: #666;"
-        )
-        self.quote_graphic_preview.setMinimumSize(320, 320)
-        row.addWidget(self.quote_graphic_preview, 1)
-
-    def build_manuscript_shorts_tab(self):
-        self.manuscript_shorts_tab = QWidget()
-        row = QHBoxLayout(self.manuscript_shorts_tab)
-        row.setContentsMargins(8, 8, 8, 8)
-        row.setSpacing(12)
-
-        # Left: controls
-        controls = QWidget()
-        cl = QVBoxLayout(controls)
-        cl.setContentsMargins(0, 0, 0, 0)
-        cl.setSpacing(6)
-        controls.setMaximumWidth(280)
-
-        cl.addWidget(QLabel("Quote (also narrated):"))
-        self.shorts_quote_text = QTextEdit()
-        self.shorts_quote_text.setPlaceholderText("You over-text. You explain yourself. You wait.")
-        self.shorts_quote_text.setFixedHeight(90)
-        cl.addWidget(self.shorts_quote_text)
-
-        cl.addWidget(QLabel("Attribution (optional):"))
-        self.shorts_attribution = QLineEdit()
-        self.shorts_attribution.setPlaceholderText("You Don't Chase")
-        cl.addWidget(self.shorts_attribution)
-
-        cl.addWidget(QLabel("Theme:"))
-        self.shorts_theme_box = make_theme_box()
-        cl.addWidget(self.shorts_theme_box)
-
-        cl.addWidget(QLabel("Voice source:"))
-        self.shorts_voice_source_box = make_voice_source_box()
-        self.shorts_voice_source_box.currentTextChanged.connect(self.shorts_load_voices)
-        cl.addWidget(self.shorts_voice_source_box)
-
-        self.shorts_voice_box = QComboBox()
-        cl.addWidget(self.shorts_voice_box)
-
-        self.shorts_generate_btn = QPushButton("🎬  Generate Short")
-        self.shorts_generate_btn.setMinimumHeight(34)
-        self.shorts_generate_btn.clicked.connect(self.manuscript_generate_short)
-        cl.addWidget(self.shorts_generate_btn)
-
-        btn_row = QHBoxLayout()
-        self.shorts_play_btn = QPushButton("▶  Play")
-        self.shorts_play_btn.setEnabled(False)
-        self.shorts_play_btn.clicked.connect(self.manuscript_play_short)
-        self.shorts_open_folder_btn = QPushButton("📂  Folder")
-        self.shorts_open_folder_btn.clicked.connect(self.manuscript_open_shorts_folder)
-        btn_row.addWidget(self.shorts_play_btn)
-        btn_row.addWidget(self.shorts_open_folder_btn)
-        cl.addLayout(btn_row)
-
-        cl.addStretch()
-        row.addWidget(controls)
-
-        # Right: preview (static frame of the short — no inline video player)
-        self.shorts_preview = QLabel("Preview will appear here.")
-        self.shorts_preview.setAlignment(Qt.AlignCenter)
-        self.shorts_preview.setStyleSheet(
-            "background: #1a1a1a; border: 1px solid #333; color: #666;"
-        )
-        self.shorts_preview.setMinimumSize(320, 320)
-        row.addWidget(self.shorts_preview, 1)
-
-        self.shorts_load_voices()
-
-    def build_manuscript_calendar_tab(self):
-        self.manuscript_calendar_tab = QWidget()
-        layout = QVBoxLayout(self.manuscript_calendar_tab)
-        layout.setContentsMargins(8, 8, 8, 8)
-        layout.setSpacing(8)
-
-        from PySide6.QtWidgets import QDateEdit
-        from PySide6.QtCore import QDate
-
-        layout.addWidget(QLabel(
-            "Builds a posting schedule from the candidates on the Quote Finder tab — "
-            "run Suggest Quotes there first."
-        ))
-
-        settings_row = QHBoxLayout()
-        settings_row.addWidget(QLabel("Weeks:"))
-        self.calendar_weeks_box = QComboBox()
-        self.calendar_weeks_box.addItems(["1", "2", "4"])
-        settings_row.addWidget(self.calendar_weeks_box)
-
-        settings_row.addWidget(QLabel("Start:"))
-        self.calendar_start_date = QDateEdit()
-        self.calendar_start_date.setDate(QDate.currentDate())
-        self.calendar_start_date.setCalendarPopup(True)
-        settings_row.addWidget(self.calendar_start_date)
-
-        self.calendar_tiktok_check = QCheckBox("TikTok")
-        self.calendar_tiktok_check.setChecked(True)
-        settings_row.addWidget(self.calendar_tiktok_check)
-
-        self.calendar_instagram_check = QCheckBox("Instagram")
-        self.calendar_instagram_check.setChecked(True)
-        settings_row.addWidget(self.calendar_instagram_check)
-
-        self.calendar_pinterest_check = QCheckBox("Pinterest")
-        self.calendar_pinterest_check.setChecked(True)
-        settings_row.addWidget(self.calendar_pinterest_check)
-
-        settings_row.addStretch()
-        layout.addLayout(settings_row)
-
-        settings_row2 = QHBoxLayout()
-        settings_row2.addWidget(QLabel("Theme:"))
-        self.calendar_theme_box = make_theme_box()
-        settings_row2.addWidget(self.calendar_theme_box)
-
-        settings_row2.addWidget(QLabel("Voice:"))
-        self.calendar_voice_source_box = make_voice_source_box()
-        self.calendar_voice_source_box.currentTextChanged.connect(self.calendar_load_voices)
-        settings_row2.addWidget(self.calendar_voice_source_box)
-
-        self.calendar_voice_box = QComboBox()
-        settings_row2.addWidget(self.calendar_voice_box)
-
-        settings_row2.addWidget(QLabel("Attribution:"))
-        self.calendar_attribution = QLineEdit()
-        self.calendar_attribution.setPlaceholderText("You Don't Chase")
-        settings_row2.addWidget(self.calendar_attribution)
-
-        settings_row2.addStretch()
-        layout.addLayout(settings_row2)
-
-        btn_row = QHBoxLayout()
-        self.calendar_generate_btn = QPushButton("📅  Generate Calendar")
-        self.calendar_generate_btn.setMinimumHeight(34)
-        self.calendar_generate_btn.clicked.connect(self.manuscript_generate_calendar)
-        btn_row.addWidget(self.calendar_generate_btn)
-
-        self.calendar_export_btn = QPushButton("📤  Export Calendar (CSV)")
-        self.calendar_export_btn.clicked.connect(self.manuscript_export_calendar_csv)
-        btn_row.addWidget(self.calendar_export_btn)
-        btn_row.addStretch()
-        layout.addLayout(btn_row)
-
-        from PySide6.QtWidgets import QTableWidget
-        self.calendar_table = QTableWidget(0, 6)
-        self.calendar_table.setHorizontalHeaderLabels(["Date", "Platform", "Format", "Quote", "Caption", ""])
-        self.calendar_table.setColumnWidth(0, 90)
-        self.calendar_table.setColumnWidth(1, 80)
-        self.calendar_table.setColumnWidth(2, 70)
-        self.calendar_table.setColumnWidth(3, 260)
-        self.calendar_table.setColumnWidth(5, 40)
-        self.calendar_table.setEditTriggers(QTableWidget.NoEditTriggers)
-        layout.addWidget(self.calendar_table, 1)
-
-        self._calendar_slots = []
-        self.calendar_load_voices()
-
-    # ── Manuscript handlers ───────────────────────────────────────────────────
-    def manuscript_load_models(self):
-        provider = self.manuscript_provider_box.currentText()
-        self.manuscript_model_box.clear()
-        try:
-            if provider == "anthropic":
-                models = self.anthropic.list_models()
-            elif provider == "openai":
-                models = self.openai.list_models()
-            elif provider == "deepseek":
-                models = self.deepseek.list_models()
-            elif provider == "kimi":
-                models = self.kimi.list_models()
-            elif provider == "gemini":
-                models = self.gemini.list_models()
-            else:
-                models = []
-            for m in models:
-                self.manuscript_model_box.addItem(m)
-        except Exception as exc:
-            self._note_failure("manuscript: load models", exc, self.manuscript_model_box)
-
     def _refresh_connections_status(self):
         """Shows which 3rd-party API keys are actually configured (checked from the running
         process's environment — restart the app after editing .env for changes to appear).
@@ -5905,690 +3115,6 @@ class GodAI(QWidget):
             row = QLabel(text)
             row.setStyleSheet(f"color: {color}; font-size: 12px;")
             self.manuscript_connections_layout.addWidget(row)
-
-    def manuscript_refresh(self):
-        """Fetch PublishDrive data and display summary."""
-        from services.publishdrive_client import PublishDriveClient
-        import json
-        self.manuscript_status_label.setText("[Fetching…]")
-        try:
-            client = PublishDriveClient()
-            data = client.get_last_30_days()
-            self.manuscript_metrics_box.setPlainText(json.dumps(data, indent=2))
-            self.manuscript_status_label.setText("[Done] Data refreshed.")
-            self._manuscript_last_data = json.dumps(data)
-        except Exception as e:
-            self.manuscript_status_label.setText(f"[Error] {e}")
-
-    def manuscript_ingest_kdp(self):
-        """Ingest any new KDP CSV files from data/kdp_reports/."""
-        from services.kdp_csv_parser import ingest_new_reports
-        ingested = ingest_new_reports()
-        if ingested:
-            self.manuscript_status_label.setText(f"[Done] Ingested: {', '.join(ingested)}")
-        else:
-            self.manuscript_status_label.setText("[Info] No new KDP reports found.")
-
-    def manuscript_ask(self):
-        """Send a query to ManuscriptAgent with current data as context."""
-        query = self.manuscript_query_input.toPlainText().strip()
-        if not query:
-            return
-        provider = self.manuscript_provider_box.currentText()
-        model = self.manuscript_model_box.currentText()
-        if not model:
-            self.manuscript_status_label.setText("[Error] Please select a model.")
-            return
-        agent = self.agent_instances["manuscript"]
-        messages = agent.build_messages(query, context_json=self._manuscript_last_data)
-        self.manuscript_status_label.setText("[Thinking…]")
-        self.manuscript_ask_btn.setEnabled(False)
-        if not self.authorize_request("manuscript", provider, model, query):
-            return
-        self.manuscript_worker = ChatWorker(self.run_backend, provider, model, messages, query)
-        self.manuscript_worker.token_signal.connect(self._manuscript_on_token)
-        self.manuscript_worker.finished_signal.connect(self._manuscript_on_finished)
-        self.manuscript_worker.usage_signal.connect(lambda u: self.note_request_usage("manuscript", u))
-        self.manuscript_worker.error_signal.connect(self._manuscript_on_error)
-        self.manuscript_worker.start()
-
-    def _manuscript_on_token(self, token: str):
-        cursor = self.manuscript_metrics_box.textCursor()
-        cursor.movePosition(QTextCursor.End)
-        cursor.insertText(token)
-        self.manuscript_metrics_box.setTextCursor(cursor)
-
-    def _manuscript_on_finished(self, _full_response: str):
-        self.record_request("manuscript", _full_response)
-        self.manuscript_status_label.setText("[Done]")
-        self.manuscript_ask_btn.setEnabled(True)
-
-    def _manuscript_on_error(self, error: str):
-        self.abandon_request("manuscript")
-        self.manuscript_status_label.setText(f"[Error] {error}")
-        self.manuscript_ask_btn.setEnabled(True)
-
-    def manuscript_add_todo(self):
-        title = self.manuscript_todo_input.text().strip()
-        if not title:
-            return
-        import sqlite3
-        from services.database import DB_PATH
-        now = datetime.utcnow().isoformat()
-        conn = sqlite3.connect(DB_PATH)
-        conn.execute(
-            "INSERT INTO manuscript_todos (created_at, updated_at, title) VALUES (?, ?, ?)",
-            (now, now, title)
-        )
-        conn.commit()
-        conn.close()
-        self.manuscript_todo_input.clear()
-        self._load_manuscript_todos()
-
-    def manuscript_mark_todo_done(self):
-        item = self.manuscript_todo_list.currentItem()
-        if not item:
-            return
-        todo_id = item.data(Qt.UserRole)
-        import sqlite3
-        from services.database import DB_PATH
-        conn = sqlite3.connect(DB_PATH)
-        conn.execute(
-            "UPDATE manuscript_todos SET status='done', updated_at=? WHERE id=?",
-            (datetime.utcnow().isoformat(), todo_id)
-        )
-        conn.commit()
-        conn.close()
-        self._load_manuscript_todos()
-
-    def _load_manuscript_todos(self):
-        import sqlite3
-        from services.database import DB_PATH
-        conn = sqlite3.connect(DB_PATH)
-        rows = conn.execute(
-            "SELECT id, title, status, platform, notes FROM manuscript_todos ORDER BY created_at DESC"
-        ).fetchall()
-        conn.close()
-        self.manuscript_todo_list.clear()
-        for row_id, title, status, platform, notes in rows:
-            check = "✅" if status == "done" else "○"
-            tag = f"[{platform}] " if platform else ""
-            info = " ℹ️" if notes else ""
-            item = QListWidgetItem(f"{check} {tag}{title}{info}")
-            item.setData(Qt.UserRole, row_id)
-            if notes:
-                item.setToolTip(notes)
-            self.manuscript_todo_list.addItem(item)
-        self._refresh_next_step_tip()
-
-    def manuscript_generate_quote_graphic(self):
-        quote = self.quote_graphic_text.toPlainText().strip()
-        if not quote:
-            QMessageBox.warning(self, "Missing Quote", "Please enter a quote.")
-            return
-        from PySide6.QtGui import QPixmap
-        from services.quote_graphics import render_quote_graphic, GRAPHICS_DIR
-        import time
-
-        attribution = self.quote_graphic_attribution.text().strip()
-        theme = theme_key(self.quote_graphic_theme_box)
-        size_name = size_key(self.quote_graphic_size_box)
-        output_path = unique_output_path(GRAPHICS_DIR, "quote", ".png")
-        try:
-            render_quote_graphic(quote, output_path, theme=theme, size_name=size_name, attribution=attribution)
-            pixmap = QPixmap(str(output_path))
-            scaled = pixmap.scaled(320, 480, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-            self.quote_graphic_preview.setPixmap(scaled)
-            self.manuscript_status_label.setText(f"[Done] Saved {output_path.name}")
-        except Exception as e:
-            self.manuscript_status_label.setText(f"[Error] {e}")
-
-    def manuscript_open_graphics_folder(self):
-        from services.quote_graphics import GRAPHICS_DIR
-        QDesktopServices.openUrl(QUrl.fromLocalFile(str(GRAPHICS_DIR)))
-
-    def shorts_load_voices(self):
-        from ui.book_widgets import populate_voice_box
-        populate_voice_box(self.shorts_voice_box, self.shorts_voice_source_box.currentText())
-
-    def manuscript_generate_short(self):
-        quote = self.shorts_quote_text.toPlainText().strip()
-        if not quote:
-            QMessageBox.warning(self, "Missing Quote", "Please enter a quote.")
-            return
-        from PySide6.QtGui import QPixmap
-        from services.quote_graphics import render_quote_graphic
-        from services.shorts_generator import SHORTS_DIR
-        import time
-
-        attribution = self.shorts_attribution.text().strip()
-        theme = theme_key(self.shorts_theme_box)
-        use_elevenlabs = self.shorts_voice_source_box.currentText() == "ElevenLabs"
-        voice_id = self.shorts_voice_box.currentData() or "default"
-
-        output_path = unique_output_path(SHORTS_DIR, "short", ".mp4")
-        image_path = output_path.with_suffix(".png")
-
-        try:
-            render_quote_graphic(quote, image_path, theme=theme, size_name="vertical", attribution=attribution)
-            pixmap = QPixmap(str(image_path))
-            scaled = pixmap.scaled(320, 480, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-            self.shorts_preview.setPixmap(scaled)
-        except Exception as e:
-            self.manuscript_status_label.setText(f"[Error] {e}")
-            return
-
-        self.shorts_generate_btn.setEnabled(False)
-        self.shorts_play_btn.setEnabled(False)
-        self._last_short_path = ""
-        self.manuscript_status_label.setText("[Narrating…]")
-
-        self.shorts_worker = ShortsWorker(quote, image_path, output_path, use_elevenlabs, voice_id)
-        self.shorts_worker.status_signal.connect(self.manuscript_status_label.setText)
-        self.shorts_worker.done_signal.connect(self._shorts_on_done)
-        self.shorts_worker.error_signal.connect(self._shorts_on_error)
-        self.shorts_worker.start()
-
-    def _shorts_on_done(self, output_path: str):
-        self._last_short_path = output_path
-        self.manuscript_status_label.setText(f"[Done] Saved {Path(output_path).name}")
-        self.shorts_generate_btn.setEnabled(True)
-        self.shorts_play_btn.setEnabled(True)
-
-    def _shorts_on_error(self, error: str):
-        self.manuscript_status_label.setText(f"[Error] {error}")
-        self.shorts_generate_btn.setEnabled(True)
-
-    def manuscript_play_short(self):
-        if self._last_short_path:
-            QDesktopServices.openUrl(QUrl.fromLocalFile(self._last_short_path))
-
-    def manuscript_open_shorts_folder(self):
-        from services.shorts_generator import SHORTS_DIR
-        QDesktopServices.openUrl(QUrl.fromLocalFile(str(SHORTS_DIR)))
-
-    # ── Quote Finder handlers ─────────────────────────────────────────────────
-    def quote_finder_load_voices(self):
-        from ui.book_widgets import populate_voice_box
-        populate_voice_box(self.quote_finder_voice_box, self.quote_finder_voice_source_box.currentText())
-
-    def quote_finder_load_file(self):
-        path, _ = QFileDialog.getOpenFileName(
-            self, "Load Manuscript File", "",
-            "Text / Ebook Files (*.txt *.pdf *.epub *.mobi)"
-        )
-        if not path:
-            return
-        from services.narrator.converter import load_text
-        try:
-            text = load_text(Path(path))
-            self.quote_finder_text.setPlainText(text)
-            self.manuscript_status_label.setText(f"[Loaded] {Path(path).name} ({len(text):,} chars)")
-        except Exception as e:
-            self.manuscript_status_label.setText(f"[Error] {e}")
-
-    def quote_finder_suggest(self):
-        text = self.quote_finder_text.toPlainText().strip()
-        if not text:
-            QMessageBox.warning(self, "Missing Text", "Paste or load manuscript text first.")
-            return
-        provider = self.manuscript_provider_box.currentText()
-        model = self.manuscript_model_box.currentText()
-        if not model:
-            self.manuscript_status_label.setText("[Error] Select a model on the Overview tab.")
-            return
-        count = int(self.quote_finder_count_box.currentText())
-        # Cap input to keep cost bounded — plenty of text to find a strong batch of quotes.
-        truncated = text[:30000]
-
-        agent = self.agent_instances["manuscript"]
-        messages = agent.build_quote_suggestions_messages(truncated, count=count)
-        self.manuscript_status_label.setText("[Finding quotes…]")
-        self.quote_finder_suggest_btn.setEnabled(False)
-        if not self.authorize_request("manuscript", provider, model, truncated):
-            return
-        self.quote_finder_worker = ChatWorker(self.run_backend, provider, model, messages, truncated)
-        self.quote_finder_worker.finished_signal.connect(self._quote_finder_on_finished)
-        self.quote_finder_worker.usage_signal.connect(lambda u: self.note_request_usage("manuscript", u))
-        self.quote_finder_worker.error_signal.connect(self._quote_finder_on_error)
-        self.quote_finder_worker.start()
-
-    def _quote_finder_on_finished(self, full_response: str):
-        self.record_request("manuscript", full_response)
-        self.quote_finder_suggest_btn.setEnabled(True)
-        quotes = self._parse_quote_list(full_response)
-        self.quote_finder_list.clear()
-        self._quote_finder_short_buttons = []
-        if not quotes:
-            self.manuscript_status_label.setText("[Error] Could not parse quotes from response.")
-            return
-        for q in quotes:
-            item = QListWidgetItem()
-            row = self._build_quote_suggestion_row(q)
-            item.setSizeHint(row.sizeHint())
-            self.quote_finder_list.addItem(item)
-            self.quote_finder_list.setItemWidget(item, row)
-        self.manuscript_status_label.setText(f"[Done] Found {len(quotes)} quotes.")
-
-    def _quote_finder_on_error(self, error: str):
-        self.abandon_request("manuscript")
-        self.quote_finder_suggest_btn.setEnabled(True)
-        self.manuscript_status_label.setText(f"[Error] {error}")
-
-    def _parse_quote_list(self, text: str) -> list:
-        from services.llm_parsing import parse_string_list
-        return parse_string_list(text)
-
-    def _build_quote_suggestion_row(self, quote: str) -> QWidget:
-        row = QWidget()
-        h = QHBoxLayout(row)
-        h.setContentsMargins(4, 4, 4, 4)
-        h.setSpacing(6)
-
-        label = QLabel(quote)
-        label.setWordWrap(True)
-        h.addWidget(label, 1)
-
-        graphic_btn = QPushButton("🖼")
-        graphic_btn.setFixedWidth(36)
-        graphic_btn.setToolTip("Generate quote graphic")
-        graphic_btn.clicked.connect(lambda checked=False, q=quote: self.quote_finder_generate_graphic(q))
-        h.addWidget(graphic_btn)
-
-        short_btn = QPushButton("🎬")
-        short_btn.setFixedWidth(36)
-        short_btn.setToolTip("Generate narrated short")
-        short_btn.clicked.connect(lambda checked=False, q=quote, b=short_btn: self.quote_finder_generate_short(q, b))
-        h.addWidget(short_btn)
-        self._quote_finder_short_buttons.append(short_btn)
-
-        return row
-
-    def quote_finder_generate_graphic(self, quote: str):
-        from services.quote_graphics import render_quote_graphic, GRAPHICS_DIR
-        import time
-        theme = theme_key(self.quote_finder_theme_box)
-        attribution = self.quote_finder_attribution.text().strip()
-        output_path = unique_output_path(GRAPHICS_DIR, "quote", ".png")
-        try:
-            render_quote_graphic(quote, output_path, theme=theme, size_name="square", attribution=attribution)
-            self.manuscript_status_label.setText(f"[Done] Saved {output_path.name}")
-        except Exception as e:
-            self.manuscript_status_label.setText(f"[Error] {e}")
-
-    def quote_finder_generate_short(self, quote: str, button: QPushButton):
-        if self._quote_finder_busy:
-            QMessageBox.information(self, "Busy", "A short is already generating — please wait for it to finish.")
-            return
-        from services.quote_graphics import render_quote_graphic
-        from services.shorts_generator import SHORTS_DIR
-        import time
-
-        theme = theme_key(self.quote_finder_theme_box)
-        attribution = self.quote_finder_attribution.text().strip()
-        use_elevenlabs = self.quote_finder_voice_source_box.currentText() == "ElevenLabs"
-        voice_id = self.quote_finder_voice_box.currentData() or "default"
-
-        output_path = unique_output_path(SHORTS_DIR, "short", ".mp4")
-        image_path = output_path.with_suffix(".png")
-        try:
-            render_quote_graphic(quote, image_path, theme=theme, size_name="vertical", attribution=attribution)
-        except Exception as e:
-            self.manuscript_status_label.setText(f"[Error] {e}")
-            return
-
-        self._quote_finder_busy = True
-        for b in self._quote_finder_short_buttons:
-            b.setEnabled(False)
-        button.setText("…")
-        self.manuscript_status_label.setText("[Narrating…]")
-
-        self.shorts_worker = ShortsWorker(quote, image_path, output_path, use_elevenlabs, voice_id)
-        self.shorts_worker.status_signal.connect(self.manuscript_status_label.setText)
-        self.shorts_worker.done_signal.connect(lambda path, b=button: self._quote_finder_short_done(path, b))
-        self.shorts_worker.error_signal.connect(lambda err, b=button: self._quote_finder_short_error(err, b))
-        self.shorts_worker.start()
-
-    def _quote_finder_short_done(self, output_path: str, button: QPushButton):
-        self._last_short_path = output_path
-        self.manuscript_status_label.setText(f"[Done] Saved {Path(output_path).name}")
-        button.setText("🎬")
-        self._quote_finder_busy = False
-        for b in self._quote_finder_short_buttons:
-            b.setEnabled(True)
-
-    def _quote_finder_short_error(self, error: str, button: QPushButton):
-        self.manuscript_status_label.setText(f"[Error] {error}")
-        button.setText("⚠")
-        self._quote_finder_busy = False
-        for b in self._quote_finder_short_buttons:
-            b.setEnabled(True)
-
-    # ── Calendar handlers ─────────────────────────────────────────────────────
-    def calendar_load_voices(self):
-        from ui.book_widgets import populate_voice_box
-        populate_voice_box(self.calendar_voice_box, self.calendar_voice_source_box.currentText())
-
-    def _calendar_quotes_from_finder(self) -> list:
-        quotes = []
-        for i in range(self.quote_finder_list.count()):
-            widget = self.quote_finder_list.itemWidget(self.quote_finder_list.item(i))
-            if widget:
-                label = widget.findChild(QLabel)
-                if label:
-                    quotes.append(label.text())
-        return quotes
-
-    def manuscript_generate_calendar(self):
-        quotes = self._calendar_quotes_from_finder()
-        if not quotes:
-            QMessageBox.warning(self, "No Quotes", "Run 'Suggest Quotes' on the Quote Finder tab first.")
-            return
-
-        platforms = []
-        if self.calendar_tiktok_check.isChecked():
-            platforms.append("TikTok")
-        if self.calendar_instagram_check.isChecked():
-            platforms.append("Instagram")
-        if self.calendar_pinterest_check.isChecked():
-            platforms.append("Pinterest")
-        if not platforms:
-            QMessageBox.warning(self, "No Platforms", "Select at least one platform.")
-            return
-
-        provider = self.manuscript_provider_box.currentText()
-        model = self.manuscript_model_box.currentText()
-        if not model:
-            self.manuscript_status_label.setText("[Error] Select a model on the Overview tab.")
-            return
-
-        weeks = int(self.calendar_weeks_box.currentText())
-        start_date = self.calendar_start_date.date().toPython()
-
-        from services.content_calendar import build_calendar
-        slots = build_calendar(quotes, weeks, start_date, platforms)
-        if not slots:
-            self.manuscript_status_label.setText("[Error] Could not build a calendar.")
-            return
-        self._calendar_slots = slots
-
-        items = [{"quote": s.quote, "platform": s.platform.lower()} for s in slots]
-        items_json = json.dumps(items)
-        agent = self.agent_instances["manuscript"]
-        messages = agent.build_calendar_caption_messages(items_json)
-        self.manuscript_status_label.setText("[Writing captions…]")
-        self.calendar_generate_btn.setEnabled(False)
-        if not self.authorize_request("manuscript", provider, model, items_json):
-            return
-        self.calendar_worker = ChatWorker(self.run_backend, provider, model, messages, items_json)
-        self.calendar_worker.finished_signal.connect(self._calendar_on_captions_done)
-        self.calendar_worker.usage_signal.connect(lambda u: self.note_request_usage("manuscript", u))
-        self.calendar_worker.error_signal.connect(self._calendar_on_captions_error)
-        self.calendar_worker.start()
-
-    def _calendar_on_captions_done(self, full_response: str):
-        self.record_request("manuscript", full_response)
-        self.calendar_generate_btn.setEnabled(True)
-        captions = self._parse_quote_list(full_response)
-        for i, slot in enumerate(self._calendar_slots):
-            slot.caption = captions[i] if i < len(captions) else ""
-        self._populate_calendar_table()
-        self.manuscript_status_label.setText(f"[Done] {len(self._calendar_slots)}-post calendar generated.")
-
-    def _calendar_on_captions_error(self, error: str):
-        self.abandon_request("manuscript")
-        self.calendar_generate_btn.setEnabled(True)
-        self._populate_calendar_table()
-        self.manuscript_status_label.setText(f"[Error] Captions failed ({error}) — schedule shown, captions blank.")
-
-    def _populate_calendar_table(self):
-        from PySide6.QtWidgets import QTableWidgetItem
-        self.calendar_table.setRowCount(len(self._calendar_slots))
-        for row, slot in enumerate(self._calendar_slots):
-            self.calendar_table.setItem(row, 0, QTableWidgetItem(slot.day.strftime("%Y-%m-%d")))
-            self.calendar_table.setItem(row, 1, QTableWidgetItem(slot.platform))
-            self.calendar_table.setItem(row, 2, QTableWidgetItem(slot.format))
-            self.calendar_table.setItem(row, 3, QTableWidgetItem(slot.quote))
-            self.calendar_table.setItem(row, 4, QTableWidgetItem(slot.caption))
-
-            icon = "🖼" if slot.format == "graphic" else "🎬"
-            btn = QPushButton(icon)
-            btn.setFixedWidth(36)
-            btn.clicked.connect(lambda checked=False, r=row, b=btn: self.calendar_generate_asset(r, b))
-            self.calendar_table.setCellWidget(row, 5, btn)
-
-    def calendar_generate_asset(self, row: int, button: QPushButton):
-        if row >= len(self._calendar_slots):
-            return
-        slot = self._calendar_slots[row]
-        from services.quote_graphics import render_quote_graphic
-        import time
-
-        theme = theme_key(self.calendar_theme_box)
-        attribution = self.calendar_attribution.text().strip()
-
-        if slot.format == "graphic":
-            from services.quote_graphics import GRAPHICS_DIR
-            output_path = unique_output_path(GRAPHICS_DIR, "quote", ".png")
-            try:
-                render_quote_graphic(slot.quote, output_path, theme=theme, size_name="square", attribution=attribution)
-                self.manuscript_status_label.setText(f"[Done] Saved {output_path.name}")
-            except Exception as e:
-                self.manuscript_status_label.setText(f"[Error] {e}")
-            return
-
-        if self._quote_finder_busy:
-            QMessageBox.information(self, "Busy", "A short is already generating — please wait for it to finish.")
-            return
-        from services.shorts_generator import SHORTS_DIR
-        use_elevenlabs = self.calendar_voice_source_box.currentText() == "ElevenLabs"
-        voice_id = self.calendar_voice_box.currentData() or "default"
-        output_path = unique_output_path(SHORTS_DIR, "short", ".mp4")
-        image_path = output_path.with_suffix(".png")
-        try:
-            render_quote_graphic(slot.quote, image_path, theme=theme, size_name="vertical", attribution=attribution)
-        except Exception as e:
-            self.manuscript_status_label.setText(f"[Error] {e}")
-            return
-
-        self._quote_finder_busy = True
-        button.setEnabled(False)
-        self.manuscript_status_label.setText("[Narrating…]")
-        self.shorts_worker = ShortsWorker(slot.quote, image_path, output_path, use_elevenlabs, voice_id)
-        self.shorts_worker.status_signal.connect(self.manuscript_status_label.setText)
-        self.shorts_worker.done_signal.connect(lambda path, b=button: self._calendar_short_done(path, b))
-        self.shorts_worker.error_signal.connect(lambda err, b=button: self._calendar_short_error(err, b))
-        self.shorts_worker.start()
-
-    def _calendar_short_done(self, output_path: str, button: QPushButton):
-        self._last_short_path = output_path
-        self.manuscript_status_label.setText(f"[Done] Saved {Path(output_path).name}")
-        button.setEnabled(True)
-        self._quote_finder_busy = False
-
-    def _calendar_short_error(self, error: str, button: QPushButton):
-        self.manuscript_status_label.setText(f"[Error] {error}")
-        button.setEnabled(True)
-        self._quote_finder_busy = False
-
-    def manuscript_export_calendar_csv(self):
-        if not self._calendar_slots:
-            QMessageBox.warning(self, "No Calendar", "Generate a calendar first.")
-            return
-        import csv
-        path, _ = QFileDialog.getSaveFileName(
-            self, "Export Calendar", str(BASE_DIR / "content_calendar.csv"), "CSV Files (*.csv)"
-        )
-        if not path:
-            return
-        with open(path, "w", newline="", encoding="utf-8") as f:
-            writer = csv.writer(f)
-            writer.writerow(["Date", "Platform", "Format", "Quote", "Caption"])
-            for slot in self._calendar_slots:
-                writer.writerow([slot.day.strftime("%Y-%m-%d"), slot.platform, slot.format, slot.quote, slot.caption])
-        self.manuscript_status_label.setText(f"[Done] Exported calendar to {Path(path).name}")
-
-    # ── Music handlers ────────────────────────────────────────────────────────
-    def music_load_models(self):
-        provider = self.music_provider_box.currentText()
-        self.music_model_box.clear()
-        try:
-            if provider == "ollama":
-                models = self.ollama.list_models()
-            elif provider == "openai":
-                models = self.openai.list_models()
-            elif provider == "deepseek":
-                models = self.deepseek.list_models()
-            elif provider == "kimi":
-                models = self.kimi.list_models()
-            elif provider == "gemini":
-                models = self.gemini.list_models()
-            elif provider == "anthropic":
-                models = self.anthropic.list_models()
-            elif provider == "qwen":
-                models = self.qwen.list_models()
-            else:
-                models = []
-        except Exception:
-            models = []
-        self.music_model_box.addItems(models)
-
-    def music_analyse(self):
-        description = self.music_query_input.toPlainText().strip()
-        artist = self.music_artist_input.text().strip()
-        genre = self.music_genre_box.currentText()
-        release_type = self.music_release_type_box.currentText()
-        distributor = self.music_distributor_box.currentText()
-        audience = self.music_audience_input.text().strip()
-        provider = self.music_provider_box.currentText()
-        model = self.music_model_box.currentText()
-
-        if not description:
-            QMessageBox.warning(self, "Missing Input", "Please describe your music in the text box.")
-            return
-        if not model:
-            QMessageBox.warning(self, "No Model", "Please select a model.")
-            return
-
-        prompt_parts = []
-        if artist:
-            prompt_parts.append(f"Artist / Project Name: {artist}")
-        prompt_parts += [
-            f"Genre: {genre}",
-            f"Release Type: {release_type}",
-            f"Current Distributor: {distributor}",
-        ]
-        if audience:
-            prompt_parts.append(f"Target Audience: {audience}")
-        prompt_parts.append(f"\nMusic Description:\n{description}")
-        prompt = "\n".join(prompt_parts)
-
-        agent = self.agent_instances["music"]
-        messages = agent.build_messages(prompt)
-
-        self._music_clear_displays()
-        self._last_music_response = ""
-        self.music_release_label.setText(release_type.split(" ")[0])
-        self.music_genre_label.setText(genre)
-        self.music_dist_label.setText(distributor if distributor != "Not signed up yet" else "None yet")
-        self.music_status_label.setText("Generating Spotify plan…")
-        self.music_analyse_btn.setEnabled(False)
-        self.music_stop_btn.setEnabled(True)
-        self.music_save_btn.setEnabled(False)
-
-        if not self.authorize_request("music", provider, model, prompt):
-            return
-        self.music_worker = ChatWorker(self.run_backend, provider, model, messages, prompt)
-        self.music_worker.token_signal.connect(self._music_on_token)
-        self.music_worker.finished_signal.connect(self._music_on_finished)
-        self.music_worker.usage_signal.connect(lambda u: self.note_request_usage("music", u))
-        self.music_worker.error_signal.connect(self._music_on_error)
-        self.music_worker.start()
-
-    def _music_on_token(self, token: str):
-        self._last_music_response += token
-        self.music_profile_box.setPlainText(self._last_music_response)
-        self.music_profile_box.moveCursor(QTextCursor.End)
-
-    def _music_on_finished(self, full_response: str):
-        self.record_request("music", full_response)
-        self._last_music_response = full_response
-        self._populate_music_tabs(full_response)
-        self.music_status_label.setText("Plan complete — tabs populated.")
-        self.music_analyse_btn.setEnabled(True)
-        self.music_stop_btn.setEnabled(False)
-        self.music_save_btn.setEnabled(True)
-
-    def _music_on_error(self, error: str):
-        self.abandon_request("music")
-        self.music_profile_box.setPlainText(f"[Error] {error}")
-        self.music_status_label.setText("Error.")
-        self.music_analyse_btn.setEnabled(True)
-        self.music_stop_btn.setEnabled(False)
-
-    def music_stop(self):
-        if self.music_worker is not None and self.music_worker.isRunning():
-            self.music_worker.cancel()
-        self.music_status_label.setText("Stopped.")
-        self.music_analyse_btn.setEnabled(True)
-        self.music_stop_btn.setEnabled(False)
-
-    def music_save(self):
-        if not self._last_music_response:
-            return
-        artist = self.music_artist_input.text().strip().lower().replace(" ", "_") or "artist"
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        default_name = f"spotify_plan_{artist}_{ts}.txt"
-        path, _ = QFileDialog.getSaveFileName(
-            self, "Save Spotify Plan", str(DATA_DIR / default_name), "Text files (*.txt);;All files (*)"
-        )
-        if path:
-            Path(path).write_text(self._last_music_response, encoding="utf-8")
-            self.music_status_label.setText(f"Saved to {Path(path).name}")
-
-    def music_clear(self):
-        self._music_clear_displays()
-        self.music_query_input.clear()
-        self.music_artist_input.clear()
-        self.music_audience_input.clear()
-        self.music_status_label.setText("")
-        self._last_music_response = ""
-
-    def _music_clear_displays(self):
-        for box in (
-            self.music_profile_box,
-            self.music_release_box,
-            self.music_distribution_box,
-            self.music_strategy_box,
-            self.music_income_box,
-        ):
-            box.clear()
-        self.music_release_label.setText("—")
-        self.music_genre_label.setText("—")
-        self.music_dist_label.setText("—")
-        self.music_save_btn.setEnabled(False)
-
-    def _populate_music_tabs(self, text: str):
-        sections = self._parse_music_sections(text)
-        self.music_profile_box.setPlainText(sections.get("profile", text))
-        self.music_release_box.setPlainText(sections.get("release", ""))
-        self.music_distribution_box.setPlainText(sections.get("distribution", ""))
-        self.music_strategy_box.setPlainText(sections.get("strategy", ""))
-        self.music_income_box.setPlainText(sections.get("income", ""))
-
-    def _parse_music_sections(self, text: str) -> dict:
-        patterns = {
-            "profile":      r"1\.\s*ARTIST PROFILE(.*?)(?=2\.\s*RELEASE SETUP|$)",
-            "release":      r"2\.\s*RELEASE SETUP(.*?)(?=3\.\s*DISTRIBUTION GUIDE|$)",
-            "distribution": r"3\.\s*DISTRIBUTION GUIDE(.*?)(?=4\.\s*SPOTIFY STRATEGY|$)",
-            "strategy":     r"4\.\s*SPOTIFY STRATEGY(.*?)(?=5\.\s*INCOME ROADMAP|$)",
-            "income":       r"5\.\s*INCOME ROADMAP(.*?)$",
-        }
-        result = {}
-        for key, pat in patterns.items():
-            m = re.search(pat, text, re.DOTALL | re.IGNORECASE)
-            result[key] = m.group(1).strip() if m else ""
-        return result
 
     def build_right_panel(self) -> QWidget:
         right_widget = QWidget()
@@ -6656,7 +3182,7 @@ class GodAI(QWidget):
         cost_layout.setContentsMargins(10, 6, 10, 10)
         cost_layout.setSpacing(6)
 
-        self.live_estimate_label = QLabel("Estimated Request Cost: -")
+        self.live_estimate_label = QLabel("—")
         self.live_estimate_label.setWordWrap(True)
         cost_layout.addWidget(self.live_estimate_label)
 
@@ -7571,9 +4097,6 @@ class GodAI(QWidget):
         agent_titles = {
             "chat": "CHAT", "osint": "TRACE", "osint_heavy": "BLOODHOUND",
             "wifi": "BEACON", "bug_bounty": "BUG SPRAY",
-            "fiverr": "ATELIER",
-            "author": "MANUSCRIPT", "manuscript": "PUBLISHER",
-            "music": "MAESTRO", "webdesign": "SITE BUILDER", "audiobook": "NARRATOR",
             "manager": "FORGE", }
         agent_subtitles = {
             "chat":        "General-purpose conversation. Pick a tool, pick a model, talk.",
@@ -7581,12 +4104,6 @@ class GodAI(QWidget):
             "osint_heavy": "Deep OSINT investigation with five-section dossier and curated tradecraft tools.",
             "wifi":        "Wireless reconnaissance, signal analysis, and Kali command generation.",
             "bug_bounty":  "Vulnerability triage with CWE classification and HackerOne-ready submission drafts.",
-            "fiverr":      "Logo gigs end-to-end — DALL·E logo prompts, gig descriptions, and client delivery messages.",
-            "author":      "Long-form fiction drafting — outlines, characters, scenes, dialogue, and world-building.",
-            "manuscript":  "Sales metrics, platform distribution status, and publishing todo tracker.",
-            "music":       "Spotify artist setup, release planning, distribution strategy, and income roadmap.",
-            "webdesign":   "Modern HTML, CSS, and JavaScript generation with responsive layout and design advice.",
-            "audiobook":   "Convert ebooks (PDF / EPUB / TXT / MOBI) into MP3 audiobooks via OpenAI TTS.",
             "manager":      "Describe a new agent in plain language — Forge writes the code and registers it.",
             }
         if hasattr(self, "agent_title_label"):
@@ -7596,33 +4113,20 @@ class GodAI(QWidget):
         if hasattr(self, "agent_status_pill"):
             self.agent_status_pill.setText("●  READY")
             self.agent_status_pill.setStyleSheet("")
-
-        is_audiobook = agent_name == "audiobook"
         is_manager = agent_name == "manager"
-        is_author = agent_name == "author"
-        is_manuscript = agent_name == "manuscript"
-        is_music = agent_name == "music"
         is_osint = agent_name == "osint"
         is_osint_heavy = agent_name == "osint_heavy"
         is_wifi = agent_name == "wifi"
-        is_fiverr = agent_name == "fiverr"
-        is_webdesign = agent_name == "webdesign"
         is_bug_bounty = agent_name == "bug_bounty"
-        is_custom = (is_audiobook or is_manager or is_author or is_manuscript
-                     or is_music or is_osint or is_osint_heavy or is_wifi or is_fiverr
-                     or is_webdesign or is_bug_bounty)
+        is_custom = (is_manager
+                     or is_osint or is_osint_heavy or is_wifi
+                     or is_bug_bounty)
 
         self.normal_panel.setVisible(not is_custom)
-        self.audiobook_panel.setVisible(is_audiobook)
         self.manager_panel.setVisible(is_manager)
-        self.author_panel.setVisible(is_author)
-        self.manuscript_panel.setVisible(is_manuscript)
-        self.music_panel.setVisible(is_music)
         self.osint_panel.setVisible(is_osint)
         self.osint_heavy_panel.setVisible(is_osint_heavy)
         self.wifi_panel.setVisible(is_wifi)
-        self.fiverr_panel.setVisible(is_fiverr)
-        self.webdesign_panel.setVisible(is_webdesign)
         self.bug_bounty_panel.setVisible(is_bug_bounty)
         # Output area only relevant for standard (non-custom) agents like Chat.
         # Within those, auto-hide if there is no content yet — keeps the UI clean.
@@ -7632,315 +4136,13 @@ class GodAI(QWidget):
         self.output_label.setVisible(show_output)
         self.output_box.setVisible(show_output)
 
-        if is_audiobook:
-            self.output_label.setText("Output Log")
-            self.output_box.setPlainText("[Ready] Click Start to begin.")
-            self.refresh_audiobook_books()
-        elif is_manager:
+        if is_manager:
             self.output_label.setText("Forge Output")
             self.output_box.setPlainText("[Forge] Describe an idea above and click Analyze.")
-        elif is_manuscript:
-            from services.kdp_csv_parser import manuscript_seed_todos
-            manuscript_seed_todos()
-            self._load_manuscript_todos()
-            self._refresh_next_step_tip()
-        elif is_author:
-            self._refresh_next_step_tip()
-        elif is_music or is_osint or is_osint_heavy or is_wifi or is_fiverr or is_webdesign or is_bug_bounty:
+        elif is_osint or is_osint_heavy or is_wifi or is_bug_bounty:
             pass
         else:
             self.output_label.setText("Output")
-
-    def get_audiobook_defaults(self):
-        tool = self.tool_runner.tools["audiobook"]
-        return {
-            "input": tool["default_input"],
-            "output": tool["default_output"],
-            "voice": tool.get("default_voice", "alloy"),
-            "chunk_tokens": tool.get("default_chunk_tokens", 1400),
-        }
-
-    def refresh_audiobook_books(self):
-        defaults = self.get_audiobook_defaults()
-        input_folder = Path(defaults["input"]).expanduser()
-        output_folder = Path(defaults["output"]).expanduser()
-
-        self.audiobook_input_path.setText(str(input_folder))
-        self.audiobook_output_path.setText(str(output_folder))
-        self.audiobook_voice_box.setCurrentText(defaults["voice"])
-        self.audiobook_chunk_input.setText(str(defaults["chunk_tokens"]))
-        self.audiobook_book_list.clear()
-        self.tool_progress.setValue(0)
-
-        if not input_folder.exists():
-            self.output_box.setPlainText(f"[Error] Input folder does not exist:\n{input_folder}")
-            self.show_empty_audiobook_folder_popup(input_folder)
-            return
-
-        books = sorted(f for f in input_folder.iterdir() if f.is_file() and f.suffix.lower() in SUPPORTED_EBOOKS)
-
-        if not books:
-            self.output_box.setPlainText(f"[Info] No supported ebooks found in:\n{input_folder}")
-            self.show_empty_audiobook_folder_popup(input_folder)
-            return
-
-        for book in books:
-            item = QListWidgetItem(f"📖 {book.name}")
-            item.setData(Qt.UserRole, str(book))
-            self.audiobook_book_list.addItem(item)
-
-        if len(books) == 1:
-            self.audiobook_book_list.setCurrentRow(0)
-
-        self.output_box.setPlainText(f"[Ready] Found {len(books)} book(s). Select one and click Start.")
-        self.audiobook_status_label.setText(f"[Ready] Found {len(books)} book(s).")
-        self.estimate_audiobook_cost_from_selection()
-
-    def show_empty_audiobook_folder_popup(self, folder_path: Path):
-        msg = QMessageBox(self)
-        msg.setWindowTitle("Audiobook Folder Empty")
-        msg.setText(f"No supported ebooks found in:\n{folder_path}")
-        open_btn = msg.addButton("Open Folder", QMessageBox.ActionRole)
-        msg.addButton(QMessageBox.Ok)
-        msg.exec()
-
-        if msg.clickedButton() == open_btn:
-            QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder_path)))
-
-    def open_audiobook_input_folder(self):
-        folder = self.audiobook_input_path.text().strip()
-        if folder:
-            QDesktopServices.openUrl(QUrl.fromLocalFile(folder))
-
-    def change_audiobook_output_folder(self):
-        folder = QFileDialog.getExistingDirectory(self, "Select Audiobook Output Folder")
-        if folder:
-            self.audiobook_output_path.setText(folder)
-
-    def estimate_audiobook_cost_from_selection(self):
-        item = self.audiobook_book_list.currentItem()
-        if not item:
-            self.audiobook_cost_label.setText("Estimated cost: select a book first")
-            return
-
-        path = Path(item.data(Qt.UserRole))
-        try:
-            mb = max(0.1, path.stat().st_size / (1024 * 1024))
-            rough = min(25.0, max(0.50, mb * 0.80))
-            self.audiobook_cost_label.setText(f"Estimated cost: rough €{rough:.2f}–€{rough * 1.8:.2f} (file-size estimate)")
-        except Exception:
-            self.audiobook_cost_label.setText("Estimated cost: unavailable")
-
-    def start_selected_audiobook_book(self):
-        item = self.audiobook_book_list.currentItem()
-        if not item:
-            self.output_box.setPlainText("[Error] Please select a book first.")
-            return
-
-        book_path = item.data(Qt.UserRole)
-        output_path = self.audiobook_output_path.text().strip()
-        voice = self.audiobook_voice_box.currentText().strip()
-
-        # Preflight: narrator needs an OpenAI key for TTS. Catch the most common
-        # failure (missing key) before launching, so the user gets a clear message
-        # instead of a process that silently exits.
-        if not OpenAIClientWrapper.key_available():
-            self.audiobook_status_label.setText("[Error] OPENAI_API_KEY not set.")
-            QMessageBox.critical(
-                self,
-                "OpenAI API Key Required",
-                "Audiobook conversion uses OpenAI's text-to-speech API, but "
-                "OPENAI_API_KEY is not set.\n\n"
-                "Add your key to the .env file in the project root:\n"
-                "    OPENAI_API_KEY=sk-...\n\n"
-                "then restart Sentinel and try again. "
-                "Get a key at platform.openai.com/api-keys.",
-            )
-            return
-
-        try:
-            chunk_tokens = int(self.audiobook_chunk_input.text().strip())
-        except ValueError:
-            QMessageBox.warning(self, "Invalid Value", "Chunk tokens must be a number.")
-            return
-
-        msg = QMessageBox(self)
-        msg.setWindowTitle("Confirm Audiobook Conversion")
-        msg.setText(
-            f"Start audiobook conversion?\n\n"
-            f"Book: {Path(book_path).name}\n"
-            f"Voice: {voice}\n"
-            f"Chunk tokens: {chunk_tokens}\n\n"
-            f"This uses OpenAI TTS API and may cost real money."
-        )
-        msg.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
-        if msg.exec() != QMessageBox.Yes:
-            return
-
-        config = {"input": book_path, "output": output_path, "voice": voice, "chunk_tokens": chunk_tokens}
-
-        self.output_box.setPlainText(
-            f"[Starting]\nBook: {Path(book_path).name}\nOutput: {output_path}\nVoice: {voice}\nChunk tokens: {chunk_tokens}\n\n"
-        )
-        self.audiobook_status_label.setText(f"[Running] {Path(book_path).name}")
-        self.run_audiobook_live(config)
-
-    def run_audiobook_live(self, config):
-        self.tool_progress.setValue(0)
-        self.stop_btn.setEnabled(True)
-        self.audiobook_start_btn.setEnabled(False)
-        self.audiobook_refresh_btn.setEnabled(False)
-
-        tool = self.tool_runner.tools["audiobook"]
-        project_root = str(Path(__file__).resolve().parent)
-        self.audiobook_process = QProcess(self)
-        self.audiobook_process.setProcessChannelMode(QProcess.MergedChannels)
-        # Run from the project root so "-m services.narrator.converter" resolves,
-        # using Sentinel's own interpreter (no separate venv -> PyInstaller-friendly).
-        self.audiobook_process.setWorkingDirectory(project_root)
-
-        program = sys.executable
-        conv_args = [
-            "--input", config["input"],
-            "--output", config["output"],
-            "--voice", config["voice"],
-            "--chunk-tokens", str(config["chunk_tokens"]),
-        ]
-        if is_frozen():
-            # Packaged app: re-invoke our own executable with the worker sentinel
-            # (PyInstaller apps have no `python -m`).
-            arguments = ["--narrator-worker"] + conv_args
-        else:
-            arguments = ["-u", "-m", tool.get("module", "services.narrator.converter")] + conv_args
-
-        self.audiobook_process.readyReadStandardOutput.connect(self.handle_audiobook_stdout)
-        self.audiobook_process.finished.connect(self.handle_audiobook_finished)
-        self.audiobook_process.errorOccurred.connect(self.handle_audiobook_error)
-        self.audiobook_process.start(program, arguments)
-
-    def handle_audiobook_error(self, error):
-        """Fired when the process fails to start/crashes at the QProcess level
-        (e.g. interpreter not found) — distinct from a non-zero exit code."""
-        # FailedToStart still emits finished() on some platforms; on others it
-        # does not, so report here to guarantee the user sees something.
-        reason = {
-            QProcess.FailedToStart: "The converter process failed to start "
-                                    "(interpreter or module not found).",
-            QProcess.Crashed: "The converter process crashed.",
-            QProcess.Timedout: "The converter process timed out.",
-        }.get(error, "The converter process encountered an unknown error.")
-
-        self.stop_btn.setEnabled(False)
-        self.audiobook_start_btn.setEnabled(True)
-        self.audiobook_refresh_btn.setEnabled(True)
-        self.tool_progress.setValue(0)
-        self.audiobook_status_label.setText("[Error] Converter could not run.")
-        self.output_box.append(f"\n[Error] {reason}")
-        QMessageBox.critical(self, "Audiobook Conversion Failed", reason)
-
-    def handle_audiobook_stdout(self):
-        data = self.audiobook_process.readAll().data().decode("utf-8", errors="replace")
-        if not data:
-            return
-
-        self.output_box.moveCursor(QTextCursor.End)
-        self.output_box.insertPlainText(data)
-        self.output_box.ensureCursorVisible()
-
-        matches = re.findall(r"(\d+(?:\.\d+)?)%\s+\((\d+)/(\d+)\)", data)
-        if matches:
-            percent = float(matches[-1][0])
-            done = matches[-1][1]
-            total = matches[-1][2]
-            self.tool_progress.setValue(int(percent))
-            self.audiobook_status_label.setText(f"[Running] {percent:.1f}% ({done}/{total})")
-
-    def handle_audiobook_finished(self):
-        self.stop_btn.setEnabled(False)
-        self.audiobook_start_btn.setEnabled(True)
-        self.audiobook_refresh_btn.setEnabled(True)
-
-        exit_code = self.audiobook_process.exitCode() if self.audiobook_process else 0
-        exit_status = self.audiobook_process.exitStatus() if self.audiobook_process else QProcess.NormalExit
-        output_text = self.output_box.toPlainText()
-        crashed = exit_status == QProcess.CrashExit
-
-        success = "ALL BOOKS COMPLETED" in output_text or "🎉" in output_text
-        quota_hit = any(k in output_text for k in (
-            "insufficient_quota", "exceeded your current quota", "Billing hard limit"))
-        paused = "Conversion paused" in output_text or "⏸️" in output_text
-
-        if quota_hit:
-            self.tool_progress.setValue(0)
-            self.audiobook_status_label.setText("[Blocked] OpenAI quota exceeded — top up your account.")
-            self.output_box.append(
-                "\n[Blocked] Your OpenAI account has run out of quota.\n"
-                "Top up your account at platform.openai.com/settings/billing,\n"
-                "then click Start on the same book to resume automatically."
-            )
-            QMessageBox.warning(
-                self, "OpenAI Quota Exceeded",
-                "Your OpenAI account has run out of quota. Top up at "
-                "platform.openai.com/settings/billing, then click Start to resume.",
-            )
-
-        elif paused and exit_code != 0:
-            self.tool_progress.setValue(0)
-            self.audiobook_status_label.setText("[Paused] Incomplete — click Start to resume.")
-            self.output_box.append(
-                "\n[Paused] Some chunks were not completed.\n"
-                "Click Start on the same book to resume automatically."
-            )
-
-        elif crashed or exit_code != 0:
-            reason = self._extract_audiobook_error(output_text)
-            self.tool_progress.setValue(0)
-            self.audiobook_status_label.setText("[Error] Conversion failed.")
-            self.output_box.append(
-                f"\n[Error] Conversion failed (exit code {exit_code}).\n{reason}"
-            )
-            QMessageBox.critical(
-                self, "Audiobook Conversion Failed",
-                f"The conversion did not complete.\n\n{reason}",
-            )
-
-        elif success:
-            self.tool_progress.setValue(100)
-            self.audiobook_status_label.setText("[Done] Audiobook created successfully.")
-            self.output_box.append("\n[Done] Audiobook created successfully.")
-
-        else:
-            # Exit 0 but no success marker — don't fake success.
-            reason = self._extract_audiobook_error(output_text)
-            self.tool_progress.setValue(0)
-            self.audiobook_status_label.setText("[Warning] Ended without confirming success.")
-            self.output_box.append(
-                "\n[Warning] The converter exited without reporting completion. "
-                f"Nothing may have been produced.\n{reason}"
-            )
-            QMessageBox.warning(
-                self, "Audiobook Conversion Incomplete",
-                "The converter exited without confirming the audiobook was "
-                f"created.\n\n{reason}",
-            )
-
-        self.refresh_audiobook_books()
-
-    @staticmethod
-    def _extract_audiobook_error(output_text: str) -> str:
-        """Pull the most informative error line out of the converter's output so
-        the user sees *why* it failed, not just that it did."""
-        lines = [ln.strip() for ln in output_text.splitlines() if ln.strip()]
-        # Prefer lines that name a concrete cause over generic failure notices.
-        specific = ("not found", "not set", "Fatal error", "Traceback", "Exception",
-                    "quota", "Authentication", "401", "Failed to read")
-        for ln in reversed(lines):
-            if any(m in ln for m in specific):
-                return ln
-        for ln in reversed(lines):
-            if "❌" in ln or "Error" in ln:
-                return ln
-        return lines[-1] if lines else "No output was produced by the converter."
 
     def load_models(self):
         self.model_box.clear()
@@ -8189,6 +4391,12 @@ class GodAI(QWidget):
             "allow_qwen": self.allow_qwen_checkbox.isChecked(),
         }
 
+    def note_request_usage(self, agent, usage):
+        """Real token counts from the worker, when it reports them."""
+        context = self._pending_requests.get(agent)
+        if context is not None:
+            context["usage"] = usage
+
     def authorize_request(self, agent, provider, model, prompt, tool=None, label=None) -> bool:
         """Budget-check and confirm one request. False means: do not send it.
 
@@ -8239,12 +4447,6 @@ class GodAI(QWidget):
             ),
         }
         return True
-
-    def note_request_usage(self, agent, usage):
-        """Real token counts from the worker, when it reports them."""
-        context = self._pending_requests.get(agent)
-        if context is not None:
-            context["usage"] = usage
 
     def record_request(self, agent, response, messages=None):
         """Bill, save and close out a request authorised by authorize_request()."""
@@ -8792,11 +4994,7 @@ class GodAI(QWidget):
         doc_file_map = {
             "chat": "chat", "osint": "osint", "osint_heavy": "osint_heavy",
             "wifi": "wifi", "bug_bounty": "bug_bounty",
-            "fiverr": "fiverr",
-            "author": "author", "music": "music",
-            "webdesign": "webdesign", "audiobook": "audiobook",
-            "manager": "manager", "manuscript": "manuscript",
-        }
+            "manager": "manager", }
         doc_key = doc_file_map.get(agent_name, agent_name)
 
         # Read-only bundled resource (works in dev and in the frozen .app)
@@ -8904,9 +5102,6 @@ class GodAI(QWidget):
         agent_titles = {
             "chat": "CHAT", "osint": "TRACE", "osint_heavy": "BLOODHOUND",
             "wifi": "BEACON", "bug_bounty": "BUG SPRAY",
-            "fiverr": "ATELIER",
-            "author": "MANUSCRIPT", "manuscript": "PUBLISHER",
-            "music": "MAESTRO", "webdesign": "SITE BUILDER", "audiobook": "NARRATOR",
             "manager": "FORGE", }
         title = agent_titles.get(agent_name, agent_name.upper())
 

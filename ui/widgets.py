@@ -6,10 +6,10 @@ Moved verbatim out of main.py (see docs/refactor_plan.md, phase 1).
 minimum width, which pins an impossible minimum on a pane and makes Qt compress
 controls past their own minimums until the labels are chopped.
 """
-from PySide6.QtCore import Qt, QRect, QPoint, QSize
+from PySide6.QtCore import Qt, QRect, QPoint, QSize, QTimer
 from PySide6.QtGui import QColor, QPainter
-from PySide6.QtWidgets import (QHBoxLayout, QLabel, QLayout, QPushButton,
-                               QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QFrame, QHBoxLayout, QLabel, QLayout,
+                               QPushButton, QScrollArea, QVBoxLayout, QWidget)
 
 
 class FlowLayout(QLayout):
@@ -243,3 +243,140 @@ class Meter(QWidget):
     def set_unavailable(self, text: str = "n/a") -> None:
         self.bar.set(0.0, self.LEVEL_COLOURS["muted"])
         self.value.setText(text)
+
+
+class SectionCard(QFrame):
+    """One parsed section of an agent's answer.
+
+    Title, body, and a copy button that appears because a section is the unit
+    people actually want on the clipboard — a dork list, a summary — rather
+    than the whole transcript.
+    """
+
+    def __init__(self, title: str, body: str, mono: bool = False, parent=None):
+        super().__init__(parent)
+        self.setObjectName("SectionCard")
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(14, 12, 14, 12)
+        lay.setSpacing(8)
+
+        head = QHBoxLayout()
+        head.setSpacing(8)
+        heading = QLabel(title)
+        heading.setObjectName("SectionTitle")
+        head.addWidget(heading)
+        head.addStretch()
+        self.copy_btn = QPushButton("Copy")
+        self.copy_btn.setObjectName("SectionCopy")
+        self.copy_btn.setCursor(Qt.PointingHandCursor)
+        self.copy_btn.clicked.connect(self._copy)
+        head.addWidget(self.copy_btn)
+        lay.addLayout(head)
+
+        self._body = body
+        text = QLabel(body)
+        text.setObjectName("SectionMono" if mono else "SectionBody")
+        text.setWordWrap(True)
+        text.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        text.setAlignment(Qt.AlignTop | Qt.AlignLeft)
+        lay.addWidget(text)
+
+    def _copy(self):
+        from PySide6.QtWidgets import QApplication
+        QApplication.clipboard().setText(self._body)
+        self.copy_btn.setText("Copied")
+        QTimer.singleShot(1200, lambda: self.copy_btn.setText("Copy"))
+
+
+class SectionView(QWidget):
+    """Agent output as the sections it was already parsed into.
+
+    Twelve `_parse_*_sections` methods existed before this and every one of them
+    poured its result into a flat text box, throwing the structure away. This
+    renders that same dict as cards and keeps the raw response one click away
+    rather than making it the only view.
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(8)
+
+        self._scroll = QScrollArea()
+        self._scroll.setWidgetResizable(True)
+        self._scroll.setFrameShape(QFrame.NoFrame)
+        self._holder = QWidget()
+        self._column = QVBoxLayout(self._holder)
+        self._column.setContentsMargins(0, 0, 0, 0)
+        self._column.setSpacing(8)
+        self._column.addStretch()
+        self._scroll.setWidget(self._holder)
+        outer.addWidget(self._scroll, 1)
+
+        self._raw = ""
+        self._raw_btn = QPushButton("▸  Raw response")
+        self._raw_btn.setObjectName("RawToggle")
+        self._raw_btn.setCursor(Qt.PointingHandCursor)
+        self._raw_btn.clicked.connect(self._toggle_raw)
+        self._raw_btn.setVisible(False)
+        outer.addWidget(self._raw_btn)
+
+        self._raw_box = QLabel()
+        self._raw_box.setObjectName("SectionMono")
+        self._raw_box.setWordWrap(True)
+        self._raw_box.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self._raw_box.setVisible(False)
+        outer.addWidget(self._raw_box)
+
+        self._placeholder = QLabel("No results yet.")
+        self._placeholder.setObjectName("SectionEmpty")
+        self._column.insertWidget(0, self._placeholder)
+
+    def clear(self):
+        while self._column.count() > 1:            # keep the trailing stretch
+            item = self._column.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+        self._raw = ""
+        self._raw_btn.setVisible(False)
+        self._raw_box.setVisible(False)
+        self._placeholder = QLabel("No results yet.")
+        self._placeholder.setObjectName("SectionEmpty")
+        self._column.insertWidget(0, self._placeholder)
+
+    def show_sections(self, sections, raw: str = ""):
+        """`sections` is an ordered sequence of (title, body[, mono])."""
+        while self._column.count() > 1:
+            item = self._column.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+
+        shown = 0
+        for entry in sections:
+            title, body = entry[0], entry[1]
+            mono = entry[2] if len(entry) > 2 else False
+            if not (body or "").strip():
+                continue                            # an empty section is not a card
+            self._column.insertWidget(shown, SectionCard(title, body.strip(), mono))
+            shown += 1
+
+        if shown == 0 and raw.strip():
+            self._column.insertWidget(0, SectionCard("Response", raw.strip()))
+            shown = 1
+
+        self._raw = raw or ""
+        words = len(self._raw.split())
+        self._raw_btn.setText(f"▸  Raw response · {words:,} words")
+        self._raw_btn.setVisible(bool(self._raw.strip()) and shown > 0)
+        self._raw_box.setVisible(False)
+        self._raw_box.setText(self._raw)
+
+    def _toggle_raw(self):
+        showing = not self._raw_box.isVisible()
+        self._raw_box.setVisible(showing)
+        arrow = "▾" if showing else "▸"
+        words = len(self._raw.split())
+        self._raw_btn.setText(f"{arrow}  Raw response · {words:,} words")
