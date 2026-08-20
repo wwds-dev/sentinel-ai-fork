@@ -287,6 +287,17 @@ def _seed_default_agents(conn: sqlite3.Connection) -> None:
             "log_path": "data/logs/runs.jsonl",
             "auto_generated": 0,
         },
+        {
+            "name": "vpn",
+            "label": "VPN Tunnel",
+            "description": "Self-hosted VPN design and troubleshooting — WireGuard + OpenVPN TCP/443 fallback, remote vs native topology, fail-closed kill switch, DNS/IPv6 leak checks, plus an offline WireGuard config and deploy-runbook builder.",
+            "allowed_providers": json.dumps([]),
+            "allowed_tools": None,
+            "budget_limit_eur": None,
+            "requires_approval": 0,
+            "log_path": "data/logs/runs.jsonl",
+            "auto_generated": 0,
+        },
     ]
     for a in agents:
         conn.execute("""

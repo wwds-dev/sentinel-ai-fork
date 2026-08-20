@@ -35,6 +35,7 @@
    - 5.12 [Narrator Agent](#512-narrator-agent)
    - 5.13 [Forge Agent](#513-forge-agent)
    - 5.14 [Publisher Agent](#514-publisher-agent)
+   - 5.15 [Tunnel Agent](#515-tunnel-agent)
 6. [Tools](#6-tools)
 7. [Providers & Models](#7-providers--models)
    - 7.1 [Ollama (Local)](#71-ollama-local)
@@ -106,6 +107,7 @@ Four buttons appear at the top of the left panel, one per top-level workflow:
 |--------|-------|-------------|
 | 💬 Chat | `chat` | General-purpose AI conversation |
 | 👹 Trace | `osint` | Open-source intelligence and research analysis |
+| ⇄ Tunnel | `vpn` | Self-hosted VPN design + offline config/deploy builder |
 | 🎧 Narrator | `audiobook` | Ebook-to-MP3 conversion via OpenAI TTS |
 | 🏗 Forge | `manager` | LLM-guided agent creation workflow |
 
@@ -1979,6 +1981,102 @@ Picks up where the Manuscript (writing studio) agent stops: real sales data, lau
 | Methods | `build_messages()` · `build_publishdrive_parse_messages()` · `build_kdp_parse_messages()` · `build_quote_suggestions_messages()` · `build_calendar_caption_messages()` |
 | Supporting services | `services/publishdrive_client.py` · `services/kdp_csv_parser.py` · `services/quote_graphics.py` · `services/shorts_generator.py` · `services/content_calendar.py` |
 | DB tables | `manuscript_metrics` · `manuscript_kdp_ingested` · `manuscript_todos` |
+
+---
+
+### 5.15 Tunnel Agent
+
+**Left-panel button:** ⇄ Tunnel  (category: **Security**)
+
+A design-and-troubleshooting workbench for a VPN you own end to end — no commercial provider in the path, every key generated locally. It brings the domain knowledge of the standalone **VPN Agent** app into Sentinel as one more agent in the list, pairing an LLM advisor with a deterministic, offline config/deploy builder. It does **not** embed that app's privileged runtime (live tunnel monitor, kill-switch arming, SSH server bootstrap); it advises on and generates the configuration for those.
+
+> ⚠️ Defensive, self-hosted infrastructure only — for VPNs you are authorised to run, on hosts you own or rent. Never for evading lawful controls on someone else's network.
+
+---
+
+#### What the Tunnel Agent Does
+
+Two halves, mirroring Beacon:
+
+1. **Advisor** — an LLM with a structured system prompt that reasons about **remote vs native** topology, **WireGuard (UDP 51820)** vs the **OpenVPN TCP/443 fallback**, the fail-closed **kill switch**, and **DNS/IPv6/WebRTC** leaks. Answers in five sections: Summary, Topology, Security & Leaks, Commands/Config, Recommendations. The Deployment form is passed to the model as context, so a question inherits the mode/protocol/host you picked.
+2. **Config & Deploy Builder** — deterministic and offline (no LLM, no network, no crypto dependency). Renders a WireGuard **server** + **client** config, a numbered stand-up **runbook**, an optional **OpenVPN 443 fallback**, and (remote mode only) a macOS **kill-switch pf** snippet. Key material is emitted as clearly-marked placeholders next to the exact `wg genkey` / `wg pubkey` / `wg genpsk` commands that fill them — the builder never prints real private keys.
+
+The most common mistake it keeps you honest about: **native mode does not hide your IP or change your country** — its exit IP is your home ISP. It is an encrypted way *into* your LAN, not a new way out. Use **remote** (a rented VPS) for privacy and geo-shifting.
+
+---
+
+#### Tunnel Panel Layout
+
+##### Deployment (form group)
+
+| Field | Description |
+|-------|-------------|
+| **Mode** | Remote (VPS) — full tunnel, traffic exits at the server / Native (home LAN) — split tunnel to your LAN subnet. |
+| **Protocol** | WireGuard / OpenVPN 443 fallback / Both. |
+| **Server host** | VPS IP or DDNS hostname — becomes the client config `Endpoint`. |
+| **SSH user** | Used in the remote deploy runbook (e.g. `root`). |
+| **LAN subnet** | Native mode split-tunnel `AllowedIPs` (e.g. `192.168.1.0/24`). |
+| **Egress iface** | Server NIC for the NAT `MASQUERADE` rule (default `eth0`). |
+| **Question** | Free-text prompt for the Advisor. |
+
+##### Action Row
+
+| Button | Action |
+|--------|--------|
+| **Ask Advisor** | Sends the context-prefixed question to the LLM; streams into the Advisor tab. |
+| **Build Config** | Renders the WireGuard configs + runbook offline into the Config & Commands tab. |
+| **Stop** | Cancels the in-flight advisor request. |
+| **Help** | Opens this documentation. |
+
+##### Results Tabs
+
+| Tab | Content |
+|-----|---------|
+| **Advisor** | The five-section structured answer from the LLM. |
+| **Config & Commands** | Server/client WireGuard config, deploy runbook, OpenVPN fallback, and (remote) the kill-switch pf snippet. |
+
+---
+
+#### How to Use — Step by Step
+
+1. Click **⇄ Tunnel** under **Security**.
+2. Pick **Mode** — Remote (VPS) for privacy/geo-shifting, Native (home LAN) to reach your home network from outside.
+3. Choose **Protocol**. Leave it on WireGuard unless a network blocks UDP, in which case add the OpenVPN 443 fallback.
+4. Fill in **Server host** (and **SSH user** / **LAN subnet** / **Egress iface** as relevant).
+5. Click **Build Config** to get the configs + a numbered stand-up runbook — no model call, instant and offline.
+6. For advice or troubleshooting, type a **Question** and click **Ask Advisor** (or press Enter).
+
+---
+
+#### External Requirements
+
+- A **WireGuard client** on this Mac (the official app, or `wireguard-tools`) to import the generated client config.
+- A **rented VPS** (remote mode) reached over SSH, or **hardware on your LAN** (native mode) plus a router port-forward and dynamic DNS.
+- `wireguard-tools` on the server to generate real keys with `wg genkey` (the builder emits placeholders and the commands, not the keys themselves).
+
+---
+
+#### Tips & Limitations
+
+> The builder is intentionally offline and key-free — it never generates or stores private key material. Generate keys yourself with `wg genkey` and keep them out of chat logs.
+
+> The kill-switch pf snippet loads into a private anchor and deliberately does **not** survive a reboot; remember to re-arm it. Replace `<SERVER_IP>` so the tunnel can always reconnect.
+
+> This agent advises and generates config — it does not arm the kill switch, monitor a live tunnel, or bootstrap a server over SSH. For those, use the standalone VPN Agent app (`active/vpn_agent/`).
+
+---
+
+#### Agent Class Reference
+
+| Property | Value |
+|----------|-------|
+| Agent class | `agents/vpn_agent.py` — `VpnAgent` |
+| Agent name (DB) | `vpn` |
+| Label | Tunnel |
+| Default provider | Anthropic (`claude-sonnet-5`) |
+| Helpers | `build_configs()` — module-level function in the same file (renders configs + runbook) |
+| System prompt | Self-hosted VPN architect; five-section format; remote-vs-native and WireGuard-vs-OpenVPN guidance; defensive-use scoping |
+| Docs | `docs/agents/vpn.md` |
 
 ---
 

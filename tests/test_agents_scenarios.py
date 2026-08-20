@@ -33,6 +33,7 @@ from agents.osint_agent        import OSINTAgent
 from agents.osint_heavy_agent  import OsintHeavyAgent
 from agents.bug_bounty_agent   import BugBountyAgent
 from agents.wifi_agent         import WiFiAgent
+from agents.vpn_agent          import VpnAgent, build_configs as build_vpn_configs
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -458,3 +459,57 @@ class TestWiFiAgent:
     def test_system_prompt_scoped_to_authorised_testing(self):
         sys = _system(self.agent.build_messages(self.PROMPT))
         assert "authoris" in sys.lower() or "authorized" in sys.lower() or "pentest" in sys.lower()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# VpnAgent — advisor messages + deterministic config builder
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestVpnAgent:
+    agent = VpnAgent()
+    PROMPT = "WireGuard won't connect on hotel wifi — what are my options?"
+
+    def test_message_structure(self):
+        msgs = self.agent.build_messages(self.PROMPT)
+        assert _roles(msgs) == ["system", "user"]
+
+    def test_prompt_preserved(self):
+        msgs = self.agent.build_messages(self.PROMPT)
+        assert "hotel wifi" in _user(msgs)
+
+    def test_system_prompt_covers_domain(self):
+        sys = _system(self.agent.build_messages(self.PROMPT)).lower()
+        assert "wireguard" in sys and "openvpn" in sys and "kill switch" in sys
+
+    def test_system_prompt_scoped_to_self_hosted(self):
+        sys = _system(self.agent.build_messages(self.PROMPT)).lower()
+        assert "authoris" in sys or "defensive" in sys or "own" in sys
+
+
+class TestVpnConfigBuilder:
+    def test_remote_full_tunnel_and_killswitch(self):
+        cfg = build_vpn_configs(
+            "Remote (VPS)", "WireGuard",
+            server_host="203.0.113.9", ssh_user="root", egress_iface="eth0",
+        )
+        assert "203.0.113.9:51820" in cfg     # endpoint wired from host
+        assert "0.0.0.0/0" in cfg             # full tunnel
+        assert "block drop all" in cfg        # kill switch present in remote
+
+    def test_native_split_tunnel_no_killswitch(self):
+        cfg = build_vpn_configs(
+            "Native (home LAN)", "WireGuard", lan_subnet="192.168.1.0/24",
+        )
+        assert "192.168.1.0/24" in cfg        # split tunnel to LAN
+        assert "0.0.0.0/0" not in cfg         # not a full tunnel
+        assert "block drop all" not in cfg    # native mode: no kill switch block
+
+    def test_openvpn_fallback_included_when_requested(self):
+        cfg = build_vpn_configs("Remote (VPS)", "Both", server_host="198.51.100.1")
+        assert "OpenVPN" in cfg and "443" in cfg
+
+    def test_keys_are_placeholders_only(self):
+        cfg = build_vpn_configs("Remote (VPS)", "WireGuard", server_host="198.51.100.1")
+        # never emits real private key material — only placeholders + genkey hints
+        assert "<SERVER_PRIVATE_KEY>" in cfg
+        assert "wg genkey" in cfg

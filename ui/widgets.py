@@ -253,12 +253,13 @@ class SectionCard(QFrame):
     than the whole transcript.
     """
 
-    def __init__(self, title: str, body: str, mono: bool = False, parent=None):
+    def __init__(self, title: str, body: str, mono: bool = False,
+                 badge: str | None = None, parent=None):
         super().__init__(parent)
         self.setObjectName("SectionCard")
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(14, 12, 14, 12)
-        lay.setSpacing(8)
+        lay.setContentsMargins(20, 18, 20, 18)
+        lay.setSpacing(10)
 
         head = QHBoxLayout()
         head.setSpacing(8)
@@ -266,6 +267,10 @@ class SectionCard(QFrame):
         heading.setObjectName("SectionTitle")
         head.addWidget(heading)
         head.addStretch()
+        if badge:
+            chip = QLabel(badge.upper())
+            chip.setObjectName("SectionBadge")
+            head.addWidget(chip)
         self.copy_btn = QPushButton("Copy")
         self.copy_btn.setObjectName("SectionCopy")
         self.copy_btn.setCursor(Qt.PointingHandCursor)
@@ -309,7 +314,7 @@ class SectionView(QWidget):
         self._holder = QWidget()
         self._column = QVBoxLayout(self._holder)
         self._column.setContentsMargins(0, 0, 0, 0)
-        self._column.setSpacing(8)
+        self._column.setSpacing(12)
         self._column.addStretch()
         self._scroll.setWidget(self._holder)
         outer.addWidget(self._scroll, 1)
@@ -380,3 +385,35 @@ class SectionView(QWidget):
         arrow = "▾" if showing else "▸"
         words = len(self._raw.split())
         self._raw_btn.setText(f"{arrow}  Raw response · {words:,} words")
+
+
+class KeyValue(QWidget):
+    """A label on the left, its value right-aligned on the right.
+
+    A status rail is scanned, not read. Sentences like "Requests Today: 0 |
+    Session: 0" force you to parse punctuation to find the number; a column of
+    right-aligned values lets the eye run straight down them.
+    """
+
+    def __init__(self, key: str, value: str = "—", tip: str = "", parent=None):
+        super().__init__(parent)
+        row = QHBoxLayout(self)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(10)
+
+        self.key = QLabel(key)
+        self.key.setObjectName("KVKey")
+        self.value = QLabel(value)
+        self.value.setObjectName("KVValue")
+        self.value.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+
+        row.addWidget(self.key)
+        row.addStretch()
+        row.addWidget(self.value)
+        if tip:
+            self.setToolTip(tip)
+
+    def set(self, value: str, tip: str = "") -> None:
+        self.value.setText(value)
+        if tip:
+            self.setToolTip(tip)

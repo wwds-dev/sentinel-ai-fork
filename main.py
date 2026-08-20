@@ -58,6 +58,7 @@ from agents.manager_agent import ManagerAgent
 from agents.bug_bounty_agent import BugBountyAgent
 from agents.wifi_agent import WiFiAgent, KNOWN_ADAPTERS, detect_usb_adapters, build_kali_commands, AIRPORT
 from agents.osint_heavy_agent import OsintHeavyAgent
+from agents.vpn_agent import VpnAgent, build_configs as build_vpn_configs
 from services.agent_factory import AgentFactory
 
 
@@ -118,6 +119,11 @@ AGENT_RECOMMENDATIONS = {
         "reason": "Forge writes real agent source files — code generation quality "
                   "matters more here than cost.",
     },
+    "vpn": {
+        "provider": "anthropic", "model": "claude-sonnet-5",
+        "reason": "WireGuard/OpenVPN config and kill-switch reasoning rewards precise "
+                  "command syntax; Sonnet is accurate on tooling without Opus pricing.",
+    },
 }
 
 # agent key -> (provider box attribute, model box attribute)
@@ -128,32 +134,22 @@ AGENT_SETUP_WIDGETS = {
     "wifi":        ("wifi_provider_box",        "wifi_model_box"),
     "bug_bounty":  ("bb_provider_box",          "bb_model_box"),
     "manager":     ("manager_provider_box",     "manager_model_box"),
-}
-
-# agent key -> the panel's own "reload the model list" method, called after the
-# provider is switched programmatically so the model box is populated before we
-# try to select the recommended model in it.
-AGENT_MODEL_LOADERS = {
-    "chat":        "load_provider_models",
-    "osint":       "osint_load_models",
-    "osint_heavy": "osint_heavy_load_models",
-    "wifi":        "wifi_load_models",
-    "bug_bounty":  "bb_load_models",
-    "manager":     "manager_load_models",
+    "vpn":         ("vpn_provider_box",         "vpn_model_box"),
 }
 
 AGENT_PRETTY_NAMES = {
     "chat": "Chat", "osint": "Trace", "osint_heavy": "Bloodhound",
     "wifi": "Beacon", "bug_bounty": "Bug Spray",
-    "manager": "Forge", }
+    "manager": "Forge", "vpn": "Tunnel", }
 
 
 from ui.workers import (
     ChatWorker, SubprocessWorker, ModelPullWorker,
 )
-from ui.widgets import FlowLayout, Meter, SectionView
+from ui.widgets import FlowLayout, KeyValue, Meter, SectionView
 from ui.style import GLOBAL_STYLESHEET
 from ui.tooltips import seed_tooltips
+from ui.panels.base import PROVIDERS, build_provider_row
 
 class GodAI(QWidget):
     def __init__(self):
@@ -161,7 +157,11 @@ class GodAI(QWidget):
 
         self.setWindowTitle("GOD_AI")
         self.resize(1400, 900)
-        self.setMinimumSize(1000, 600)
+        # The run bar is a single row so the cost can sit right-aligned as the
+        # design has it; a wrapping bar cannot right-align. That costs width, so
+        # the minimum is set where the three panes still fit rather than letting
+        # the splitter crush them.
+        self.setMinimumSize(1200, 700)
         self.showMaximized()
 
         CONFIG_DIR.mkdir(exist_ok=True)
@@ -198,6 +198,9 @@ class GodAI(QWidget):
         self.run_logger = RunLogger()
         # agent name -> context for an in-flight request (see authorize_request)
         self._pending_requests = {}
+        # agent key -> the panel's own "reload the model list" callable, filled
+        # in as each panel builds (see register_model_loader)
+        self._model_loaders = {}
 
         self.manager_agent = ManagerAgent()
         self.agent_factory = AgentFactory(BASE_DIR)
@@ -218,6 +221,8 @@ class GodAI(QWidget):
         self.osint_heavy_worker: Optional[ChatWorker] = None
         self._last_osint_heavy_response: str = ""
         self._osint_heavy_image_path: str = ""
+        self.vpn_worker: Optional[ChatWorker] = None
+        self._last_vpn_response: str = ""
 
         self.agent_instances = {
             "chat": ChatAgent(),
@@ -227,6 +232,7 @@ class GodAI(QWidget):
             "bug_bounty": BugBountyAgent(),
             "wifi": WiFiAgent(),
             "osint_heavy": OsintHeavyAgent(),
+            "vpn": VpnAgent(),
         }
 
         self.current_messages = []
@@ -402,18 +408,13 @@ class GodAI(QWidget):
                 self.runbar_cost.setText(f"~€{estimated_cost:.2f} · {tokens} tok")
 
         if backend == "ollama":
-            self.live_estimate_label.setText(
-                f"{model} · ~{approx_tokens} tokens"
-            )
+            self.live_estimate_label.setText("")
         elif backend in {"openai", "deepseek", "kimi", "gemini"}:
             self.live_estimate_label.setText(
-                f"{backend} · {model} · ~{approx_tokens} tokens\n"
                 f"⚠ Paid API"
             )
         else:
-            self.live_estimate_label.setText(
-                f"{backend} · {model} · ~{approx_tokens} tokens"
-            )
+            self.live_estimate_label.setText("")
 
     def show_cost_estimate_popup(self):
         estimated_cost, approx_tokens, backend, model = self.get_current_cost_estimate()
@@ -721,11 +722,11 @@ class GodAI(QWidget):
 
         rec = self.get_recommended_setup()
 
-        self.recommendation_label.setText(
-            f"Recommendation:\n"
-            f"{rec['provider']} · {rec['model']}\n"
-            f"{rec['reason']}"
-        )
+        self.recommendation_label.setText(f"{rec['provider']} · {rec['model']}")
+        if hasattr(self, "routing_rows"):
+            self.routing_rows["Suggested"].set(rec["provider"], rec["reason"])
+            self.routing_rows["Model"].set(rec["model"], rec["reason"])
+            self.routing_rows["Mode"].set(rec.get("mode", "—"), rec["reason"])
         # Chat's recommendation moves with the tool/command/prompt, so repaint
         # the red dropdown markings whenever the label is refreshed.
         self.refresh_recommendation_marks("chat")
@@ -867,11 +868,16 @@ class GodAI(QWidget):
         self.get_muse_btn.setEnabled(True)
         QMessageBox.warning(self, "Download Failed", message)
 
-    def models_for_provider(self, provider: str) -> list[str]:
+    def models_for_provider(self, provider: str, context: str = "",
+                            widget=None) -> list[str]:
         """Model ids offered by one provider, or [] for an unknown provider.
 
         Every client falls back to its own KNOWN_MODELS list when the API is
         unreachable, so this only returns empty for a name we don't handle.
+
+        A `context` turns a failure from silent into recorded: the panels that
+        loaded their own models used to note it on the model box as a tooltip,
+        and that survives the move here.
         """
         clients = {
             "ollama": self.ollama,
@@ -887,8 +893,46 @@ class GodAI(QWidget):
             return []
         try:
             return list(client.list_models())
-        except Exception:
+        except Exception as exc:
+            if context:
+                self._note_failure(f"{context}: load models", exc, widget)
             return []
+
+    # ── The provider/model pair every agent panel owns ───────────────────────
+    # One implementation, six panels. Each used to inline the same seven-branch
+    # provider chain; two of them swallowed load failures silently and one
+    # reported them, which is the kind of drift that duplication guarantees.
+
+    def load_models_into(self, provider_box, model_box, context: str,
+                         empty_placeholder: bool = False) -> None:
+        """Fill `model_box` with the models of the provider next to it."""
+        provider = provider_box.currentText()
+        model_box.clear()
+        models = self.models_for_provider(provider, context, model_box)
+        if models:
+            model_box.addItems(models)
+        elif empty_placeholder:
+            model_box.addItem(
+                "(no local models)" if provider == "ollama" else "(unavailable)"
+            )
+
+    def register_model_loader(self, agent_key: str, loader) -> None:
+        """Record how to repopulate one agent's model box.
+
+        Panels register while they build. Replaces a map of method *names* that
+        had to be kept in step with the methods by hand.
+        """
+        self._model_loaders[agent_key] = loader
+
+    def load_models_for(self, agent_key: str) -> None:
+        """Repopulate one agent's model box, whichever panel owns it."""
+        loader = self._model_loaders.get(agent_key)
+        if loader is None:
+            return
+        try:
+            loader()
+        except Exception as exc:
+            self._note_failure(f"{agent_key}: reload models", exc)
 
     # ── Per-agent recommended setup ──────────────────────────────────────────
     # Every agent panel gets its recommendation from AGENT_RECOMMENDATIONS
@@ -1073,12 +1117,7 @@ class GodAI(QWidget):
         # provider fires currentTextChanged -> the panel's loader, but only when
         # the value actually changed, so call the loader directly to cover the
         # case where the recommended provider was already selected.
-        loader = getattr(self, AGENT_MODEL_LOADERS.get(agent_key, ""), None)
-        if callable(loader):
-            try:
-                loader()
-            except Exception as exc:
-                self._note_failure("apply recommendation: reload models", exc)
+        self.load_models_for(agent_key)
 
         if model_box is not None:
             idx = self._find_model_index(model_box, rec["model"])
@@ -1139,6 +1178,10 @@ class GodAI(QWidget):
 
         # Inner scrollable container holds all the agent categories so they never
         # get clipped or vertically squashed when the window is short.
+        agents_header = QLabel("AGENTS")
+        agents_header.setObjectName("RailHeading")
+        left_layout.addWidget(agents_header)
+
         agents_scroll = QScrollArea()
         agents_scroll.setWidgetResizable(True)
         agents_scroll.setFrameShape(QFrame.NoFrame)
@@ -1152,14 +1195,15 @@ class GodAI(QWidget):
         agents_layout.setSpacing(2)
 
         icons = {
-            "chat": "💬", "osint": "👹", "osint_heavy": "🔍",
-            "manager": "🏗",
-            "wifi": "📡", "bug_bounty": "🐛", }
+            "chat": "▸", "osint": "◈", "osint_heavy": "◉",
+            "manager": "✦",
+            "wifi": "≋", "bug_bounty": "⌁", "vpn": "⇄", }
         labels = {
             "chat": "Chat", "osint": "Trace", "osint_heavy": "Bloodhound",
             "manager": "Forge",
             "wifi": "Beacon",
             "bug_bounty": "Bug Spray",
+            "vpn": "Tunnel",
             # Without this the sidebar fell back to name.capitalize() and showed a
             # other surface (header title, registry) calls this one Publisher.
             }
@@ -1169,30 +1213,30 @@ class GodAI(QWidget):
         # A flat list, in the order the work usually runs. The accordion this
         # replaced was built when there were fifteen agents; at six it was a
         # click between you and everything, and four headings for six rows.
-        sidebar_agents = ["chat", "osint", "osint_heavy", "wifi", "bug_bounty", "manager"]
+        sidebar_agents = ["chat", "osint", "osint_heavy", "wifi", "bug_bounty", "vpn", "manager"]
 
         # Minimal sidebar row — clear separation via padding + hover fill
         agent_btn_style = """
             QPushButton#AgentBtn {
                 text-align: left;
-                padding: 9px 8px 9px 12px;
+                padding: 14px 12px 14px 20px;
                 background-color: transparent;
                 border: none;
-                border-left: 2px solid transparent;
+                border-left: 3px solid transparent;
                 border-radius: 0;
-                color: #a8a8a8;
-                font-size: 13px;
+                color: #a8b3ad;
+                font-size: 16px;
                 font-weight: normal;
             }
             QPushButton#AgentBtn:hover {
-                background-color: #161616;
-                color: #ffffff;
+                background-color: #151816;
+                color: #e8ece9;
             }
             QPushButton#AgentBtn:checked {
-                background-color: rgba(60, 255, 136, 0.06);
-                border-left: 2px solid #3cff88;
+                background-color: rgba(60, 255, 136, 0.07);
+                border-left: 3px solid #3cff88;
                 color: #3cff88;
-                font-weight: 600;
+                font-weight: 500;
             }
         """
 
@@ -1248,11 +1292,11 @@ class GodAI(QWidget):
         self.history_list.setMaximumHeight(200)
         left_layout.addWidget(self.history_list)
 
-        self.delete_chat_btn = QPushButton("🗑 Delete Selected")
+        self.delete_chat_btn = QPushButton("Delete selected")
         self.delete_chat_btn.clicked.connect(self.delete_selected_chat)
         left_layout.addWidget(self.delete_chat_btn)
 
-        self.new_chat_btn = QPushButton("✳️ New Chat")
+        self.new_chat_btn = QPushButton("New chat")
         self.new_chat_btn.clicked.connect(self.new_chat)
         left_layout.addWidget(self.new_chat_btn)
 
@@ -1315,16 +1359,21 @@ class GodAI(QWidget):
     def build_center_panel(self) -> QWidget:
         center_widget = QWidget()
         center_layout = QVBoxLayout(center_widget)
-        center_layout.setContentsMargins(20, 16, 20, 16)
-        center_layout.setSpacing(12)
+        center_layout.setContentsMargins(28, 22, 28, 22)
+        center_layout.setSpacing(16)
 
         # ── Agent header bar: big accent title + status pill ─────────────
         header_row = QHBoxLayout()
         header_row.setSpacing(12)
 
-        self.agent_title_label = QLabel("CHAT")
+        self.agent_title_label = QLabel("Chat")
         self.agent_title_label.setObjectName("AgentTitle")
         header_row.addWidget(self.agent_title_label)
+
+        self.agent_subtitle_label = QLabel("")
+        self.agent_subtitle_label.setObjectName("AgentSubtitle")
+        self.agent_subtitle_label.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
+        header_row.addWidget(self.agent_subtitle_label, 0, Qt.AlignBottom)
 
         header_row.addStretch()
 
@@ -1332,7 +1381,7 @@ class GodAI(QWidget):
         self.agent_docs_btn.setObjectName("ChipBtn")
         self.agent_docs_btn.setToolTip("Open the documentation for the current agent.")
         self.agent_docs_btn.clicked.connect(self.show_agent_docs)
-        header_row.addWidget(self.agent_docs_btn)
+        self.agent_docs_btn.hide()
 
         self.tooltips_toggle_btn = QPushButton("💡 Tooltips: On")
         self.tooltips_toggle_btn.setObjectName("ChipBtn")
@@ -1342,7 +1391,7 @@ class GodAI(QWidget):
             "Toggle hover tooltips across the entire app. Tooltips explain what each control does."
         )
         self.tooltips_toggle_btn.clicked.connect(self._toggle_tooltips)
-        header_row.addWidget(self.tooltips_toggle_btn)
+        self.tooltips_toggle_btn.hide()
 
         self.agent_status_pill = QLabel("●  READY")
         self.agent_status_pill.setObjectName("StatusPill")
@@ -1350,11 +1399,6 @@ class GodAI(QWidget):
 
         center_layout.addLayout(header_row)
 
-        # ── Subtitle: short function description under the title ────────
-        self.agent_subtitle_label = QLabel("")
-        self.agent_subtitle_label.setObjectName("AgentSubtitle")
-        self.agent_subtitle_label.setWordWrap(True)
-        center_layout.addWidget(self.agent_subtitle_label)
 
         self.normal_panel = QWidget()
         normal_layout = QVBoxLayout(self.normal_panel)
@@ -1380,32 +1424,49 @@ class GodAI(QWidget):
         # A plain QWidget does not paint a stylesheet background unless asked;
         # without this the run bar has no surface and its controls float loose.
         runbar_container.setAttribute(Qt.WA_StyledBackground, True)
-        runbar = FlowLayout(runbar_container, spacing=8)
+        runbar = QHBoxLayout(runbar_container)
+        runbar.setContentsMargins(18, 14, 18, 14)
+        runbar.setSpacing(10)
 
         self.tool_box = QComboBox()
+        self.tool_box.setObjectName("ToolChip")
         self.tool_box.addItems(self.tool_prompts.keys())
-        self.tool_box.setMinimumWidth(140)
+        self.tool_box.setMinimumWidth(110)
         runbar.addWidget(self.tool_box)
 
-        self.command_box = QComboBox()
-        self.command_box.addItems(self.commands.keys())
-        self.command_box.setMinimumWidth(160)
-        runbar.addWidget(self.command_box)
-
         self.provider_box = QComboBox()
+        self.provider_box.setObjectName("MachinePick")
         self.provider_box.addItems(["ollama", "openai", "deepseek", "kimi", "gemini", "anthropic", "qwen"])
-        self.provider_box.setMinimumWidth(110)
+        self.provider_box.setMinimumWidth(90)
         runbar.addWidget(self.provider_box)
 
+        dot = QLabel("·")
+        dot.setObjectName("RunBarDot")
+        runbar.addWidget(dot)
+
         self.model_box = QComboBox()
-        self.model_box.setMinimumWidth(170)
+        self.model_box.setObjectName("MachinePick")
+        self.model_box.setMinimumWidth(140)
         runbar.addWidget(self.model_box)
 
         # The one number that changes with every keystroke, next to the controls
         # that change it rather than in the far rail.
+        runbar.addStretch()
+
         self.runbar_cost = QLabel("—")
         self.runbar_cost.setObjectName("RunBarCost")
         runbar.addWidget(self.runbar_cost)
+
+        self.stop_chat_btn = QPushButton("Stop")
+        self.stop_chat_btn.setObjectName("StopAction")
+        self.stop_chat_btn.setEnabled(False)
+        self.stop_chat_btn.clicked.connect(self.stop_current_task)
+        runbar.addWidget(self.stop_chat_btn)
+
+        self.run_btn = QPushButton("Run")
+        self.run_btn.setObjectName("RunAction")
+        self.run_btn.clicked.connect(self.send_prompt)
+        runbar.addWidget(self.run_btn)
 
         self.runbar_settings_btn = QPushButton("⚙")
         self.runbar_settings_btn.setObjectName("ChipBtn")
@@ -1427,6 +1488,16 @@ class GodAI(QWidget):
         sp = QVBoxLayout(settings_panel)
         sp.setContentsMargins(12, 10, 12, 12)
         sp.setSpacing(8)
+
+        command_row = QHBoxLayout()
+        command_row.setSpacing(8)
+        command_row.addWidget(QLabel("Command"))
+        self.command_box = QComboBox()
+        self.command_box.addItems(self.commands.keys())
+        self.command_box.setMinimumWidth(190)
+        command_row.addWidget(self.command_box)
+        command_row.addStretch()
+        sp.addLayout(command_row)
 
         mode_row = QHBoxLayout()
         mode_row.setSpacing(8)
@@ -1460,6 +1531,37 @@ class GodAI(QWidget):
         tools_label = QLabel("MODELS")
         tools_label.setObjectName("PopoverHeading")
         sp.addWidget(tools_label)
+
+        request_label = QLabel("THIS REQUEST")
+        request_label.setObjectName("PopoverHeading")
+        sp.addWidget(request_label)
+
+        request_container = QWidget()
+        request_actions = FlowLayout(request_container, spacing=6)
+        self.auto_route_btn = QPushButton("Auto route")
+        self.auto_route_btn.setObjectName("ChipBtn")
+        self.auto_route_btn.clicked.connect(self.auto_route_agent)
+        request_actions.addWidget(self.auto_route_btn)
+
+        self.recommend_setup_btn = QPushButton("Use recommended")
+        self.recommend_setup_btn.setObjectName("ChipBtn")
+        self.recommend_setup_btn.clicked.connect(self.apply_recommended_setup)
+        request_actions.addWidget(self.recommend_setup_btn)
+
+        self.auto_recommend_checkbox = QCheckBox("Auto-apply")
+        self.auto_recommend_checkbox.setChecked(False)
+        request_actions.addWidget(self.auto_recommend_checkbox)
+
+        self.estimate_btn = QPushButton("Estimate cost")
+        self.estimate_btn.setObjectName("ChipBtn")
+        self.estimate_btn.clicked.connect(self.show_cost_estimate_popup)
+        request_actions.addWidget(self.estimate_btn)
+
+        self.export_btn = QPushButton("Export report")
+        self.export_btn.setObjectName("ChipBtn")
+        self.export_btn.clicked.connect(self.export_report)
+        request_actions.addWidget(self.export_btn)
+        sp.addWidget(request_container)
 
         tools_container = QWidget()
         tools = FlowLayout(tools_container, spacing=6)
@@ -1495,55 +1597,13 @@ class GodAI(QWidget):
         self.model_box.currentTextChanged.connect(self.save_provider_model_preference)
 
         self.input_box = QTextEdit()
-        self.input_box.setPlaceholderText("Type your message here...")
-        self.input_box.setMinimumHeight(190)
+        self.input_box.setObjectName("PromptInput")
+        self.input_box.setPlaceholderText("Type your message here…")
+        self.input_box.setMinimumHeight(110)
+        self.input_box.setMaximumHeight(170)
         normal_layout.addWidget(self.input_box)
 
-        # Single action row — wraps instead of truncating when the pane narrows.
-        actions_container = QWidget()
-        actions_row = FlowLayout(actions_container, spacing=6)
-
-        self.send_btn = QPushButton("Send")
-        self.send_btn.setFixedHeight(34)
-        self.send_btn.setObjectName("PrimaryAction")
-        self.send_btn.clicked.connect(self.send_prompt)
-        actions_row.addWidget(self.send_btn)
-
-        self.stop_chat_btn = QPushButton("Stop")
-        self.stop_chat_btn.setFixedHeight(34)
-        self.stop_chat_btn.setEnabled(False)
-        self.stop_chat_btn.setObjectName("DangerAction")
-        self.stop_chat_btn.clicked.connect(self.stop_current_task)
-        actions_row.addWidget(self.stop_chat_btn)
-
-        self.auto_route_btn = QPushButton("Auto Route")
-        self.auto_route_btn.setFixedHeight(32)
-        self.auto_route_btn.clicked.connect(self.auto_route_agent)
-        actions_row.addWidget(self.auto_route_btn)
-
-        self.recommend_setup_btn = QPushButton("Use Recommended")
-        self.recommend_setup_btn.setFixedHeight(32)
-        self.recommend_setup_btn.clicked.connect(self.apply_recommended_setup)
-        actions_row.addWidget(self.recommend_setup_btn)
-
-        # "Auto-Apply" modifies "Use Recommended", so it follows it directly. Its
-        # own trailing padding provides the gap before the cost/export buttons —
-        # a spacer item would wrap as if it were a control.
-        self.auto_recommend_checkbox = QCheckBox("Auto-Apply")
-        self.auto_recommend_checkbox.setChecked(False)
-        actions_row.addWidget(self.auto_recommend_checkbox)
-
-        self.estimate_btn = QPushButton("Estimate Cost")
-        self.estimate_btn.setFixedHeight(32)
-        self.estimate_btn.clicked.connect(self.show_cost_estimate_popup)
-        actions_row.addWidget(self.estimate_btn)
-
-        self.export_btn = QPushButton("Export Report")
-        self.export_btn.setFixedHeight(32)
-        self.export_btn.clicked.connect(self.export_report)
-        actions_row.addWidget(self.export_btn)
-
-        normal_layout.addWidget(actions_container)
+        self.send_btn = self.run_btn
 
         # ===== INPUT =====
         self.input_box.textChanged.connect(self.update_live_cost_estimate)
@@ -1612,6 +1672,9 @@ class GodAI(QWidget):
         self.build_bug_bounty_panel()
         center_layout.addWidget(self.bug_bounty_panel)
 
+        self.build_vpn_panel()
+        center_layout.addWidget(self.vpn_panel)
+
         self.output_label = QLabel("OUTPUT")
         self.output_label.setStyleSheet(
             "font-size: 10px; font-weight: bold; color: #707070; "
@@ -1621,6 +1684,7 @@ class GodAI(QWidget):
         center_layout.addWidget(self.output_label)
 
         self.output_box = QTextEdit()
+        self.output_box.setObjectName("OutputBox")
         self.output_box.setReadOnly(True)
         self.output_box.setMinimumHeight(130)
         self.output_box.hide()
@@ -1665,16 +1729,9 @@ class GodAI(QWidget):
 
         idea_btn_row = QHBoxLayout()
 
-        self.manager_provider_box = QComboBox()
-        self.manager_provider_box.addItems(["ollama", "openai", "deepseek", "kimi", "gemini", "anthropic", "qwen"])
-        self.manager_provider_box.setCurrentText("deepseek")
-        idea_btn_row.addWidget(QLabel("Provider:"))
-        idea_btn_row.addWidget(self.manager_provider_box)
-
-        self.manager_model_box = QComboBox()
-        self.manager_model_box.setMinimumWidth(200)
-        idea_btn_row.addWidget(QLabel("Model:"))
-        idea_btn_row.addWidget(self.manager_model_box)
+        self.manager_provider_box, self.manager_model_box = build_provider_row(
+            self, idea_btn_row, "manager", default="deepseek",
+            empty_placeholder=True)
 
         idea_btn_row.addStretch()
 
@@ -1735,9 +1792,6 @@ class GodAI(QWidget):
 
         self.manager_panel.hide()
 
-        self.manager_provider_box.currentTextChanged.connect(self.manager_load_models)
-        self.manager_load_models()
-
 
     def build_osint_panel(self):
         self.osint_panel = QWidget()
@@ -1769,16 +1823,8 @@ class GodAI(QWidget):
 
         provider_row_container = QWidget()
         provider_row = FlowLayout(provider_row_container, spacing=6)
-        provider_row.addWidget(QLabel("Provider:"))
-        self.osint_provider_box = QComboBox()
-        self.osint_provider_box.addItems(["ollama", "openai", "deepseek", "kimi", "gemini", "anthropic", "qwen"])
-        self.osint_provider_box.setCurrentText("anthropic")
-        provider_row.addWidget(self.osint_provider_box)
-
-        provider_row.addWidget(QLabel("Model:"))
-        self.osint_model_box = QComboBox()
-        self.osint_model_box.setMinimumWidth(200)
-        provider_row.addWidget(self.osint_model_box)
+        self.osint_provider_box, self.osint_model_box = build_provider_row(
+            self, provider_row, "osint")
 
 
         self.osint_analyse_btn = QPushButton("Structure Query")
@@ -1820,9 +1866,6 @@ class GodAI(QWidget):
         layout.addLayout(bottom_row)
 
         self.osint_panel.hide()
-
-        self.osint_provider_box.currentTextChanged.connect(self.osint_load_models)
-        self.osint_load_models()
 
     # ── OSINT Pro (Heavy) panel ──────────────────────────────────────────────
     def build_osint_heavy_panel(self):
@@ -1869,16 +1912,8 @@ class GodAI(QWidget):
 
         provider_row_container = QWidget()
         provider_row = FlowLayout(provider_row_container, spacing=6)
-        provider_row.addWidget(QLabel("Provider:"))
-        self.osint_heavy_provider_box = QComboBox()
-        self.osint_heavy_provider_box.addItems(["ollama", "openai", "deepseek", "kimi", "gemini", "anthropic", "qwen"])
-        self.osint_heavy_provider_box.setCurrentText("anthropic")
-        provider_row.addWidget(self.osint_heavy_provider_box)
-
-        provider_row.addWidget(QLabel("Model:"))
-        self.osint_heavy_model_box = QComboBox()
-        self.osint_heavy_model_box.setMinimumWidth(200)
-        provider_row.addWidget(self.osint_heavy_model_box)
+        self.osint_heavy_provider_box, self.osint_heavy_model_box = build_provider_row(
+            self, provider_row, "osint_heavy")
 
 
         self.osint_heavy_investigate_btn = QPushButton("Investigate")
@@ -2034,9 +2069,6 @@ class GodAI(QWidget):
         layout.addWidget(self.osint_heavy_status_label)
 
         self.osint_heavy_panel.hide()
-
-        self.osint_heavy_provider_box.currentTextChanged.connect(self.osint_heavy_load_models)
-        self.osint_heavy_load_models()
 
 
     # ── OSINT Light handlers ──────────────────────────────────────────────────
@@ -2566,14 +2598,8 @@ class GodAI(QWidget):
         provider_row_container = QWidget()
         provider_row = FlowLayout(provider_row_container, spacing=6)
 
-        self.wifi_provider_box = QComboBox()
-        self.wifi_provider_box.addItems(["ollama", "openai", "deepseek", "kimi", "gemini", "anthropic", "qwen"])
-        self.wifi_provider_box.setCurrentText("anthropic")
-        provider_row.addWidget(self.wifi_provider_box)
-
-        self.wifi_model_box = QComboBox()
-        self.wifi_model_box.setMinimumWidth(200)
-        provider_row.addWidget(self.wifi_model_box)
+        self.wifi_provider_box, self.wifi_model_box = build_provider_row(
+            self, provider_row, "wifi", labels=False)
 
         self.wifi_run_btn = QPushButton("Run")
         self.wifi_run_btn.setMinimumWidth(110)
@@ -2705,9 +2731,6 @@ class GodAI(QWidget):
         layout.addWidget(self.wifi_status_label)
 
         self.wifi_panel.hide()
-
-        self.wifi_provider_box.currentTextChanged.connect(self.wifi_load_models)
-        self.wifi_load_models()
 
     # ── Wi-Fi handlers ───────────────────────────────────────────────────────
     def _wifi_on_mode_changed(self, mode: str):
@@ -3152,7 +3175,7 @@ class GodAI(QWidget):
         for meter in self.resource_meters.values():
             system_layout.addWidget(meter)
 
-        self.realtime_monitor_btn = QPushButton("⚡ Realtime Monitor")
+        self.realtime_monitor_btn = QPushButton("Realtime monitor")
         self.realtime_monitor_btn.setEnabled(False)
         system_layout.addWidget(self.realtime_monitor_btn)
 
@@ -3165,13 +3188,22 @@ class GodAI(QWidget):
         routing_layout.setContentsMargins(10, 6, 10, 10)
         routing_layout.setSpacing(6)
 
-        self.route_result_label = QLabel("Router: not yet computed")
-        self.route_result_label.setWordWrap(True)
-        routing_layout.addWidget(self.route_result_label)
+        # Rows, not prose. The reasoning sentence became the tooltip — it is
+        # an explanation you want occasionally, not four wrapped lines you read
+        # past every time.
+        self.routing_rows = {
+            "Suggested": KeyValue("Suggested", "—"),
+            "Model": KeyValue("Model", "—"),
+            "Mode": KeyValue("Mode", "—"),
+        }
+        for row in self.routing_rows.values():
+            routing_layout.addWidget(row)
 
-        self.recommendation_label = QLabel("Recommendation: not yet calculated")
-        self.recommendation_label.setWordWrap(True)
-        routing_layout.addWidget(self.recommendation_label)
+        # kept so the existing update paths still have something to write to
+        self.route_result_label = QLabel()
+        self.route_result_label.hide()
+        self.recommendation_label = QLabel()
+        self.recommendation_label.hide()
 
         cards_layout.addWidget(routing_card)
 
@@ -3182,26 +3214,21 @@ class GodAI(QWidget):
         cost_layout.setContentsMargins(10, 6, 10, 10)
         cost_layout.setSpacing(6)
 
-        self.live_estimate_label = QLabel("—")
-        self.live_estimate_label.setWordWrap(True)
-        cost_layout.addWidget(self.live_estimate_label)
+        self.cost_rows = {
+            "last": KeyValue("Last request", "€0.00"),
+            "session": KeyValue("This session", "€0.00"),
+            "today": KeyValue("Today", "€0.00"),
+            "requests": KeyValue("Requests", "0"),
+        }
+        for row in self.cost_rows.values():
+            cost_layout.addWidget(row)
 
-        self.last_request_label = QLabel("Last Request Cost: €0.00")
-        cost_layout.addWidget(self.last_request_label)
-
-        cost_divider = QFrame()
-        cost_divider.setFrameShape(QFrame.HLine)
-        cost_divider.setObjectName("CardDivider")
-        cost_layout.addWidget(cost_divider)
-
-        self.session_cost_label = QLabel("Session Cost: €0.00")
-        cost_layout.addWidget(self.session_cost_label)
-
-        self.today_cost_label = QLabel("Cost Today: €0.00")
-        cost_layout.addWidget(self.today_cost_label)
-
-        self.request_count_label = QLabel("Requests Today: 0 | Session: 0")
-        cost_layout.addWidget(self.request_count_label)
+        # written to by the existing update paths, no longer shown
+        self.live_estimate_label = QLabel(); self.live_estimate_label.hide()
+        self.last_request_label = QLabel(); self.last_request_label.hide()
+        self.session_cost_label = QLabel(); self.session_cost_label.hide()
+        self.today_cost_label = QLabel(); self.today_cost_label.hide()
+        self.request_count_label = QLabel(); self.request_count_label.hide()
 
         cards_layout.addWidget(cost_card)
 
@@ -3220,39 +3247,23 @@ class GodAI(QWidget):
         for meter in self.budget_meters.values():
             budget_layout.addWidget(meter)
 
-        session_row = QHBoxLayout()
-        session_row.setSpacing(8)
-        session_lbl = QLabel("Session €")
-        session_lbl.setMinimumWidth(70)
-        session_row.addWidget(session_lbl)
+        # The caps themselves are set in Settings. A rail reports state; two
+        # text fields and two buttons in it made the busiest block on screen out
+        # of something changed once a month.
         self.session_budget_input = QLineEdit(str(int(self.session_budget_eur)))
-        self.session_budget_input.setPlaceholderText("1")
-        self.session_budget_input.setAlignment(Qt.AlignRight)
-        self.session_budget_input.setMaximumWidth(70)
-        session_row.addWidget(self.session_budget_input)
-        session_row.addStretch()
-        budget_layout.addLayout(session_row)
-
-        daily_row = QHBoxLayout()
-        daily_row.setSpacing(8)
-        daily_lbl = QLabel("Daily €")
-        daily_lbl.setMinimumWidth(70)
-        daily_row.addWidget(daily_lbl)
         self.daily_budget_input = QLineEdit(str(int(self.daily_budget_eur)))
-        self.daily_budget_input.setPlaceholderText("5")
-        self.daily_budget_input.setAlignment(Qt.AlignRight)
-        self.daily_budget_input.setMaximumWidth(70)
-        daily_row.addWidget(self.daily_budget_input)
-        daily_row.addStretch()
-        budget_layout.addLayout(daily_row)
-
         self.save_budget_btn = QPushButton("Save Limits")
         self.save_budget_btn.clicked.connect(self.save_budget_limits)
-        budget_layout.addWidget(self.save_budget_btn)
-
         self.reset_session_budget_btn = QPushButton("Reset Session Spend")
         self.reset_session_budget_btn.clicked.connect(self.reset_session_spend)
-        budget_layout.addWidget(self.reset_session_budget_btn)
+        for widget in (self.session_budget_input, self.daily_budget_input,
+                       self.save_budget_btn, self.reset_session_budget_btn):
+            widget.hide()
+
+        self.edit_budget_btn = QPushButton("Edit limits…")
+        self.edit_budget_btn.setObjectName("RailLink")
+        self.edit_budget_btn.clicked.connect(self.show_settings)
+        budget_layout.addWidget(self.edit_budget_btn)
 
         cards_layout.addWidget(budget_card)
 
@@ -3263,15 +3274,15 @@ class GodAI(QWidget):
         actions_layout.setContentsMargins(10, 6, 10, 10)
         actions_layout.setSpacing(6)
 
-        self.cost_history_btn = QPushButton("📊  Cost History")
+        self.cost_history_btn = QPushButton("Cost history")
         self.cost_history_btn.clicked.connect(self.show_cost_history)
         actions_layout.addWidget(self.cost_history_btn)
 
-        self.run_log_btn = QPushButton("📜  Run Log")
+        self.run_log_btn = QPushButton("Run log")
         self.run_log_btn.clicked.connect(self.show_run_log)
         actions_layout.addWidget(self.run_log_btn)
 
-        self.settings_btn = QPushButton("⚙   Settings")
+        self.settings_btn = QPushButton("Settings")
         self.settings_btn.clicked.connect(self.show_settings)
         actions_layout.addWidget(self.settings_btn)
 
@@ -3284,20 +3295,31 @@ class GodAI(QWidget):
         keys_layout.setContentsMargins(10, 6, 10, 10)
         keys_layout.setSpacing(4)
 
-        self.openai_key_label = QLabel(f"OpenAI: {self.safe_key_status(OpenAIClientWrapper)}")
-        keys_layout.addWidget(self.openai_key_label)
+        # A tick and a cross in every row is five pieces of punctuation saying
+        # what one word says. Present or absent, stated plainly, coloured.
+        self.key_rows = {}
+        for name, wrapper in (("OpenAI", OpenAIClientWrapper),
+                              ("DeepSeek", DeepSeekClientWrapper),
+                              ("Kimi", KimiClientWrapper),
+                              ("Gemini", GeminiClientWrapper),
+                              ("Anthropic", AnthropicClientWrapper)):
+            ready = False
+            try:
+                ready = bool(wrapper.key_available())
+            except Exception:
+                ready = False
+            row = KeyValue(name, "ready" if ready else "no key")
+            row.value.setObjectName("KVValueOn" if ready else "KVValueOff")
+            row.setToolTip(f"{name} API key {'found' if ready else 'not set'} in .env")
+            self.key_rows[name] = row
+            keys_layout.addWidget(row)
 
-        self.deepseek_key_label = QLabel(f"DeepSeek: {self.safe_key_status(DeepSeekClientWrapper)}")
-        keys_layout.addWidget(self.deepseek_key_label)
-
-        self.kimi_key_label = QLabel(f"Kimi: {self.safe_key_status(KimiClientWrapper)}")
-        keys_layout.addWidget(self.kimi_key_label)
-
-        self.gemini_key_label = QLabel(f"Gemini: {self.safe_key_status(GeminiClientWrapper)}")
-        keys_layout.addWidget(self.gemini_key_label)
-
-        self.anthropic_key_label = QLabel(f"Anthropic: {self.safe_key_status(AnthropicClientWrapper)}")
-        keys_layout.addWidget(self.anthropic_key_label)
+        # the old labels, still written to by the settings dialog
+        self.openai_key_label = QLabel(); self.openai_key_label.hide()
+        self.deepseek_key_label = QLabel(); self.deepseek_key_label.hide()
+        self.kimi_key_label = QLabel(); self.kimi_key_label.hide()
+        self.gemini_key_label = QLabel(); self.gemini_key_label.hide()
+        self.anthropic_key_label = QLabel(); self.anthropic_key_label.hide()
 
         cards_layout.addWidget(keys_card)
 
@@ -3334,33 +3356,32 @@ class GodAI(QWidget):
         # ── VPN-Agent-inspired card stylesheet ──────────────────────────
         right_widget.setStyleSheet("""
         QWidget#RightPanel {
-            background-color: #0f0f0f;
+            background-color: #0d0f0e;
         }
         QWidget#RightCardsContainer {
             background-color: transparent;
         }
 
+        /* Flat sections, not boxes: a hairline, a small heading, then rows.
+           A rail is reference material — boxing each group makes six competing
+           containers out of what should read as one column. */
         QGroupBox#RightCard {
-            background-color: #161616;
-            border: 1px solid #242424;
-            border-radius: 10px;
-            /* The title is drawn in this top margin. Card padding and each card
-               layout's own top margin both apply *inside*, so they stack: keep
-               their sum at a deliberate ~16px. It was ~30px (baggy) and briefly
-               ~6px (cramped, title crowding the border). */
-            margin-top: 16px;
-            padding: 10px 12px 10px 12px;
+            background: transparent;
+            border: none;
+            border-top: 1px solid #262d29;
+            margin-top: 26px;
+            padding: 16px 2px 2px 2px;
         }
         QGroupBox#RightCard::title {
             subcontrol-origin: margin;
             subcontrol-position: top left;
-            left: 4px;
-            top: 0px;
-            padding: 0 6px;
-            background-color: transparent;
-            color: #707070;
-            font-size: 10px;
-            font-weight: bold;
+            left: 0px;
+            top: 4px;
+            padding: 0 8px 0 0;
+            background: transparent;
+            color: #5d6862;
+            font-size: 12px;
+            font-weight: 500;
             letter-spacing: 2px;
         }
 
@@ -3549,6 +3570,242 @@ class GodAI(QWidget):
     def apply_global_style(self):
         self.setStyleSheet(GLOBAL_STYLESHEET)
 
+    def build_vpn_panel(self):
+        self.vpn_panel = QWidget()
+        self.vpn_panel.setObjectName("VPNPanel")
+        layout = QVBoxLayout(self.vpn_panel)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(8)
+
+        # ── Deployment setup ─────────────────────────────────────────────────
+        setup_group = QGroupBox("Deployment")
+        setup_group.setObjectName("VPNSetupGroup")
+        setup_layout = QGridLayout(setup_group)
+        setup_layout.setSpacing(6)
+
+        setup_layout.addWidget(QLabel("Mode:"), 0, 0)
+        self.vpn_mode_box = QComboBox()
+        self.vpn_mode_box.addItems(["Remote (VPS)", "Native (home LAN)"])
+        self.vpn_mode_box.setToolTip(
+            "Remote: traffic exits at a rented VPS — hides your IP, changes your "
+            "apparent country.\nNative: runs on hardware you own — an encrypted way "
+            "INTO your LAN, exit IP stays your home ISP."
+        )
+        setup_layout.addWidget(self.vpn_mode_box, 0, 1)
+
+        setup_layout.addWidget(QLabel("Protocol:"), 0, 2)
+        self.vpn_protocol_box = QComboBox()
+        self.vpn_protocol_box.addItems(["WireGuard", "OpenVPN 443 fallback", "Both"])
+        setup_layout.addWidget(self.vpn_protocol_box, 0, 3)
+
+        setup_layout.addWidget(QLabel("Server host:"), 1, 0)
+        self.vpn_host_input = QLineEdit()
+        self.vpn_host_input.setPlaceholderText("VPS IP or DDNS hostname (Config Builder)")
+        setup_layout.addWidget(self.vpn_host_input, 1, 1)
+
+        setup_layout.addWidget(QLabel("SSH user:"), 1, 2)
+        self.vpn_ssh_input = QLineEdit()
+        self.vpn_ssh_input.setPlaceholderText("e.g. root")
+        setup_layout.addWidget(self.vpn_ssh_input, 1, 3)
+
+        setup_layout.addWidget(QLabel("LAN subnet:"), 2, 0)
+        self.vpn_lan_input = QLineEdit()
+        self.vpn_lan_input.setPlaceholderText("Native mode, e.g. 192.168.1.0/24")
+        setup_layout.addWidget(self.vpn_lan_input, 2, 1)
+
+        setup_layout.addWidget(QLabel("Egress iface:"), 2, 2)
+        self.vpn_egress_input = QLineEdit()
+        self.vpn_egress_input.setPlaceholderText("server NIC, e.g. eth0")
+        setup_layout.addWidget(self.vpn_egress_input, 2, 3)
+
+        layout.addWidget(setup_group)
+
+        # ── Advisor question ─────────────────────────────────────────────────
+        self.vpn_question_input = QLineEdit()
+        self.vpn_question_input.setPlaceholderText(
+            "Ask the advisor — e.g. \"WireGuard won't connect on hotel wifi, what now?\""
+        )
+        self.vpn_question_input.returnPressed.connect(self.vpn_run)
+        layout.addWidget(self.vpn_question_input)
+
+        # ── Provider / action row ────────────────────────────────────────────
+        provider_row_container = QWidget()
+        provider_row = FlowLayout(provider_row_container, spacing=6)
+
+        self.vpn_provider_box, self.vpn_model_box = build_provider_row(
+            self, provider_row, "vpn", labels=False)
+
+        self.vpn_run_btn = QPushButton("Ask Advisor")
+        self.vpn_run_btn.setMinimumWidth(120)
+        self.vpn_run_btn.setObjectName("PrimaryAction")
+        self.vpn_run_btn.clicked.connect(self.vpn_run)
+        provider_row.addWidget(self.vpn_run_btn)
+
+        self.vpn_build_btn = QPushButton("Build Config")
+        self.vpn_build_btn.setToolTip("Render WireGuard configs + a deploy runbook — offline, no LLM.")
+        self.vpn_build_btn.clicked.connect(self.vpn_build_config)
+        provider_row.addWidget(self.vpn_build_btn)
+
+        self.vpn_stop_btn = QPushButton("Stop")
+        self.vpn_stop_btn.setEnabled(False)
+        self.vpn_stop_btn.setObjectName("DangerAction")
+        self.vpn_stop_btn.clicked.connect(self.vpn_stop)
+        provider_row.addWidget(self.vpn_stop_btn)
+
+        self.vpn_help_btn = QPushButton("Help")
+        self.vpn_help_btn.setObjectName("ChipBtn")
+        self.vpn_help_btn.clicked.connect(self.show_agent_docs)
+        provider_row.addWidget(self.vpn_help_btn)
+
+        layout.addWidget(provider_row_container)
+
+        # ── Results tabs ─────────────────────────────────────────────────────
+        self.vpn_tabs = QTabWidget()
+
+        self.vpn_advisor_box = QTextBrowser()
+        self.vpn_advisor_box.setOpenExternalLinks(False)
+        self.vpn_tabs.addTab(self.vpn_advisor_box, "Advisor")
+
+        self.vpn_config_box = QTextBrowser()
+        self.vpn_config_box.setOpenExternalLinks(False)
+        self.vpn_tabs.addTab(self.vpn_config_box, "Config & Commands")
+
+        layout.addWidget(self.vpn_tabs, 1)
+
+        # ── Bottom bar ───────────────────────────────────────────────────────
+        bottom_row = QHBoxLayout()
+        self.vpn_status_label = QLabel("Idle")
+        self.vpn_status_label.setStyleSheet("font-size: 12px; color: #888;")
+        bottom_row.addWidget(self.vpn_status_label)
+        bottom_row.addStretch()
+        vpn_clear_btn = QPushButton("Clear")
+        vpn_clear_btn.clicked.connect(self.vpn_clear)
+        bottom_row.addWidget(vpn_clear_btn)
+        layout.addLayout(bottom_row)
+
+        self.vpn_panel.hide()
+
+    def vpn_load_models(self):
+        provider = self.vpn_provider_box.currentText()
+        self.vpn_model_box.clear()
+        try:
+            if provider == "ollama":
+                models = self.ollama.list_models()
+            elif provider == "openai":
+                models = self.openai.list_models()
+            elif provider == "deepseek":
+                models = self.deepseek.list_models()
+            elif provider == "kimi":
+                models = self.kimi.list_models()
+            elif provider == "gemini":
+                models = self.gemini.list_models()
+            elif provider == "anthropic":
+                models = self.anthropic.list_models()
+            elif provider == "qwen":
+                models = self.qwen.list_models()
+            else:
+                models = []
+            for m in models:
+                self.vpn_model_box.addItem(m)
+        except Exception as exc:
+            self._note_failure("vpn: load models", exc, self.vpn_model_box)
+
+    def _vpn_context_prefix(self) -> str:
+        """The deployment setup, phrased as context the advisor reasons from."""
+        parts = [
+            f"Deployment mode: {self.vpn_mode_box.currentText()}",
+            f"Protocol focus: {self.vpn_protocol_box.currentText()}",
+        ]
+        if self.vpn_host_input.text().strip():
+            parts.append(f"Server host: {self.vpn_host_input.text().strip()}")
+        if self.vpn_lan_input.text().strip():
+            parts.append(f"LAN subnet: {self.vpn_lan_input.text().strip()}")
+        return "Context — " + "; ".join(parts) + ".\n\n"
+
+    def vpn_run(self):
+        question = self.vpn_question_input.text().strip()
+        provider = self.vpn_provider_box.currentText()
+        model = self.vpn_model_box.currentText()
+
+        if not question:
+            QMessageBox.warning(self, "Missing Input", "Enter a question for the advisor.")
+            return
+        if not model:
+            QMessageBox.warning(self, "No Model", "Please select a model.")
+            return
+
+        prompt = self._vpn_context_prefix() + question
+        agent = self.agent_instances["vpn"]
+        messages = agent.build_messages(prompt)
+
+        if not self.authorize_request(
+            "vpn", provider, model, prompt, label=self.vpn_mode_box.currentText()
+        ):
+            return
+
+        self._last_vpn_response = ""
+        self.vpn_advisor_box.clear()
+        self.vpn_tabs.setCurrentWidget(self.vpn_advisor_box)
+        self.vpn_status_label.setText("Consulting advisor…")
+        self.vpn_run_btn.setEnabled(False)
+        self.vpn_stop_btn.setEnabled(True)
+
+        self.vpn_worker = ChatWorker(self.run_backend, provider, model, messages, prompt)
+        self.vpn_worker.token_signal.connect(self._vpn_on_token)
+        self.vpn_worker.finished_signal.connect(self._vpn_on_finished)
+        self.vpn_worker.usage_signal.connect(lambda u: self.note_request_usage("vpn", u))
+        self.vpn_worker.error_signal.connect(self._vpn_on_error)
+        self.vpn_worker.start()
+
+    def _vpn_on_token(self, token: str):
+        self._last_vpn_response = getattr(self, "_last_vpn_response", "") + token
+        self.vpn_advisor_box.setPlainText(self._last_vpn_response)
+        self.vpn_advisor_box.moveCursor(QTextCursor.End)
+
+    def _vpn_on_finished(self, full_response: str):
+        self._last_vpn_response = full_response
+        self.record_request("vpn", full_response)
+        self.vpn_advisor_box.setPlainText(full_response)
+        self.vpn_status_label.setText("Done.")
+        self.vpn_run_btn.setEnabled(True)
+        self.vpn_stop_btn.setEnabled(False)
+
+    def _vpn_on_error(self, error: str):
+        self.abandon_request("vpn")
+        separator = "─" * 50
+        self.vpn_advisor_box.setPlainText(f"⚠  ERROR\n{separator}\n{error}\n{separator}")
+        self.vpn_status_label.setText("Error.")
+        self.vpn_run_btn.setEnabled(True)
+        self.vpn_stop_btn.setEnabled(False)
+
+    def vpn_build_config(self):
+        """Render WireGuard configs + a deploy runbook. Deterministic, offline."""
+        text = build_vpn_configs(
+            mode=self.vpn_mode_box.currentText(),
+            protocol=self.vpn_protocol_box.currentText(),
+            server_host=self.vpn_host_input.text().strip(),
+            ssh_user=self.vpn_ssh_input.text().strip(),
+            lan_subnet=self.vpn_lan_input.text().strip(),
+            egress_iface=self.vpn_egress_input.text().strip() or "eth0",
+        )
+        self.vpn_config_box.setPlainText(text)
+        self.vpn_tabs.setCurrentWidget(self.vpn_config_box)
+        self.vpn_status_label.setText("Config rendered.")
+
+    def vpn_stop(self):
+        if self.vpn_worker is not None and self.vpn_worker.isRunning():
+            self.vpn_worker.cancel()
+        self.vpn_status_label.setText("Stopped.")
+        self.vpn_run_btn.setEnabled(True)
+        self.vpn_stop_btn.setEnabled(False)
+
+    def vpn_clear(self):
+        self.vpn_advisor_box.clear()
+        self.vpn_config_box.clear()
+        self.vpn_question_input.clear()
+        self.vpn_status_label.setText("Idle")
+        self._last_vpn_response = ""
+
     def build_bug_bounty_panel(self):
         self.bug_bounty_panel = QWidget()
         self.bug_bounty_panel.setObjectName("BugBountyPanel")
@@ -3632,15 +3889,8 @@ class GodAI(QWidget):
         # ── Provider row ─────────────────────────────────────────────────────
         provider_row_container = QWidget()
         provider_row = FlowLayout(provider_row_container, spacing=6)
-        provider_row.addWidget(QLabel("Provider:"))
-        self.bb_provider_box = QComboBox()
-        self.bb_provider_box.addItems(["ollama", "openai", "deepseek", "kimi", "gemini", "anthropic", "qwen"])
-        self.bb_provider_box.setCurrentText("anthropic")
-        provider_row.addWidget(self.bb_provider_box)
-        provider_row.addWidget(QLabel("Model:"))
-        self.bb_model_box = QComboBox()
-        self.bb_model_box.setMinimumWidth(200)
-        provider_row.addWidget(self.bb_model_box)
+        self.bb_provider_box, self.bb_model_box = build_provider_row(
+            self, provider_row, "bug_bounty")
 
         self.bb_analyse_btn = QPushButton("Analyse")
         self.bb_analyse_btn.setMinimumWidth(130)
@@ -3732,9 +3982,6 @@ class GodAI(QWidget):
 
         self.bug_bounty_panel.hide()
         self._bb_nmap_process: Optional[QProcess] = None
-
-        self.bb_provider_box.currentTextChanged.connect(self.bb_load_models)
-        self.bb_load_models()
 
     # ── Bug Bounty handlers ───────────────────────────────────────────────────
     def bb_load_models(self):
@@ -4095,19 +4342,21 @@ class GodAI(QWidget):
         self._current_agent = agent_name  # track for show_agent_docs()
         # ── Update the agent header bar (title + subtitle + status pill) ─
         agent_titles = {
-            "chat": "CHAT", "osint": "TRACE", "osint_heavy": "BLOODHOUND",
-            "wifi": "BEACON", "bug_bounty": "BUG SPRAY",
-            "manager": "FORGE", }
+            "chat": "Chat", "osint": "Trace", "osint_heavy": "Bloodhound",
+            "wifi": "Beacon", "bug_bounty": "Bug Spray",
+            "vpn": "Tunnel",
+            "manager": "Forge", }
         agent_subtitles = {
-            "chat":        "General-purpose conversation. Pick a tool, pick a model, talk.",
-            "osint":       "Light open-source intelligence — structured research queries and summaries.",
-            "osint_heavy": "Deep OSINT investigation with five-section dossier and curated tradecraft tools.",
-            "wifi":        "Wireless reconnaissance, signal analysis, and Kali command generation.",
-            "bug_bounty":  "Vulnerability triage with CWE classification and HackerOne-ready submission drafts.",
-            "manager":      "Describe a new agent in plain language — Forge writes the code and registers it.",
+            "chat":        "General reasoning, any provider",
+            "osint":       "Open-source identity research",
+            "osint_heavy": "Deep investigation and dossier",
+            "wifi":        "Wireless reconnaissance",
+            "bug_bounty":  "Vulnerability triage",
+            "vpn":         "Self-hosted VPN design & kill switch",
+            "manager":      "Build and register new agents",
             }
         if hasattr(self, "agent_title_label"):
-            self.agent_title_label.setText(agent_titles.get(agent_name, agent_name.upper()))
+            self.agent_title_label.setText(agent_titles.get(agent_name, agent_name.capitalize()))
         if hasattr(self, "agent_subtitle_label"):
             self.agent_subtitle_label.setText(agent_subtitles.get(agent_name, ""))
         if hasattr(self, "agent_status_pill"):
@@ -4118,9 +4367,10 @@ class GodAI(QWidget):
         is_osint_heavy = agent_name == "osint_heavy"
         is_wifi = agent_name == "wifi"
         is_bug_bounty = agent_name == "bug_bounty"
+        is_vpn = agent_name == "vpn"
         is_custom = (is_manager
                      or is_osint or is_osint_heavy or is_wifi
-                     or is_bug_bounty)
+                     or is_bug_bounty or is_vpn)
 
         self.normal_panel.setVisible(not is_custom)
         self.manager_panel.setVisible(is_manager)
@@ -4128,18 +4378,21 @@ class GodAI(QWidget):
         self.osint_heavy_panel.setVisible(is_osint_heavy)
         self.wifi_panel.setVisible(is_wifi)
         self.bug_bounty_panel.setVisible(is_bug_bounty)
+        self.vpn_panel.setVisible(is_vpn)
         # Output area only relevant for standard (non-custom) agents like Chat.
         # Within those, auto-hide if there is no content yet — keeps the UI clean.
         standard_agent_with_output = not is_custom
         has_output_content = bool(self.output_box.toPlainText().strip())
-        show_output = standard_agent_with_output and has_output_content
+        # The output area keeps its place whether or not it has content yet —
+        # a column that reflows every time an answer arrives is disorienting.
+        show_output = standard_agent_with_output
         self.output_label.setVisible(show_output)
         self.output_box.setVisible(show_output)
 
         if is_manager:
             self.output_label.setText("Forge Output")
             self.output_box.setPlainText("[Forge] Describe an idea above and click Analyze.")
-        elif is_osint or is_osint_heavy or is_wifi or is_bug_bounty:
+        elif is_osint or is_osint_heavy or is_wifi or is_bug_bounty or is_vpn:
             pass
         else:
             self.output_label.setText("Output")
@@ -4787,6 +5040,12 @@ class GodAI(QWidget):
         self.last_request_label.setText(
             f"Last Request Cost: €{self.last_request_cost:.2f} ({tool_name})"
         )
+        if hasattr(self, "cost_rows"):
+            self.cost_rows["last"].set(f"€{self.last_request_cost:.2f}", tool_name)
+            self.cost_rows["session"].set(f"€{self.session_cost_total:.2f}")
+            self.cost_rows["today"].set(f"€{today_total:.2f}")
+            self.cost_rows["requests"].set(
+                f"{today_requests} today · {self.session_request_count} session")
 
         # keep your existing labels
         self.session_cost_label.setText(f"Session Cost: €{self.session_cost_total:.2f}")
@@ -4994,6 +5253,7 @@ class GodAI(QWidget):
         doc_file_map = {
             "chat": "chat", "osint": "osint", "osint_heavy": "osint_heavy",
             "wifi": "wifi", "bug_bounty": "bug_bounty",
+            "vpn": "vpn",
             "manager": "manager", }
         doc_key = doc_file_map.get(agent_name, agent_name)
 
@@ -5100,9 +5360,9 @@ class GodAI(QWidget):
 
         # Build dialog
         agent_titles = {
-            "chat": "CHAT", "osint": "TRACE", "osint_heavy": "BLOODHOUND",
-            "wifi": "BEACON", "bug_bounty": "BUG SPRAY",
-            "manager": "FORGE", }
+            "chat": "Chat", "osint": "Trace", "osint_heavy": "Bloodhound",
+            "wifi": "Beacon", "bug_bounty": "Bug Spray",
+            "manager": "Forge", }
         title = agent_titles.get(agent_name, agent_name.upper())
 
         dialog = QDialog(self)

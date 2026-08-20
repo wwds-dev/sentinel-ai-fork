@@ -66,8 +66,19 @@ class AgentHost(Protocol):
         ...
 
     # ── Shared services ─────────────────────────────────────────────────
-    def load_models_into(self, provider_box, model_box, context: str) -> None:
-        """Fill a model box from the selected provider."""
+    def load_models_into(self, provider_box, model_box, context: str,
+                         empty_placeholder: bool = False) -> None:
+        """Fill a model box from the provider selected next to it."""
+        ...
+
+    def register_model_loader(self, agent_key: str, loader) -> None:
+        """Publish a panel's reload function.
+
+        The recommendation system selects a provider programmatically and then
+        needs the model box repopulated before it can pick the recommended model
+        in it. It calls back through here rather than knowing which panel owns
+        which combo.
+        """
         ...
 
     def _note_failure(self, context: str, exc: Exception, widget=None) -> None:
