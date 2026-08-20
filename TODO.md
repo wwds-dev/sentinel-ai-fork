@@ -11,7 +11,8 @@ under **Detail** — this checklist is the summary view.
 
 ## v2 — current
 
-- [ ] `P1` `design` `@ai` **Refactor Phase 3** — the `AgentHost` protocol and the shared `AgentPanel` base, then one module per agent panel. Phases 1 and 2 shipped (`ui/workers.py`, `ui/widgets.py`, `ui/style.py`, `ui/tooltips.py`, `ui/dialogs.py`); `main.py` went 11,902 → ~10,400 lines. This is the first phase with a design decision in it: composition over mixins.
+- [ ] `P1` `design` `@ai` **Refactor Phase 4** — move the agent verticals into `ui/panels/`, smallest first: osint → manager → bug_bounty → osint_heavy → vpn → wifi. Move verbatim, one commit per panel, and key `_pending_requests` by run id (the `P1` bug below) while each panel is in hand. See `docs/refactor_plan.md`.
+- [x] `P1` `design` `@ai` **Refactor Phase 3** — `AgentHost` (`ui/host.py`) and the `AgentPanel` base (`ui/panels/base.py`), with the design decision settled: composition, not mixins. Six panels' hand-built provider/model rows collapsed to one `build_provider_row` call each, six `*_load_models` methods to one `load_models_into`, and a map of loader *method names* to a registry panels fill in as they build. `main.py` 5,520 → 5,378; 77 new tests, 20 of which construct a panel with no `GodAI` at all.
 - [x] `P1` `design` `@ai` **GUI overhaul — section renderer.** Shipped for Trace: `SectionCard`/`SectionView` in `ui/widgets.py`, four tabbed text boxes replaced by cards with per-card copy, raw response collapsed behind a disclosure, and a separate streaming box so tokens still show live before there are sections to render. Reuse for Bloodhound next — its parser already exists.
 - [ ] `P2` `design` `@ai` **GUI overhaul — section renderer, remaining agents.** Bloodhound has a parser (`_parse_osint_heavy_sections`); Beacon, Bug Spray and Forge need one each. Original note: The change that justifies the rest, and it needs no new parsing: 12 `_parse_*_sections` methods already structure every answer and 70 text panes render it flat. Build against Trace (smallest vertical), then reuse. See `docs/gui_redesign.md`.
 - [x] `P2` `design` `@ai` **GUI overhaul — run bar.** Three stacked control rows → one: tool · command · provider · model · live cost · gear. Execution mode, the six provider permissions and the model tools moved into a popover behind the gear. Splitter minimum dropped 985 → 927px. Deferring this to Phase 4 stopped being the right call once Sentinel was down to six agents and 111 lines of control rows.
@@ -31,6 +32,30 @@ under **Detail** — this checklist is the summary view.
 - [x] `P1` `bug` `@ai` Twelve silent `except: pass` blocks replaced with `_note_failure`, which writes to stderr and attaches the reason as a tooltip
 - [x] `P1` `testing` `@ai` Test coverage was inverted — the money logic was the untested part. `test_cost_and_limits.py` (31 tests) and `test_request_guard.py` (30 tests), both mutation-verified.
 - [x] `P2` `feature` `@ai` Saved Chats — agent filter above the search box, double-click to rename
+
+### Workspace restructure — see `docs/workspace_structure.md`
+
+- [ ] `P1` `infra` `@ai` **Rename "Sentinel AI" → "Sentinel" everywhere** — window title, bundle name, `runtime_paths.APP_NAME`, `SINGLE_INSTANCE_KEY`, the `/Applications` bundle, the Lab Hub tile, the repo docs. Two traps: `APP_NAME` decides `~/Library/Application Support/<name>/`, so the directory needs migrating or the app looks freshly installed; and two apps sharing `SINGLE_INSTANCE_KEY` means launching one focuses the other.
+- [ ] `P1` `infra` `@ai` **Extract the shared platform package** — provider clients, `api_limits`, `usage_tracker`, `validator`, `registry`, `run_logger`, `database`, `runtime_paths`, the request guard, and `ui/{style,widgets,workers,dialogs}`. Four hubs each keeping their own copy is TODO #1 repeated four times. Do this before the hubs diverge further.
+- [ ] `P1` `feature` `@ai` **Finish integrating VPN Agent** as a Sentinel agent (`agents/vpn_agent.py` and a `Tunnel` sidebar entry have landed; `vpn_agent/` still exists as a standalone project and a Lab Hub tile).
+- [ ] `P2` `infra` `@ai` **Create & Publish** — rebrand the fork (app name, bundle id, icon, `APP_NAME`, single-instance key), integrate `vidforge`, re-shape as tabs (Write · Audio · Web · Gigs), rename `author`→Manuscript and `manuscript`→Publisher internally so the display names and keys stop disagreeing.
+- [ ] `P2` `infra` `@ai` **Backup & Sync hub** — a standalone app in Sentinel's shape holding Backup Control Center and git_autosync, both runnable from inside it.
+- [ ] `P2` `feature` `@ai` **Lab Hub front desk** — hub tiles that list their contents in a smaller font, and a Tools tab presenting Narrator, Unblock Tracker, Convert and Image tools as tiles.
+- [ ] `P2` `research` `@me` **Playmaker and Bug Spray now exist as their own projects**, but the working code lives elsewhere: the betting implementation is `sonar/sports.py` (33 tests) and Bug Spray is also a Sentinel agent. Decide whether each project is the real home or the scaffold gets dropped.
+- [ ] `P3` `infra` `@ai` **SONAR — Oracle tab** for long-term investment monitoring, alongside Playmaker.
+- [ ] `P3` `feature` `@ai` **More sports in Playmaker** — the `Sport(...)` registry in `sonar/sports.py` is the extension point; a second sport is an entry plus its prop types.
+
+### Interface, remaining from the approved mock screens
+
+- [ ] `P2` `design` `@ai` **Trace and Bloodhound still render into tabs** in places the section renderer should own.
+- [ ] `P3` `design` `@ai` The `READY` pill is the last uppercase letter-spaced element in the centre column; the design has no such chrome.
+- [ ] `P3` `design` `@ai` **SAVED CHATS is a four-control stack** (filter, search, list, two buttons) in a rail that is otherwise flat rows. Compress it.
+- [ ] `P3` `design` `@ai` Normalise the remaining ad-hoc `setContentsMargins` calls onto the 4/8/16/24 scale — the right rail and centre are done, the agent panels are not.
+
+### Process
+
+- [ ] `P2` `docs` `@ai` **Verify visual changes by rendering, not by grepping** — `docs/handoff.md` has the offscreen `WA_DontShowOnScreen` + `grab()` recipe. Several design changes were reported as done while never reaching the screen.
+- [ ] `P3` `infra` `@me` `bazaar` and `playmaker` had no initial commit, so `git_autosync` was skipping them entirely. Both now have one. Worth checking no other project is in that state after the restructure.
 
 ## v3 — later
 
@@ -101,7 +126,7 @@ simultaneous runs of the *same* agent would overwrite each other's context. The
 panels disable their run button while a request is in flight, so this is not
 reachable today — but keyed-by-run-id would be more robust.
 
-## 2. `main.py` is too big — IN PROGRESS (11,902 → ~10,400 lines)
+## 2. `main.py` is too big — IN PROGRESS (phases 1–3 of 5 done)
 
 One file holds 17 agent UIs, routing, cost logic, history and styling. The cost
 is concrete: a checkbox-spacing fix had to go in the global stylesheet because
@@ -136,8 +161,27 @@ list from a regex missed all seven; walking the AST for `Load`ed names not bound
 in the module found them at once. The check that caught it was stubbing
 `QDialog.exec` and opening all four dialogs, asserting on their contents.
 
-**Next: Phase 3** — the `AgentHost` protocol and `AgentPanel` base. This is the
-first phase with a design decision in it: composition over mixins.
+**Phase 3 is DONE (2026-08-20):** `ui/host.py` (90) holds the `AgentHost`
+protocol and `ui/panels/base.py` (215) the `AgentPanel` base; `tests/test_ui_panels.py`
+(77 tests) covers both. The design decision is settled — **composition**, so a
+panel holds a host rather than sharing a namespace with it, and 20 of those tests
+build a panel against a 42-line fake host with no `GodAI` and no window.
+
+No vertical moved, which is why `main.py` only went 5,520 → 5,378. What went was
+the duplication the verticals would otherwise have carried with them: seven copies
+of the provider list, six hand-built provider/model rows, six `*_load_models`
+methods (which had already drifted — three reported a load failure, three
+swallowed it), and `AGENT_MODEL_LOADERS`, a map of method *names* resolved by
+`getattr`, now a registry each panel fills in as it builds.
+
+The trap this time, again runtime-only: **an unparented row container takes its
+widgets with it.** The combos belong to the container of the layout they are added
+to, so a container that falls out of scope leaves every combo raising
+`RuntimeError: Internal C++ object already deleted` from lines that have nothing
+to do with ownership. `flow_row(parent)` takes a parent now.
+
+**Next: Phase 4** — move the verticals into `ui/panels/`, smallest first, verbatim,
+one commit each.
 
 ## 3. Other agent panels still crush when the window is narrow
 

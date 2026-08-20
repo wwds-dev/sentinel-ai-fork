@@ -2593,7 +2593,7 @@ Key-value store for application settings.
 
 ```
 sentinel_ai/
-├── main.py                        # Entry point + GodAI window (~10,300 lines — see
+├── main.py                        # Entry point + GodAI window (~5,380 lines — see
 │                                  #   docs/refactor_plan.md, TODO.md #2)
 ├── run_course.py                  # CLI runner for the Course Agent (no GUI needed)
 ├── README.md                      # This documentation file
@@ -2611,15 +2611,17 @@ sentinel_ai/
 │   ├── manager_agent.py           # Forge — LLM spec generator for new agents
 │   └── audiobook_connector.py
 │
-├── ui/                            # Extracted from main.py (refactor Phases 1–2)
-│   ├── workers.py                 # ChatWorker, SubprocessWorker, ModelPullWorker,
-│   │                              #   FiverrImageWorker, ShortsWorker
-│   ├── widgets.py                 # FlowLayout, CollapsibleSection
+├── ui/                            # Extracted from main.py (refactor Phases 1–3)
+│   ├── workers.py                 # ChatWorker, SubprocessWorker, ModelPullWorker
+│   ├── widgets.py                 # FlowLayout, CollapsibleSection, Meter, SectionView
 │   ├── style.py                   # GLOBAL_STYLESHEET
 │   ├── tooltips.py                # seed_tooltips(app)
 │   ├── dialogs.py                 # show_settings / show_model_guide /
 │   │                              #   show_cost_history / show_run_log
-│   └── book_widgets.py            # Shared theme/size/voice controls + asset paths
+│   ├── host.py                    # AgentHost — the interface a panel may assume
+│   └── panels/
+│       └── base.py                # PROVIDERS, flow_row, build_provider_row,
+│                                  #   AgentPanel (one module per panel: Phase 4)
 │
 ├── services/                      # Non-UI logic
 │   ├── database.py                # SQLite schema, connection, migration, seeding
@@ -2647,11 +2649,11 @@ sentinel_ai/
 │   │                              #   elevenlabs.py, registry.py
 │   └── avatar/                    # base.py, mock.py, heygen.py, synthesia.py
 │
-├── tests/                         # 219 tests — see §15.1
-│   ├── test_agents_scenarios.py   # 98 — agent prompt construction
+├── tests/                         # 199 tests — see §15.1
+│   ├── test_agents_scenarios.py   # 61 — agent prompt construction
 │   ├── test_cost_and_limits.py    # 31 — Validator gates + token/cost maths
 │   ├── test_request_guard.py      # 30 — authorize/record/abandon_request
-│   ├── test_book_pipeline.py      # 60 — export, calendar, KDP CSV, parsing
+│   ├── test_ui_panels.py          # 77 — shared provider/model row, AgentPanel
 │   └── manual_test_cases.md
 │
 ├── docs/
@@ -2689,7 +2691,7 @@ sentinel_ai/
 QT_QPA_PLATFORM=offscreen python3 -m pytest tests/ -q
 ```
 
-219 tests, ~11s. `QT_QPA_PLATFORM=offscreen` is required — some tests construct
+199 tests, ~14s. `QT_QPA_PLATFORM=offscreen` is required — some tests construct
 the real `GodAI` window.
 
 | File | Covers |
@@ -2697,7 +2699,7 @@ the real `GodAI` window.
 | `test_agents_scenarios.py` | Every agent builds a correctly structured message list with the right system prompt and all user input embedded. |
 | `test_cost_and_limits.py` | `Validator`'s ten rules (agent/tool enabled, provider permissions, per-agent/session/daily budgets, approval) and `UsageTracker` token/cost accounting. Owns these — do not duplicate elsewhere. |
 | `test_request_guard.py` | `authorize_request` / `record_request` / `abandon_request`. Blocked requests open no run; recording without authorising bills nothing; double-record bills once; abandoned requests stay unbilled. |
-| `test_book_pipeline.py` | Chapter detection and offsets, EPUB/DOCX/PDF export, calendar scheduling, KDP CSV summarisation, LLM list parsing, collision-proof asset paths. |
+| `test_ui_panels.py` | The provider/model row every panel shares, the model-loader registry, and `AgentPanel` — the last built against a fake host, with no `GodAI` window. |
 
 Two conventions worth keeping:
 

@@ -60,9 +60,8 @@ ui/
   panels/
     base.py             # AgentPanel: provider/model row, model loading,
                         #   run/stop wiring, the FlowLayout control row
-    author.py  manuscript.py  nfl_bet.py  wifi.py  ops_identity.py
-    fiverr.py  osint_heavy.py  bug_bounty.py  music.py  health.py
-    webdesign.py  manager.py  osint.py  chat.py
+    osint.py  osint_heavy.py  wifi.py  vpn.py  bug_bounty.py
+    manager.py  chat.py
 ```
 
 `services/` keeps all non-UI logic, as it does today.
@@ -127,15 +126,54 @@ Check used, beyond constructing `GodAI`: stub `QDialog.exec`, open all four
 dialogs, and assert on their contents (provider names and key status in the
 model guide, non-empty cost history, populated Settings fields).
 
-**Phase 3 — define `AgentHost` and the `AgentPanel` base.** No code moves yet.
-Write the protocol from the shared-member list above, and pull the repeated
-provider/model row + `*_load_models` bodies (16 near-identical methods, 365
-lines) into the base class.
+**Phase 3 — define `AgentHost` and the `AgentPanel` base. DONE (2026-08-20).**
+
+| module | lines | contents |
+|---|---:|---|
+| `ui/host.py` | 90 | `AgentHost` protocol — the ~15 members a panel may assume |
+| `ui/panels/base.py` | 215 | `PROVIDERS`, `flow_row`, `build_provider_row`, `AgentPanel` |
+| `tests/test_ui_panels.py` | 437 | 77 tests — the shared row, the loader registry, `AgentPanel` |
+
+**Composition, not mixins** — the decision below is settled. `AgentPanel` holds
+its host behind the protocol instead of sharing a namespace with it, which is
+why its 20 tests construct a panel against a 42-line `FakeHost` with no `GodAI`
+and no window anywhere in the fixture.
+
+`main.py` 5,520 → **5,378** lines. Small by design: no vertical moved. What
+changed is that the duplication the verticals *would have carried with them* is
+gone first —
+
+- Seven copies of the provider list → `PROVIDERS`.
+- Six panels building the same provider combo + model combo + reload wiring →
+  one `build_provider_row` call each (10 lines → 2).
+- Six `*_load_models` methods → `GodAI.load_models_into`. They had already
+  drifted: three noted a load failure on the model box, one swallowed it in
+  silence, and two went through a shared helper that swallowed it too. Noting
+  it is now the single behaviour.
+- `AGENT_MODEL_LOADERS`, a map of *method names* resolved with `getattr`, →
+  `register_model_loader` / `load_models_for`. Panels register while they build,
+  so a renamed method cannot leave a stale string behind.
+
+The trap this phase, again runtime-only and again invisible to a compile check:
+**an unparented row container takes its widgets with it.** `build_provider_row`
+adds the combos to a layout, and the layout's container owns them; the first
+`AgentPanel` fixture let that container fall out of scope and every later access
+raised `RuntimeError: Internal C++ object (QComboBox) already deleted` — from a
+line that had nothing to do with ownership. `flow_row(parent)` now takes a
+parent, and `AgentPanel.flow_row()` passes itself.
+
+Verified beyond the suite: every panel's row rebuilt in the same order it had
+before (labels present for Trace, Bloodhound, Bug Spray and Forge, absent for
+Beacon and Tunnel, action buttons after them), and all six panels still land on
+their recommended provider *and* recommended model at startup — which only works
+if the recommendation system found each panel's loader through the new registry.
+Two mutants confirmed the tests bite: dropping the initial `load()` and making
+`register_model_loader` a no-op fail 3 and 13 tests respectively.
 
 **Phase 4 — move agent verticals one at a time**, smallest first:
-osint (227) → manager (245) → webdesign (293) → health (308) → music (339) →
-bug_bounty (386) → osint_heavy (434) → fiverr (435) → ops_identity (436) →
-wifi (477) → nfl_bet (480) → manuscript (911) → author (1,195).
+osint → manager → bug_bounty → osint_heavy → vpn → wifi. (The 2026-08-19 cull
+took the app from fifteen agents to seven; the old order — webdesign, health,
+music, fiverr, ops_identity, nfl_bet, manuscript, author — went with it.)
 
 Smallest first is deliberate: the first move proves the base class and the host
 protocol on a cheap target, and each later one is the same shape.
@@ -143,33 +181,37 @@ protocol on a cheap target, and each later one is the same shape.
 **Phase 5 — `GodAI` becomes a shell**: build the three panes, own the shared
 services, hold the panel instances.
 
-## Two decisions to make before Phase 3
+## The decision phase 3 settled
 
-**Mixins or composition.** Mixins (`class GodAI(QWidget, AuthorPanelMixin, …)`)
-are a verbatim cut-and-paste with no call-site edits — fast, and the file
-shrinks immediately, but every panel still shares one namespace, so the coupling
-is unchanged and name collisions stay possible. Composition (each panel a real
+**Mixins or composition — composition, decided 2026-08-20.** Mixins
+(`class GodAI(QWidget, OsintPanelMixin, …)`) would have been a verbatim
+cut-and-paste with no call-site edits — fast, and the file would have shrunk
+immediately, but every panel would still share one namespace, so the coupling
+would be unchanged and name collisions would stay possible. Composition (each panel a real
 `AgentPanel` holding its own widgets, talking to the host through the protocol)
 is the actual fix and is what makes panels testable in isolation.
 
-Recommendation: composition. The coupling numbers above say the cost is
-affordable, and mixins would leave #2 half-done while looking finished.
+The coupling numbers above said the cost was affordable, and mixins would have
+left #2 half-done while looking finished. `AgentPanel` is the composition side of
+that: panels hold a host, not a shared namespace.
 
-**Phases 1–2 are complete**: **−1,591 lines** out of `main.py` (895 in Phase 1,
-696 in Phase 2), with no design commitment made.
+**Phases 1–3 are complete**: **−1,733 lines** out of `main.py` (895 in Phase 1,
+696 in Phase 2, 142 in Phase 3) — the first two structural, the third the design
+commitment.
 
-Measure the phase delta, not the file total. The absolute count drifts upward
-while other work lands — `main.py` read 10,391 at the Phase 2 commit and 10,394
-one autosync commit later, so a total quoted here is stale by the time it is read.
+Measure the phase delta, not the file total. The absolute count drifts up while
+other work lands and down when agents are cut — `main.py` read 10,391 at the
+Phase 2 commit and 5,520 before Phase 3 started, and neither number says anything
+about the split.
 
-Phases 3–5 are the real refactor and want a clear run. The mixins-vs-composition
-decision above is still open and should be settled first.
+Phases 4–5 are the remaining move and want a clear run.
 
 ## Risks
 
-- **No UI test coverage.** The 219 tests cover agents, cost and the request
-  guard — not layout. The offscreen `GodAI()` build is the only automated check
-  that a panel still constructs, so run it after every move.
+- **Thin UI test coverage.** `test_ui_panels.py` (phase 3) covers the shared
+  provider/model row, the loader registry and `AgentPanel` — but nothing else
+  about layout. The offscreen `GodAI()` build is still the only automated check
+  that a panel *as a whole* constructs, so run the suite after every move.
 - **`_pending_requests` is keyed by agent name** (TODO #1). Panels moving to
   their own classes is the natural moment to key it by run id instead.
 - **Do not renumber during a move.** Moving a vertical and editing it in the

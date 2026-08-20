@@ -1436,7 +1436,7 @@ class GodAI(QWidget):
 
         self.provider_box = QComboBox()
         self.provider_box.setObjectName("MachinePick")
-        self.provider_box.addItems(["ollama", "openai", "deepseek", "kimi", "gemini", "anthropic", "qwen"])
+        self.provider_box.addItems(PROVIDERS)
         self.provider_box.setMinimumWidth(90)
         runbar.addWidget(self.provider_box)
 
@@ -1618,6 +1618,10 @@ class GodAI(QWidget):
         self.tool_box.currentTextChanged.connect(self.update_recommendation_label)
 
         # ===== PROVIDER =====
+        # Chat keeps its own loader — it remembers a per-provider default model
+        # and falls back to hand-written lists per API — but registers it like
+        # any other panel so the recommendation system has one way in.
+        self.register_model_loader("chat", self.load_provider_models)
         self.provider_box.currentTextChanged.connect(self.load_provider_models)
         self.provider_box.currentTextChanged.connect(self.update_live_cost_estimate)
         self.provider_box.currentTextChanged.connect(self.update_recommendation_label)
@@ -2072,31 +2076,6 @@ class GodAI(QWidget):
 
 
     # ── OSINT Light handlers ──────────────────────────────────────────────────
-    def osint_load_models(self):
-        provider = self.osint_provider_box.currentText()
-        self.osint_model_box.clear()
-        try:
-            if provider == "ollama":
-                models = self.ollama.list_models()
-            elif provider == "openai":
-                models = self.openai.list_models()
-            elif provider == "deepseek":
-                models = self.deepseek.list_models()
-            elif provider == "kimi":
-                models = self.kimi.list_models()
-            elif provider == "gemini":
-                models = self.gemini.list_models()
-            elif provider == "anthropic":
-                models = self.anthropic.list_models()
-            elif provider == "qwen":
-                models = self.qwen.list_models()
-            else:
-                models = []
-            for m in models:
-                self.osint_model_box.addItem(m)
-        except Exception as exc:
-            self._note_failure("osint: load models", exc, self.osint_model_box)
-
     def osint_analyse(self):
         target = self.osint_target_input.text().strip()
         query_type = self.osint_type_box.currentText()
@@ -2206,31 +2185,6 @@ class GodAI(QWidget):
         return result
 
     # ── OSINT Pro (Heavy) handlers ───────────────────────────────────────────
-    def osint_heavy_load_models(self):
-        provider = self.osint_heavy_provider_box.currentText()
-        self.osint_heavy_model_box.clear()
-        try:
-            if provider == "ollama":
-                models = self.ollama.list_models()
-            elif provider == "openai":
-                models = self.openai.list_models()
-            elif provider == "deepseek":
-                models = self.deepseek.list_models()
-            elif provider == "kimi":
-                models = self.kimi.list_models()
-            elif provider == "gemini":
-                models = self.gemini.list_models()
-            elif provider == "anthropic":
-                models = self.anthropic.list_models()
-            elif provider == "qwen":
-                models = self.qwen.list_models()
-            else:
-                models = []
-            for m in models:
-                self.osint_heavy_model_box.addItem(m)
-        except Exception as exc:
-            self._note_failure("osint_heavy: load models", exc, self.osint_heavy_model_box)
-
     def osint_heavy_investigate(self):
         target = self.osint_heavy_target_input.text().strip()
         target_type = self.osint_heavy_type_box.currentText()
@@ -2739,30 +2693,6 @@ class GodAI(QWidget):
         self.wifi_ai_checkbox.setEnabled(not is_kali)
         if is_kali:
             self.wifi_tabs.setCurrentIndex(2)
-
-    def wifi_load_models(self):
-        provider = self.wifi_provider_box.currentText()
-        self.wifi_model_box.clear()
-        try:
-            if provider == "ollama":
-                models = self.ollama.list_models()
-            elif provider == "openai":
-                models = self.openai.list_models()
-            elif provider == "deepseek":
-                models = self.deepseek.list_models()
-            elif provider == "kimi":
-                models = self.kimi.list_models()
-            elif provider == "gemini":
-                models = self.gemini.list_models()
-            elif provider == "anthropic":
-                models = self.anthropic.list_models()
-            elif provider == "qwen":
-                models = self.qwen.list_models()
-            else:
-                models = []
-        except Exception:
-            models = []
-        self.wifi_model_box.addItems(models)
 
     def wifi_detect_adapters(self):
         self.wifi_status_label.setText("Scanning USB bus...")
@@ -3685,31 +3615,6 @@ class GodAI(QWidget):
 
         self.vpn_panel.hide()
 
-    def vpn_load_models(self):
-        provider = self.vpn_provider_box.currentText()
-        self.vpn_model_box.clear()
-        try:
-            if provider == "ollama":
-                models = self.ollama.list_models()
-            elif provider == "openai":
-                models = self.openai.list_models()
-            elif provider == "deepseek":
-                models = self.deepseek.list_models()
-            elif provider == "kimi":
-                models = self.kimi.list_models()
-            elif provider == "gemini":
-                models = self.gemini.list_models()
-            elif provider == "anthropic":
-                models = self.anthropic.list_models()
-            elif provider == "qwen":
-                models = self.qwen.list_models()
-            else:
-                models = []
-            for m in models:
-                self.vpn_model_box.addItem(m)
-        except Exception as exc:
-            self._note_failure("vpn: load models", exc, self.vpn_model_box)
-
     def _vpn_context_prefix(self) -> str:
         """The deployment setup, phrased as context the advisor reasons from."""
         parts = [
@@ -3984,11 +3889,6 @@ class GodAI(QWidget):
         self._bb_nmap_process: Optional[QProcess] = None
 
     # ── Bug Bounty handlers ───────────────────────────────────────────────────
-    def bb_load_models(self):
-        provider = self.bb_provider_box.currentText()
-        self.bb_model_box.clear()
-        self.bb_model_box.addItems(self.models_for_provider(provider))
-
     def bb_run_nmap(self):
         cmd_text = self.bb_nmap_cmd_input.text().strip()
         if not cmd_text:
@@ -4181,17 +4081,6 @@ class GodAI(QWidget):
     # ──────────────────────────────────────────────────────────────────
     # Manager Agent handlers
     # ──────────────────────────────────────────────────────────────────
-
-    def manager_load_models(self):
-        provider = self.manager_provider_box.currentText()
-        self.manager_model_box.clear()
-        models = self.models_for_provider(provider)
-        if models:
-            self.manager_model_box.addItems(models)
-        else:
-            self.manager_model_box.addItems(
-                ["(no local models)" if provider == "ollama" else "(unavailable)"]
-            )
 
     def manager_analyze_idea(self):
         idea = self.manager_idea_input.toPlainText().strip()

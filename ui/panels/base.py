@@ -20,6 +20,7 @@ from __future__ import annotations
 from PySide6.QtWidgets import QComboBox, QLabel, QWidget
 
 from ui.widgets import FlowLayout
+from ui.workers import ChatWorker
 
 # The provider list every panel offered, written once. Order is the order shown.
 PROVIDERS = (
@@ -30,14 +31,17 @@ PROVIDERS = (
 MODEL_BOX_WIDTH = 200
 
 
-def flow_row(spacing: int = 6) -> tuple[QWidget, FlowLayout]:
+def flow_row(parent: QWidget | None = None,
+             spacing: int = 6) -> tuple[QWidget, FlowLayout]:
     """A control row that wraps instead of pinning a minimum width on the pane.
 
-    Returns the container to add to the panel and the layout to fill — every
-    caller needs both, and forgetting the container leaves an unparented layout
-    that silently never appears.
+    Returns the container and the layout to fill; the caller must keep the
+    container — every widget added to the layout belongs to it, and dropping an
+    unparented one takes the combos down with it ("Internal C++ object already
+    deleted"), which no import or compile check can see. Passing a `parent`
+    settles that at construction.
     """
-    container = QWidget()
+    container = QWidget(parent)
     return container, FlowLayout(container, spacing=spacing)
 
 
@@ -113,10 +117,12 @@ class AgentPanel(QWidget):
         self.host = host
         self.provider_box: QComboBox | None = None
         self.model_box: QComboBox | None = None
+        self.worker = None
 
     # ── Construction helpers ────────────────────────────────────────────
     def flow_row(self, spacing: int = 6) -> tuple[QWidget, FlowLayout]:
-        return flow_row(spacing)
+        """A wrapping control row owned by this panel."""
+        return flow_row(self, spacing)
 
     def build_provider_row(self, layout, **kwargs) -> tuple[QComboBox, QComboBox]:
         kwargs.setdefault("default", self.default_provider)
@@ -161,6 +167,40 @@ class AgentPanel(QWidget):
 
     def note_usage(self, usage: dict) -> None:
         self.host.note_request_usage(self.agent_key, usage)
+
+    # ── Running one request ─────────────────────────────────────────────
+    #: Swapped by panels that drive a tool instead of a chat request, and by
+    #: tests that would rather not start a thread.
+    worker_class = ChatWorker
+
+    def start_worker(self, messages: list, prompt: str, *,
+                     on_token=None, on_finished=None, on_error=None):
+        """Run one authorised request in a thread and keep a handle on it.
+
+        The usage signal is connected here rather than by each caller: real
+        token counts arriving from the provider are what turn an estimate into
+        a billed amount, and a panel that forgot to connect it under-reported
+        its own spending in silence.
+        """
+        worker = self.worker_class(self.host.run_backend, self.provider,
+                                   self.model, messages, prompt)
+        if on_token is not None:
+            worker.token_signal.connect(on_token)
+        if on_finished is not None:
+            worker.finished_signal.connect(on_finished)
+        if on_error is not None:
+            worker.error_signal.connect(on_error)
+        worker.usage_signal.connect(self.note_usage)
+        self.worker = worker
+        worker.start()
+        return worker
+
+    def stop_worker(self) -> bool:
+        """Cancel the in-flight request, if there is one. True if it was running."""
+        if self.worker is not None and self.worker.isRunning():
+            self.worker.cancel()
+            return True
+        return False
 
     # ── Shared services ─────────────────────────────────────────────────
     def agent(self):
