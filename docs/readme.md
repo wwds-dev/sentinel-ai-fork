@@ -1,6 +1,6 @@
-# GOD_AI
+# Sentinel
 
-GOD_AI is a local-first AI command center for running agents, tools, local models, and API-based AI providers from one desktop interface.
+Sentinel is a local-first AI command center for running agents, tools, local models, and API-based AI providers from one desktop interface.
 
 ## Core goals
 

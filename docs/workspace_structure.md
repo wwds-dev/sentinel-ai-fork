@@ -6,7 +6,7 @@ agreed structure: **four app hubs plus Lab Hub as the front desk.**
 ## The four hubs
 
 ### Sentinel — security and intelligence
-Renamed from "Sentinel AI" to **Sentinel** everywhere: window title, bundle
+Renamed from "Sentinel" to **Sentinel** everywhere: window title, bundle
 name, `runtime_paths.APP_NAME`, the single-instance key, the installed
 `/Applications` bundle, the Lab Hub tile, and the repo's own docs.
 
@@ -98,7 +98,7 @@ Ordered so nothing is untangled twice. The refactor still gates the moves — se
 `docs/refactor_plan.md`.
 
 ### Sentinel
-1. Rename "Sentinel AI" → "Sentinel" everywhere (see the trap list below).
+1. Rename "Sentinel" → "Sentinel" everywhere (see the trap list below).
 2. Finish refactor phases 3–5 so each agent is a self-contained module.
 3. Extract the shared platform package — provider clients, request guard,
    budget/usage/registry, `ui/{style,widgets,workers,dialogs}`. Every hub

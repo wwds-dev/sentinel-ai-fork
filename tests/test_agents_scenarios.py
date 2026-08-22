@@ -1,5 +1,5 @@
 """
-Sentinel AI — Agent Scenario Tests
+Sentinel — Agent Scenario Tests
 ===================================
 Type: Functional / Scenario-based Tests  (also called "Use Case Tests")
 

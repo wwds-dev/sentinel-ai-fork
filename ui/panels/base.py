@@ -118,6 +118,7 @@ class AgentPanel(QWidget):
         self.provider_box: QComboBox | None = None
         self.model_box: QComboBox | None = None
         self.worker = None
+        self._active_request_id: str | None = None
 
     # ── Construction helpers ────────────────────────────────────────────
     def flow_row(self, spacing: int = 6) -> tuple[QWidget, FlowLayout]:
@@ -154,19 +155,25 @@ class AgentPanel(QWidget):
     def authorize(self, prompt: str, *, tool: str | None = None,
                   label: str | None = None) -> bool:
         """False means the request was blocked and must not be sent."""
-        return self.host.authorize_request(
+        self._active_request_id = self.host.authorize_request(
             self.agent_key, self.provider, self.model, prompt,
             tool=tool, label=label,
         )
+        return self._active_request_id is not None
 
     def record(self, response: str, messages: list | None = None) -> None:
-        self.host.record_request(self.agent_key, response, messages)
+        request_id, self._active_request_id = self._active_request_id, None
+        if request_id is not None:
+            self.host.record_request(request_id, response, messages)
 
     def abandon(self, reason: str = "error") -> None:
-        self.host.abandon_request(self.agent_key, reason)
+        request_id, self._active_request_id = self._active_request_id, None
+        if request_id is not None:
+            self.host.abandon_request(request_id, reason)
 
     def note_usage(self, usage: dict) -> None:
-        self.host.note_request_usage(self.agent_key, usage)
+        if self._active_request_id is not None:
+            self.host.note_request_usage(self._active_request_id, usage)
 
     # ── Running one request ─────────────────────────────────────────────
     #: Swapped by panels that drive a tool instead of a chat request, and by
@@ -182,6 +189,7 @@ class AgentPanel(QWidget):
         a billed amount, and a panel that forgot to connect it under-reported
         its own spending in silence.
         """
+        messages = self.host.apply_project_context(messages)
         worker = self.worker_class(self.host.run_backend, self.provider,
                                    self.model, messages, prompt)
         if on_token is not None:
@@ -195,12 +203,25 @@ class AgentPanel(QWidget):
         worker.start()
         return worker
 
+    def is_running(self) -> bool:
+        """Whether this panel currently has a request in flight."""
+        return self.worker is not None and self.worker.isRunning()
+
     def stop_worker(self) -> bool:
         """Cancel the in-flight request, if there is one. True if it was running."""
-        if self.worker is not None and self.worker.isRunning():
+        if self.is_running():
             self.worker.cancel()
             return True
         return False
+
+    def stop(self) -> None:
+        """Stop this panel's work and put its controls back.
+
+        The base only cancels; a panel that has a status label and buttons to
+        restore overrides this. `stop_current_task` — the window's Stop button —
+        calls it on whichever panel reports itself running.
+        """
+        self.stop_worker()
 
     # ── Shared services ─────────────────────────────────────────────────
     def agent(self):

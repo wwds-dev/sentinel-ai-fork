@@ -1,5 +1,5 @@
 """
-Sentinel AI — Request Guard Tests
+Sentinel — Request Guard Tests
 ==================================
 Type: Unit + integration tests for the money logic.
 
@@ -42,6 +42,7 @@ class FakeRegistry:
         self.allows_tool = True
         self.budget = None
         self.requires_approval = False
+        self.projects = {}
         for k, v in overrides.items():
             setattr(self, k, v)
 
@@ -52,6 +53,7 @@ class FakeRegistry:
     def agent_allows_tool(self, agent, tool):       return self.allows_tool
     def get_agent_budget(self, agent):              return self.budget
     def agent_requires_approval(self, agent):       return self.requires_approval
+    def get_project(self, project_id):              return self.projects.get(project_id)
 
 
 ALL_ALLOWED = {
@@ -94,13 +96,11 @@ class TestValidatorEdgeCases:
         result = validate(provider="somenewprovider", api_permissions={})
         assert result.allowed is False
 
-    def test_budget_boundary_fails_safe_under_float_error(self):
-        # 1.00 - 0.90 == 0.09999999999999998 in binary floating point, so a
-        # request estimated at exactly 0.10 is refused rather than allowed.
-        # Pinned deliberately: erring towards blocking never overspends. A
-        # future switch to Decimal should make this flip, and this test say so.
+    def test_budget_boundary_uses_exact_decimal_money(self):
+        # Currency values arrive as floats from UI controls and persisted JSON,
+        # but the gate converts through their decimal strings before comparing.
         result = validate(session_cost=0.90, session_budget=1.00, estimated_cost=0.10)
-        assert result.allowed is False
+        assert result.allowed is True
 
     def test_already_over_session_budget_blocks_further_spend(self):
         # Remaining budget is negative here, not merely insufficient.
@@ -123,11 +123,17 @@ class FakeUsageTracker:
     def get_today_total(self):
         return self.today_total
 
-    def log_request(self, agent, backend, model, prompt_text, response_text, usage=None):
+    def get_project_total_today(self, project):
+        return 0.0
+
+    def log_request(self, agent, backend, model, prompt_text, response_text,
+                    usage=None, project=None):
         entry = {
             "agent": agent, "backend": backend, "model": model,
+            "prompt_text": prompt_text, "response_text": response_text,
             "cost_eur": 0.02, "estimated_cost": 0.02,
             "input_tokens": 10, "output_tokens": 20, "usage": usage,
+            "project": project,
         }
         self.logged.append(entry)
         return entry
@@ -137,10 +143,12 @@ class FakeHistory:
     def __init__(self):
         self.saved = []
 
-    def save_chat(self, agent, backend, model, command, messages, response):
+    def save_chat(self, agent, backend, model, command, messages, response,
+                  project=None):
         self.saved.append({
             "agent": agent, "backend": backend, "model": model,
             "command": command, "messages": messages, "response": response,
+            "project": project,
         })
 
 
@@ -202,22 +210,37 @@ def win(_window):
     _window.session_cost_total = 0.0
     _window.session_request_count = 0
     _window._pending_requests = {}
+    _window.active_project_id = None
     return _window
 
 
 class TestAuthorizeRequest:
 
+    def test_project_instructions_are_injected_once(self, win):
+        win.registry = FakeRegistry(projects={
+            "novel": {"id": "novel", "name": "Novel", "instructions": "Keep the cast consistent."}
+        })
+        win.validator = Validator(win.registry)
+        win.active_project_id = "novel"
+        original = [{"role": "system", "content": "You are an editor."},
+                    {"role": "user", "content": "Continue."}]
+        once = win.apply_project_context(original)
+        twice = win.apply_project_context(once)
+        assert twice[0]["content"].count("Keep the cast consistent.") == 1
+        assert original[0]["content"] == "You are an editor."
+
     def test_authorised_request_returns_true_and_opens_a_run(self, win):
-        assert win.authorize_request("author", "openai", "gpt-4o", "hello") is True
+        assert win.authorize_request("author", "openai", "gpt-4o", "hello")
         assert len(win.run_logger.started) == 1
 
     def test_authorised_request_stashes_context_for_recording(self, win):
         win.authorize_request("author", "openai", "gpt-4o", "hello")
-        assert "author" in win._pending_requests
+        assert len(win._pending_requests) == 1
+        assert next(iter(win._pending_requests.values()))["agent"] == "author"
 
     def test_blocked_request_returns_false(self, win):
         win.validator = Validator(FakeRegistry(agent_enabled=False))
-        assert win.authorize_request("author", "openai", "gpt-4o", "hi") is False
+        assert win.authorize_request("author", "openai", "gpt-4o", "hi") is None
 
     def test_blocked_request_opens_no_run_and_stashes_nothing(self, win):
         win.validator = Validator(FakeRegistry(agent_enabled=False))
@@ -228,7 +251,7 @@ class TestAuthorizeRequest:
     def test_declining_the_confirmation_blocks_the_request(self, win, monkeypatch):
         from PySide6.QtWidgets import QMessageBox
         monkeypatch.setattr(QMessageBox, "question", lambda *a, **k: QMessageBox.No)
-        assert win.authorize_request("author", "openai", "gpt-4o", "hi") is False
+        assert win.authorize_request("author", "openai", "gpt-4o", "hi") is None
         assert win._pending_requests == {}
 
     def test_label_is_used_as_descriptor_when_no_tool(self, win):
@@ -248,7 +271,7 @@ class TestAuthorizeRequest:
             raise AssertionError("local model must not prompt for API confirmation")
 
         monkeypatch.setattr(QMessageBox, "question", explode)
-        assert win.authorize_request("author", "ollama", "llama3", "hi") is True
+        assert win.authorize_request("author", "ollama", "llama3", "hi")
 
 
 class TestRecordRequest:
@@ -354,24 +377,23 @@ class TestAbandonRequest:
 
 
 class TestConcurrentAgents:
-    """_pending_requests is keyed by agent name — TODO.md flags this as a known
-    limit. These pin the behaviour that is actually relied on today."""
+    """Pending requests are isolated by request id, including the same agent."""
 
     def test_two_different_agents_do_not_interfere(self, win):
-        win.authorize_request("author", "openai", "gpt-4o", "a-prompt")
-        win.authorize_request("manuscript", "openai", "gpt-4o", "m-prompt")
-        win.record_request("author", "a-response")
-        assert "manuscript" in win._pending_requests
+        author_id = win.authorize_request("author", "openai", "gpt-4o", "a-prompt")
+        manuscript_id = win.authorize_request("manuscript", "openai", "gpt-4o", "m-prompt")
+        win.record_request(author_id, "a-response")
+        assert manuscript_id in win._pending_requests
         assert win.history.saved[0]["agent"] == "author"
-        win.record_request("manuscript", "m-response")
+        win.record_request(manuscript_id, "m-response")
         assert {s["agent"] for s in win.history.saved} == {"author", "manuscript"}
 
-    def test_same_agent_twice_overwrites_the_first_context(self, win):
-        # Documented limitation: panels disable their run button so this is not
-        # reachable today. If that ever changes, this test should start failing.
-        win.authorize_request("author", "openai", "gpt-4o", "first")
-        win.authorize_request("author", "openai", "gpt-4o", "second")
-        win.record_request("author", "response")
-        assert len(win.usage_tracker.logged) == 1
-        assert win.usage_tracker.logged[0]["agent"] == "author"
+    def test_same_agent_runs_keep_their_own_context(self, win):
+        first_id = win.authorize_request("author", "openai", "gpt-4o", "first")
+        second_id = win.authorize_request("author", "openai", "gpt-4o", "second")
+        win.record_request(first_id, "first response")
+        win.record_request(second_id, "second response")
+        assert [entry["prompt_text"] for entry in win.usage_tracker.logged] == [
+            "first", "second",
+        ]
         assert win._pending_requests == {}

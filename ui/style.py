@@ -255,7 +255,6 @@ GLOBAL_STYLESHEET = """
             color: #3cff88;
             font-size: 12px;
             font-weight: 500;
-            letter-spacing: 1px;
         }
 
         /* ── Small "chip" buttons (Docs, Model Guide etc.) ────────── */

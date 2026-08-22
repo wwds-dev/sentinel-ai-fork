@@ -1,164 +1,104 @@
-import json  # lets Python read JSON config files
-from pathlib import Path  # safe file path handling
+"""Provider-neutral deterministic model eligibility and scoring."""
+from __future__ import annotations
+import json
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Iterable
+from services.pricing import CostEstimate
 
+@dataclass(frozen=True)
+class ModelCandidate:
+    provider: str
+    model: str
+    enabled: bool = True
+    credentials: bool = True
+    service_healthy: bool = True
+    model_available: bool = True
+    context_window: int = 0
+    local: bool = False
+    latency: str = "medium"
+    capabilities: frozenset[str] = field(default_factory=frozenset)
+    cost: CostEstimate | None = None
+
+@dataclass(frozen=True)
+class RoutingPreferences:
+    task: str = "general"
+    complexity: str = "medium"
+    required_context: int = 0
+    budget_eur: float | None = None
+    local_only: bool = False
+    prefer_private: bool = False
+    prefer_low_latency: bool = False
+
+@dataclass(frozen=True)
+class CandidateEvaluation:
+    candidate: ModelCandidate
+    eligible: bool
+    score: int
+    reasons: tuple[str, ...]
+    blockers: tuple[str, ...]
+
+@dataclass(frozen=True)
+class Recommendation:
+    provider: str | None
+    model: str | None
+    reasons: tuple[str, ...]
+    evaluations: tuple[CandidateEvaluation, ...]
 
 class ModelRouter:
     def __init__(self, settings_path: str = "config/settings.json"):
-        self.settings_path = Path(settings_path)  # store path to settings file
-
+        self.settings_path = Path(settings_path)
     def load_settings(self) -> dict:
-        with open(self.settings_path, "r", encoding="utf-8") as f:  # open settings file
-            return json.load(f)  # return parsed settings
-
+        return json.loads(self.settings_path.read_text(encoding="utf-8"))
     def save_hybrid_mode(self, enabled: bool) -> None:
-        settings = self.load_settings()  # load current settings
-        settings["hybrid_mode"] = enabled  # update hybrid flag
-
-        with open(self.settings_path, "w", encoding="utf-8") as f:  # open for writing
-            json.dump(settings, f, indent=2)  # save updated settings
-
+        settings = self.load_settings(); settings["hybrid_mode"] = enabled
+        self.settings_path.write_text(json.dumps(settings, indent=2), encoding="utf-8")
     def classify_complexity(self, agent_name: str, user_text: str) -> str:
-        lowered = user_text.lower()  # lowercase text for easier keyword matching
-        text_length = len(user_text)  # prompt size
-
-        if agent_name == "coding":
-            if any(word in lowered for word in ["architecture", "refactor", "debug", "bug", "traceback", "design"]):
-                return "very_heavy"  # advanced coding work
-            if text_length > 300:
-                return "heavy"  # longer coding requests
-            return "medium"  # moderate coding requests
-
-        if agent_name == "osint":
-            if any(word in lowered for word in ["report", "briefing", "risk", "timeline", "assessment", "correlate"]):
-                return "heavy"  # analytical OSINT requests
-            if text_length > 250:
-                return "heavy"  # larger OSINT prompts
-            return "medium"  # smaller OSINT prompts
-
-        if agent_name == "writing":
-            if any(word in lowered for word in ["professional", "polished", "executive", "formal", "cover letter"]):
-                return "heavy"  # high-quality writing
-            if text_length > 400:
-                return "heavy"  # large writing tasks
-            return "light"  # standard writing tasks
-
-        # default chat
-        if any(word in lowered for word in ["analyze", "compare", "strategy", "reason", "evaluate"]):
-            return "heavy"  # reasoning-heavy general chat
-        if text_length > 500:
-            return "heavy"  # large prompt
-        if text_length > 180:
-            return "medium"  # moderate prompt
-        return "light"  # simple prompt
-
-    def choose_cloud_backend(self, agent_name: str, complexity: str, settings: dict) -> tuple[str, str]:
-        openai_allowed = settings.get("hybrid_openai", True)  # whether OpenAI is allowed in hybrid mode
-        deepseek_allowed = settings.get("hybrid_deepseek", False)  # whether DeepSeek is allowed in hybrid mode
-        kimi_allowed = settings.get("hybrid_kimi", False)  # whether Kimi is allowed in hybrid mode
-        kimi_model = settings.get("kimi_model", "kimi-k2.7-code")
-
-        # if only one cloud provider is enabled, use it directly
-        enabled = [p for p, ok in (("openai", openai_allowed), ("deepseek", deepseek_allowed), ("kimi", kimi_allowed)) if ok]
-        if len(enabled) == 1:
-            only = enabled[0]
-            if only == "openai":
-                return ("openai", settings["cloud_model"])
-            if only == "deepseek":
-                return ("deepseek", settings["deepseek_model"])
-            return ("kimi", kimi_model)
-
-        # if multiple are enabled, choose intelligently
-        if agent_name == "coding":
-            if kimi_allowed:
-                return ("kimi", kimi_model)  # Kimi K2.7 Code is purpose-built for coding/tool use
-            return ("openai", settings["cloud_model"])  # strongest general coding backend
-
-        if agent_name == "osint":
-            if complexity == "very_heavy":
-                return ("openai", settings["cloud_model"])  # strongest synthesis
-            if kimi_allowed:
-                return ("kimi", kimi_model)  # strong agentic/tool-use option for multi-step investigation
-            return ("deepseek", settings["deepseek_model"])  # cheaper OSINT cloud option
-
-        if agent_name == "writing":
-            return ("openai", settings["cloud_model"])  # strongest writing/polish
-
-        if complexity == "very_heavy":
-            return ("openai", settings["cloud_model"])  # strongest general reasoning
-
-        return ("gemini", settings["gemini_model"])  # balanced cloud default for general heavy chat
-
-    def choose_backend_and_model(
-        self,
-        agent_name: str,
-        user_text: str,
-        backend_override: str = "auto",
-        model_override: str | None = None
-    ) -> tuple[str, str]:
-        settings = self.load_settings()  # load settings
-        hybrid_mode = settings.get("hybrid_mode", False)  # read hybrid flag
-        complexity = self.classify_complexity(agent_name, user_text)  # classify prompt difficulty
-
-        # manual backend overrides
-        if backend_override == "openai":
-            return ("openai", settings["cloud_model"])  # force OpenAI
-
-        if backend_override == "deepseek":
-            return ("deepseek", settings["deepseek_model"])  # force DeepSeek
-
-        if backend_override == "kimi":
-            return ("kimi", settings.get("kimi_model", "kimi-k2.7-code"))  # force Kimi
-
-        if backend_override == "gemini":
-            return ("gemini", settings["gemini_model"])  # force Gemini
-
-        if backend_override == "ollama":
-            if model_override and not model_override.startswith("("):
-                return ("ollama", model_override)  # force manually selected local model
-            if complexity == "light":
-                return ("ollama", settings["local_model_fallback"])  # smaller local model
-            return ("ollama", settings["local_model_primary"])  # stronger local model
-
-        # auto mode with optional local manual model
-        if model_override and not model_override.startswith("("):
-            if complexity in {"light", "medium", "heavy"}:
-                return ("ollama", model_override)  # respect local model selection in auto mode
-
-        # auto mode without hybrid
-        if not hybrid_mode:
-            if complexity == "light":
-                return ("ollama", settings["local_model_fallback"])  # local fast model
-            return ("ollama", settings["local_model_primary"])  # local strong model
-
-        # hybrid mode
-        if complexity == "light":
-            return ("ollama", settings["local_model_fallback"])  # local and fast
-
-        if complexity == "medium":
-            return ("ollama", settings["local_model_primary"])  # local but stronger
-
-        return self.choose_cloud_backend(agent_name, complexity, settings)  # heavy tasks go to cloud intelligently
-
+        text = user_text.lower()
+        if any(k in text for k in ("architecture", "refactor", "debug", "traceback", "evaluate", "correlate")):
+            return "very_heavy"
+        if len(user_text) > 400 or agent_name in {"osint_heavy", "coding"}: return "heavy"
+        if len(user_text) > 180: return "medium"
+        return "light"
+    def evaluate(self, candidate: ModelCandidate, prefs: RoutingPreferences) -> CandidateEvaluation:
+        blockers, reasons, score = [], [], 0
+        checks = ((candidate.enabled, "provider disabled"), (candidate.credentials or candidate.local, "credentials unavailable"),
+                  (candidate.service_healthy, "service unhealthy"), (candidate.model_available, "model unavailable"))
+        blockers.extend(message for ok, message in checks if not ok)
+        if prefs.local_only and not candidate.local: blockers.append("local-only preference")
+        if prefs.required_context and candidate.context_window < prefs.required_context: blockers.append("context window too small")
+        if not candidate.local:
+            if candidate.cost is None or not candidate.cost.available: blockers.append("verified pricing unavailable")
+            elif prefs.budget_eur is not None and candidate.cost.maximum_eur > prefs.budget_eur: blockers.append("estimated maximum exceeds budget")
+        if blockers: return CandidateEvaluation(candidate, False, -10_000, (), tuple(blockers))
+        if candidate.local: score += 24; reasons.append("local and private")
+        if prefs.prefer_private and candidate.local: score += 35; reasons.append("matches privacy preference")
+        if prefs.task in candidate.capabilities: score += 40; reasons.append(f"strong {prefs.task} fit")
+        if prefs.complexity in candidate.capabilities: score += 20; reasons.append(f"suited to {prefs.complexity} work")
+        latency_score = {"low": 18, "medium": 9, "high": 0}.get(candidate.latency, 0)
+        score += latency_score * (2 if prefs.prefer_low_latency else 1); reasons.append(f"{candidate.latency} latency")
+        if candidate.cost and candidate.cost.available:
+            score += max(0, 25 - min(25, round(candidate.cost.maximum_eur * 100)))
+            reasons.append(f"estimated €{candidate.cost.minimum_eur:.4f}–€{candidate.cost.maximum_eur:.4f}")
+        if candidate.context_window >= prefs.required_context: reasons.append("context requirement met")
+        return CandidateEvaluation(candidate, True, score, tuple(reasons), ())
+    def recommend(self, candidates: Iterable[ModelCandidate], prefs: RoutingPreferences) -> Recommendation:
+        evaluations = tuple(self.evaluate(c, prefs) for c in candidates)
+        eligible = [e for e in evaluations if e.eligible]
+        if not eligible: return Recommendation(None, None, ("No eligible model",), evaluations)
+        winner = sorted(eligible, key=lambda e: (-e.score, e.candidate.provider, e.candidate.model))[0]
+        return Recommendation(winner.candidate.provider, winner.candidate.model, winner.reasons, evaluations)
+    def fallback_chain(self, recommendation: Recommendation) -> tuple[tuple[str, str], ...]:
+        ranked = sorted((e for e in recommendation.evaluations if e.eligible), key=lambda e: (-e.score, e.candidate.provider, e.candidate.model))
+        return tuple((e.candidate.provider, e.candidate.model) for e in ranked)
+    def choose_backend_and_model(self, agent_name: str, user_text: str, backend_override: str = "auto", model_override: str | None = None) -> tuple[str, str]:
+        """Compatibility entry point; explicit user selections always win."""
+        settings = self.load_settings()
+        if backend_override != "auto":
+            key = {"openai":"cloud_model", "deepseek":"deepseek_model", "kimi":"kimi_model", "gemini":"gemini_model", "qwen":"qwen_model", "anthropic":"anthropic_model"}.get(backend_override)
+            return backend_override, model_override or settings.get(key or "", "")
+        if model_override and not model_override.startswith("("): return "ollama", model_override
+        complexity = self.classify_complexity(agent_name, user_text)
+        return "ollama", settings["local_model_fallback" if complexity == "light" else "local_model_primary"]
     def get_cost_hint(self, backend: str, agent_name: str, complexity: str) -> tuple[str, str]:
-        if backend == "ollama":
-            if complexity == "light":
-                return ("Local / free", "green")  # local and cheap
-            return ("Local / free, but heavier on your machine", "yellow")  # local but resource-intensive
-
-        if backend == "gemini":
-            if complexity in {"light", "medium"}:
-                return ("Cloud / low-cost or free-tier possible", "yellow")  # likely low-cost cloud
-            return ("Cloud / may use free-tier quota or paid usage", "yellow")  # heavier Gemini use
-
-        if backend == "deepseek":
-            return ("Cloud / paid, usually lower cost than OpenAI", "yellow")  # DeepSeek cost hint
-
-        if backend == "kimi":
-            return ("Cloud / paid, mid-cost, strong for coding/agentic tasks", "yellow")  # Kimi cost hint
-
-        if backend == "openai":
-            if agent_name in {"coding", "writing"} or complexity in {"heavy", "very_heavy"}:
-                return ("Cloud / paid, potentially higher cost", "red")  # higher-value premium backend
-            return ("Cloud / paid", "yellow")  # general OpenAI use
-
-        return ("Unknown cost profile", "yellow")  # fallback
+        return (("Local / no API charge", "green") if backend == "ollama" else ("Cloud / verified price required", "yellow"))

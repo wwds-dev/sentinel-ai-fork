@@ -7,7 +7,6 @@ arguments and touch no application state, which is why they move first.
 import re
 import subprocess
 import time
-from pathlib import Path
 
 from PySide6.QtCore import QThread, Signal
 
@@ -64,10 +63,9 @@ class ChatWorker(QThread):
                     self.token_signal.emit(token)
 
                 response = "".join(response_parts)
-                
-                usage = {
+                usage = getattr(result, "usage", None) or {
                     "cost_type_override": "stream-estimated"
-        }
+                }
 
             # ===== TUPLE (response, usage) =====
             elif isinstance(result, tuple):
@@ -141,72 +139,5 @@ class ModelPullWorker(QThread):
                 ),
             )
             self.finished_signal.emit(self._model)
-        except Exception as e:
-            self.error_signal.emit(str(e))
-
-
-class FiverrImageWorker(QThread):
-    """Downloads and saves DALL-E 3 generated logo images."""
-    image_ready_signal = Signal(str, int)   # local_path, index
-    all_done_signal = Signal(list)           # all local paths
-    error_signal = Signal(str)
-    status_signal = Signal(str)
-
-    def __init__(self, openai_client, image_prompt: str, count: int, save_dir: Path):
-        super().__init__()
-        self.openai_client = openai_client
-        self.image_prompt = image_prompt
-        self.count = count
-        self.save_dir = save_dir
-        self._cancel_requested = False
-
-    def cancel(self):
-        self._cancel_requested = True
-
-    def run(self):
-        import urllib.request
-        self.save_dir.mkdir(parents=True, exist_ok=True)
-        paths = []
-        for i in range(self.count):
-            if self._cancel_requested:
-                self.error_signal.emit("Cancelled.")
-                return
-            try:
-                self.status_signal.emit(f"Generating concept {i + 1} of {self.count}...")
-                url = self.openai_client.generate_image(self.image_prompt)
-                local_path = self.save_dir / f"logo_{i + 1}.png"
-                urllib.request.urlretrieve(url, str(local_path))
-                paths.append(str(local_path))
-                self.image_ready_signal.emit(str(local_path), i)
-            except Exception as e:
-                self.error_signal.emit(f"Concept {i + 1} failed: {e}")
-                return
-        self.all_done_signal.emit(paths)
-
-
-class ShortsWorker(QThread):
-    """Narrates a quote and renders it into a short vertical MP4."""
-    status_signal = Signal(str)
-    done_signal = Signal(str)   # output video path
-    error_signal = Signal(str)
-
-    def __init__(self, quote: str, image_path: Path, output_path: Path,
-                 use_elevenlabs: bool, voice_id: str):
-        super().__init__()
-        self.quote = quote
-        self.image_path = image_path
-        self.output_path = output_path
-        self.use_elevenlabs = use_elevenlabs
-        self.voice_id = voice_id
-
-    def run(self):
-        from services.shorts_generator import render_short
-        try:
-            self.status_signal.emit("[Narrating…]")
-            render_short(
-                self.quote, self.image_path, self.output_path,
-                use_elevenlabs=self.use_elevenlabs, voice_id=self.voice_id,
-            )
-            self.done_signal.emit(str(self.output_path))
         except Exception as e:
             self.error_signal.emit(str(e))

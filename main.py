@@ -7,6 +7,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
+from uuid import uuid4
 
 from services.runtime_paths import resource_base, user_data_base, ensure_seeded, is_frozen
 ensure_seeded()
@@ -44,7 +45,8 @@ from services.resource_monitor import ResourceMonitor
 from services.history_store import HistoryStore
 from services.report_exporter import ReportExporter
 from services.usage_tracker import UsageTracker
-from services.tool_runner import ToolRunner
+from services.pricing import CostEstimate, PricingUnavailable
+from services.model_router import ModelRouter, ModelCandidate, RoutingPreferences
 from services.database import init_db, get_setting, save_setting, get_connection
 from services.registry import Registry
 from services.validator import Validator
@@ -54,15 +56,14 @@ from agents.chat_agent import ChatAgent
 from agents.writing_agent import WritingAgent
 from agents.coding_agent import CodingAgent
 from agents.osint_agent import OSINTAgent
-from agents.manager_agent import ManagerAgent
 from agents.bug_bounty_agent import BugBountyAgent
-from agents.wifi_agent import WiFiAgent, KNOWN_ADAPTERS, detect_usb_adapters, build_kali_commands, AIRPORT
+from agents.wifi_agent import WiFiAgent
 from agents.osint_heavy_agent import OsintHeavyAgent
-from agents.vpn_agent import VpnAgent, build_configs as build_vpn_configs
+from agents.vpn_agent import VpnAgent
 from services.agent_factory import AgentFactory
 
 
-# Writable base = project root in dev, ~/Library/Application Support/Sentinel AI when frozen.
+# Writable base = project root in dev, ~/Library/Application Support/Sentinel when frozen.
 BASE_DIR = user_data_base()
 # Read-only bundled resources (README, config defaults) = project root in dev, bundle when frozen.
 RESOURCE_DIR = resource_base()
@@ -72,6 +73,8 @@ CHATS_DIR = DATA_DIR / "chats"
 
 # Sentinel value for the Saved Chats agent filter — not a real agent name.
 ALL_AGENTS_FILTER = "All agents"
+ALL_PROJECTS_FILTER = "All projects"
+UNFILED_PROJECT_FILTER = "Unfiled"
 
 SETTINGS_FILE = CONFIG_DIR / "settings.json"
 AGENTS_FILE = CONFIG_DIR / "agents.json"
@@ -79,8 +82,6 @@ COMMANDS_FILE = CONFIG_DIR / "commands.json"
 TOOL_PROMPTS_FILE = CONFIG_DIR / "tool_prompts.json"
 REGISTRY_FILE = CONFIG_DIR / "registry.json"
 README_FILE = RESOURCE_DIR / "README.md"
-
-SUPPORTED_EBOOKS = {".pdf", ".epub", ".txt", ".mobi"}
 
 # ── Per-agent recommended setup ──────────────────────────────────────────────
 # Single source of truth for "which provider + model is right for THIS agent".
@@ -129,12 +130,12 @@ AGENT_RECOMMENDATIONS = {
 # agent key -> (provider box attribute, model box attribute)
 AGENT_SETUP_WIDGETS = {
     "chat":        ("provider_box",             "model_box"),
-    "osint":       ("osint_provider_box",       "osint_model_box"),
-    "osint_heavy": ("osint_heavy_provider_box", "osint_heavy_model_box"),
-    "wifi":        ("wifi_provider_box",        "wifi_model_box"),
-    "bug_bounty":  ("bb_provider_box",          "bb_model_box"),
-    "manager":     ("manager_provider_box",     "manager_model_box"),
-    "vpn":         ("vpn_provider_box",         "vpn_model_box"),
+    "osint":       None,  # OsintPanel owns its boxes (phase 4)
+    "osint_heavy": None,  # OsintHeavyPanel owns its boxes (phase 4)
+    "wifi":        None,  # WifiPanel owns its boxes (phase 4)
+    "bug_bounty":  None,  # BugBountyPanel owns its boxes (phase 4)
+    "manager":     None,  # ManagerPanel owns its boxes (phase 4)
+    "vpn":         None,  # VpnPanel owns its boxes (phase 4)
 }
 
 AGENT_PRETTY_NAMES = {
@@ -150,12 +151,18 @@ from ui.widgets import FlowLayout, KeyValue, Meter, SectionView
 from ui.style import GLOBAL_STYLESHEET
 from ui.tooltips import seed_tooltips
 from ui.panels.base import PROVIDERS, build_provider_row
+from ui.panels.bug_bounty import BugBountyPanel
+from ui.panels.manager import ManagerPanel
+from ui.panels.osint_heavy import OsintHeavyPanel
+from ui.panels.vpn import VpnPanel
+from ui.panels.wifi import WifiPanel
+from ui.panels.osint import OsintPanel
 
 class GodAI(QWidget):
     def __init__(self):
         super().__init__()
 
-        self.setWindowTitle("GOD_AI")
+        self.setWindowTitle("Sentinel Fork")
         self.resize(1400, 900)
         # The run bar is a single row so the cost can sit right-aligned as the
         # design has it; a wrapping bar cannot right-align. That costs width, so
@@ -191,38 +198,23 @@ class GodAI(QWidget):
         self.history = HistoryStore()
         self.report_exporter = ReportExporter()
         self.usage_tracker = UsageTracker()
-        self.tool_runner = ToolRunner()
 
         self.registry = Registry()
         self.validator = Validator(self.registry)
+        self.active_project_id: str | None = None
         self.run_logger = RunLogger()
         # agent name -> context for an in-flight request (see authorize_request)
         self._pending_requests = {}
         # agent key -> the panel's own "reload the model list" callable, filled
         # in as each panel builds (see register_model_loader)
         self._model_loaders = {}
+        # agent key -> panel, for the verticals that have moved to ui/panels/.
+        # Everything that has to find a panel's widgets goes through this rather
+        # than through `GodAI` attributes (see setup_widgets_for).
+        self.panels: dict = {}
 
-        self.manager_agent = ManagerAgent()
         self.agent_factory = AgentFactory(BASE_DIR)
-        self.pending_spec: dict | None = None
-        self.manager_worker: Optional[ChatWorker] = None
-        self.shorts_worker: Optional[ShortsWorker] = None
-        self._last_short_path: str = ""
-        self.quote_finder_worker: Optional[ChatWorker] = None
-        self.calendar_worker: Optional[ChatWorker] = None
-        self._calendar_slots: list = []
-        self.bug_bounty_worker: Optional[ChatWorker] = None
-        self._last_bb_response: str = ""
-        self.osint_worker: Optional[ChatWorker] = None
-        self.wifi_worker: Optional[ChatWorker] = None
-        self.wifi_scan_worker: Optional[SubprocessWorker] = None
-        self._last_wifi_response: str = ""
         self._wifi_detected_adapter: dict = {}
-        self.osint_heavy_worker: Optional[ChatWorker] = None
-        self._last_osint_heavy_response: str = ""
-        self._osint_heavy_image_path: str = ""
-        self.vpn_worker: Optional[ChatWorker] = None
-        self._last_vpn_response: str = ""
 
         self.agent_instances = {
             "chat": ChatAgent(),
@@ -273,6 +265,7 @@ class GodAI(QWidget):
         self.install_agent_recommendations()
         self.muse_pull_worker: Optional[ModelPullWorker] = None
         self.refresh_muse_button()
+        self.refresh_project_selector()
         self.load_history_list()
         self.update_resource_label()
         self.update_usage_labels()
@@ -308,9 +301,20 @@ class GodAI(QWidget):
 
     def _set_tooltips(self, mapping: dict):
         """Helper: apply a {widget_attr_name: text} mapping in one call.
-        Silently skips attributes that don't exist yet (panel not built)."""
+
+        A dotted name — "osint.provider_box" — addresses a widget inside a panel
+        that has moved to `ui/panels/`; a bare one is still an attribute of the
+        window. Both are skipped silently when absent, which is why a moved
+        panel has to bring its tooltip names with it: nothing would report the
+        loss.
+        """
         for attr, text in mapping.items():
-            widget = getattr(self, attr, None)
+            if "." in attr:
+                agent_key, _, widget_name = attr.partition(".")
+                panel = self.panels.get(agent_key)
+                widget = getattr(panel, widget_name, None) if panel else None
+            else:
+                widget = getattr(self, attr, None)
             if widget is not None:
                 widget.setToolTip(text)
 
@@ -355,17 +359,25 @@ class GodAI(QWidget):
         Validator.validate() no matter how expensive the model was.
         """
         approx_input_tokens = max(1, int(len(prompt) / 4))
-        approx_output_tokens = max(250, int(approx_input_tokens * 1.2))
-        approx_total_tokens = approx_input_tokens + approx_output_tokens
+        approx_output_min = max(128, int(approx_input_tokens * 0.5))
+        approx_output_max = max(500, int(approx_input_tokens * 1.8))
+        approx_total_tokens = approx_input_tokens + approx_output_max
 
         if backend == "ollama":
             return 0.0, approx_total_tokens
 
-        estimated_cost = self.usage_tracker.calculate_cost_eur(
-            backend, model, approx_input_tokens, approx_output_tokens
-        )
-
-        return round(estimated_cost, 5), approx_total_tokens
+        if hasattr(self.usage_tracker, "estimate_cost_range"):
+            estimate = self.usage_tracker.estimate_cost_range(
+                backend, model, approx_input_tokens, approx_output_min, approx_output_max)
+        else:
+            # Compatibility for injected/third-party trackers implementing the
+            # original scalar API. Production UsageTracker always supplies a range.
+            scalar = self.usage_tracker.calculate_cost_eur(
+                backend, model, approx_input_tokens, approx_output_max)
+            estimate = CostEstimate(True, scalar, scalar, approx_input_tokens,
+                                    approx_output_min, approx_output_max)
+        self._last_cost_range = estimate
+        return (round(estimate.maximum_eur, 5) if estimate.available else float("inf")), approx_total_tokens
 
     def get_current_cost_estimate(self):
         raw_text = self.input_box.toPlainText().strip()
@@ -404,14 +416,22 @@ class GodAI(QWidget):
             tokens = f"{approx_tokens/1000:.1f}k" if approx_tokens >= 1000 else str(approx_tokens)
             if backend == "ollama":
                 self.runbar_cost.setText(f"free · {tokens} tok")
+            elif estimated_cost == float("inf"):
+                self.runbar_cost.setText(f"price unavailable · {tokens} tok")
             else:
                 self.runbar_cost.setText(f"~€{estimated_cost:.2f} · {tokens} tok")
 
-        if backend == "ollama":
+        if not backend:
             self.live_estimate_label.setText("")
-        elif backend in {"openai", "deepseek", "kimi", "gemini"}:
+        elif backend == "ollama":
+            self.live_estimate_label.setText("")
+        elif estimated_cost == float("inf"):
+            reason = getattr(getattr(self, "_last_cost_range", None), "reason", "Unknown pricing")
+            self.live_estimate_label.setText(f"⛔ {reason}")
+        elif backend != "ollama":
+            estimate = self._last_cost_range
             self.live_estimate_label.setText(
-                f"⚠ Paid API"
+                f"€{estimate.minimum_eur:.4f}–€{estimate.maximum_eur:.4f} · paid API"
             )
         else:
             self.live_estimate_label.setText("")
@@ -428,13 +448,17 @@ class GodAI(QWidget):
                 f"Estimated cost: €0.0000\n"
                 f"This is local execution."
             )
+        elif estimated_cost == float("inf"):
+            reason = getattr(getattr(self, "_last_cost_range", None), "reason", "Unknown pricing")
+            msg = f"Backend: {backend}\nModel: {model}\n\nCost unavailable: {reason}\nRequest will be blocked."
         else:
+            estimate = self._last_cost_range
             msg = (
                 f"Agent: {self.agent_box.currentText()}\n"
                 f"Backend: {backend}\n"
                 f"Model: {model}\n"
                 f"Approx tokens: {approx_tokens}\n\n"
-                f"Estimated cost: ~€{estimated_cost:.2f}\n"
+                f"Estimated cost: €{estimate.minimum_eur:.4f}–€{estimate.maximum_eur:.4f}\n"
                 f"⚠ This may use a paid API."
             )
 
@@ -688,6 +712,7 @@ class GodAI(QWidget):
         }
 
     def apply_recommended_setup(self):
+        self._applying_recommendation = True
         rec = self.get_recommended_setup()
 
         if hasattr(self, "execution_mode_box"):
@@ -715,6 +740,7 @@ class GodAI(QWidget):
             )
 
         self.update_live_cost_estimate()
+        self._applying_recommendation = False
 
     def update_recommendation_label(self):
         if not hasattr(self, "recommendation_label"):
@@ -738,7 +764,19 @@ class GodAI(QWidget):
         if not self.auto_recommend_checkbox.isChecked():
             return
 
-        self.apply_recommended_setup()
+        if getattr(self, "_applying_recommendation", False):
+            return
+        if time.monotonic() < getattr(self, "_manual_selection_until", 0):
+            return
+        if not hasattr(self, "_recommendation_timer"):
+            self._recommendation_timer = QTimer(self)
+            self._recommendation_timer.setSingleShot(True)
+            self._recommendation_timer.timeout.connect(self.apply_recommended_setup)
+        self._recommendation_timer.start(350)
+
+    def note_manual_model_selection(self, *_args) -> None:
+        if not getattr(self, "_applying_recommendation", False):
+            self._manual_selection_until = time.monotonic() + 5.0
 
     # ── Muse Glimmer (local, via Ollama) ─────────────────────────────────────
 
@@ -911,10 +949,41 @@ class GodAI(QWidget):
         models = self.models_for_provider(provider, context, model_box)
         if models:
             model_box.addItems(models)
+            self.decorate_model_costs(provider, model_box)
         elif empty_placeholder:
             model_box.addItem(
                 "(no local models)" if provider == "ollama" else "(unavailable)"
             )
+
+    def decorate_model_costs(self, provider: str, model_box) -> None:
+        """Attach cost-aware tooltips while preserving exact API model ids."""
+        for index in range(model_box.count()):
+            quote = self.usage_tracker.get_price_quote(provider, model_box.itemText(index))
+            details = quote.label
+            if quote.available and quote.verified_at:
+                details += f" · verified {quote.verified_at}"
+            if quote.region:
+                details += f" · {quote.region}"
+            if not quote.available and quote.reason:
+                details += f" — {quote.reason}"
+            model_box.setItemData(index, details, Qt.ToolTipRole)
+
+    def setup_widgets_for(self, agent_key: str):
+        """One agent's provider and model boxes, wherever they now live.
+
+        A panel that has moved to `ui/panels/` owns its own combos; one that has
+        not is still a pile of `GodAI` attributes named in `AGENT_SETUP_WIDGETS`.
+        Everything that marks or pre-selects a recommendation asks here, so the
+        two can coexist for as long as phase 4 takes.
+        """
+        panel = self.panels.get(agent_key)
+        if panel is not None:
+            return panel.provider_box, panel.model_box
+
+        names = AGENT_SETUP_WIDGETS.get(agent_key)
+        if not names:
+            return None, None
+        return getattr(self, names[0], None), getattr(self, names[1], None)
 
     def register_model_loader(self, agent_key: str, loader) -> None:
         """Record how to repopulate one agent's model box.
@@ -1039,12 +1108,10 @@ class GodAI(QWidget):
         per-item colour data.
         """
         rec = self._recommendation_for(agent_key)
-        widgets = AGENT_SETUP_WIDGETS.get(agent_key)
-        if not rec or not widgets:
+        if not rec:
             return
 
-        provider_box = getattr(self, widgets[0], None)
-        model_box = getattr(self, widgets[1], None)
+        provider_box, model_box = self.setup_widgets_for(agent_key)
         pretty = AGENT_PRETTY_NAMES.get(agent_key, agent_key)
         tooltip = (
             f"Recommended for {pretty}: {rec['provider']} · {rec['model']}\n"
@@ -1079,10 +1146,8 @@ class GodAI(QWidget):
         afterwards is left alone.
         """
         rec = self._recommendation_for(agent_key)
-        widgets = AGENT_SETUP_WIDGETS.get(agent_key)
-        if rec and widgets:
-            provider_box = getattr(self, widgets[0], None)
-            model_box = getattr(self, widgets[1], None)
+        if rec:
+            provider_box, model_box = self.setup_widgets_for(agent_key)
             if (provider_box is not None and model_box is not None
                     and provider_box.currentText() == rec["provider"]):
                 idx = self._find_model_index(model_box, rec["model"])
@@ -1101,12 +1166,10 @@ class GodAI(QWidget):
             return
 
         rec = AGENT_RECOMMENDATIONS.get(agent_key)
-        widgets = AGENT_SETUP_WIDGETS.get(agent_key)
-        if not rec or not widgets:
+        if not rec:
             return
 
-        provider_box = getattr(self, widgets[0], None)
-        model_box = getattr(self, widgets[1], None)
+        provider_box, model_box = self.setup_widgets_for(agent_key)
 
         if provider_box is not None:
             idx = provider_box.findText(rec["provider"])
@@ -1131,9 +1194,7 @@ class GodAI(QWidget):
         red markings in sync as the user changes providers or models later."""
 
         for agent_key in AGENT_SETUP_WIDGETS:
-            widgets = AGENT_SETUP_WIDGETS[agent_key]
-            provider_box = getattr(self, widgets[0], None)
-            model_box = getattr(self, widgets[1], None)
+            provider_box, model_box = self.setup_widgets_for(agent_key)
 
             try:
                 self.apply_agent_recommendation(agent_key)
@@ -1173,8 +1234,16 @@ class GodAI(QWidget):
         left_widget = QWidget()
         left_widget.setObjectName("LeftPanel")
         left_layout = QVBoxLayout(left_widget)
-        left_layout.setContentsMargins(6, 6, 6, 6)
+        left_layout.setContentsMargins(8, 8, 8, 8)
         left_layout.setSpacing(4)
+
+        fork_brand = QLabel("Sentinel Fork")
+        fork_brand.setStyleSheet(
+            "color: #3cff88; font-size: 15px; font-weight: 600; "
+            "padding: 8px 4px 12px 4px;"
+        )
+        fork_brand.setToolTip("Independent fork of Sentinel v2")
+        left_layout.addWidget(fork_brand)
 
         # Inner scrollable container holds all the agent categories so they never
         # get clipped or vertically squashed when the window is short.
@@ -1262,31 +1331,42 @@ class GodAI(QWidget):
         divider.setStyleSheet("color: #242424; background-color: #242424; max-height: 1px;")
         left_layout.addWidget(divider)
 
-        saved_header = QLabel("  SAVED CHATS")
+        saved_header = QLabel("Saved chats")
         saved_header.setStyleSheet(
-            "color: #707070; font-weight: bold; font-size: 10px; "
-            "letter-spacing: 1.5px; padding: 8px 0 4px 8px; "
+            "color: #909090; font-weight: 600; font-size: 12px; "
+            "padding: 8px 0 4px 4px; "
             "background: transparent;"
         )
         left_layout.addWidget(saved_header)
 
+        self.project_filter = QComboBox()
+        self.project_filter.currentIndexChanged.connect(self.project_changed)
+        self.project_filter.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.project_filter.customContextMenuRequested.connect(self.show_project_context_menu)
+        left_layout.addWidget(self.project_filter)
+
+        history_tools = QHBoxLayout()
+        history_tools.setSpacing(8)
         # Narrow the list to one agent. Populated from the chats that exist, so
         # it only ever offers agents you have actually used.
         self.history_agent_filter = QComboBox()
         self.history_agent_filter.addItem(ALL_AGENTS_FILTER)
         self.history_agent_filter.currentTextChanged.connect(self.load_history_list)
-        left_layout.addWidget(self.history_agent_filter)
+        history_tools.addWidget(self.history_agent_filter, 1)
 
         self.history_search = QLineEdit()
-        self.history_search.setPlaceholderText("Search saved chats...")
+        self.history_search.setPlaceholderText("Search…")
         self.history_search.textChanged.connect(self.load_history_list)
-        left_layout.addWidget(self.history_search)
+        history_tools.addWidget(self.history_search, 2)
+        left_layout.addLayout(history_tools)
 
         self.history_list = QListWidget()
         self.history_list.itemClicked.connect(self.open_selected_chat)
         # Double-click renames: chat_title_from_data already prefers a stored
         # "title" over the truncated first prompt, it was just never written.
         self.history_list.itemDoubleClicked.connect(self.rename_selected_chat)
+        self.history_list.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.history_list.customContextMenuRequested.connect(self.show_history_context_menu)
         # Keep the saved-chats list bounded so the agents area always has room
         self.history_list.setMinimumHeight(120)
         self.history_list.setMaximumHeight(200)
@@ -1294,11 +1374,14 @@ class GodAI(QWidget):
 
         self.delete_chat_btn = QPushButton("Delete selected")
         self.delete_chat_btn.clicked.connect(self.delete_selected_chat)
-        left_layout.addWidget(self.delete_chat_btn)
 
         self.new_chat_btn = QPushButton("New chat")
         self.new_chat_btn.clicked.connect(self.new_chat)
-        left_layout.addWidget(self.new_chat_btn)
+        history_actions = QHBoxLayout()
+        history_actions.setSpacing(8)
+        history_actions.addWidget(self.new_chat_btn)
+        history_actions.addWidget(self.delete_chat_btn)
+        left_layout.addLayout(history_actions)
 
         left_widget.setMinimumWidth(230)
         left_widget.setMaximumWidth(300)
@@ -1359,7 +1442,7 @@ class GodAI(QWidget):
     def build_center_panel(self) -> QWidget:
         center_widget = QWidget()
         center_layout = QVBoxLayout(center_widget)
-        center_layout.setContentsMargins(28, 22, 28, 22)
+        center_layout.setContentsMargins(24, 24, 24, 24)
         center_layout.setSpacing(16)
 
         # ── Agent header bar: big accent title + status pill ─────────────
@@ -1393,7 +1476,7 @@ class GodAI(QWidget):
         self.tooltips_toggle_btn.clicked.connect(self._toggle_tooltips)
         self.tooltips_toggle_btn.hide()
 
-        self.agent_status_pill = QLabel("●  READY")
+        self.agent_status_pill = QLabel("●  Ready")
         self.agent_status_pill.setObjectName("StatusPill")
         header_row.addWidget(self.agent_status_pill)
 
@@ -1425,7 +1508,7 @@ class GodAI(QWidget):
         # without this the run bar has no surface and its controls float loose.
         runbar_container.setAttribute(Qt.WA_StyledBackground, True)
         runbar = QHBoxLayout(runbar_container)
-        runbar.setContentsMargins(18, 14, 18, 14)
+        runbar.setContentsMargins(16, 16, 16, 16)
         runbar.setSpacing(10)
 
         self.tool_box = QComboBox()
@@ -1486,7 +1569,7 @@ class GodAI(QWidget):
         settings_panel.setObjectName("RunBarPopover")
         settings_panel.setAttribute(Qt.WA_StyledBackground, True)
         sp = QVBoxLayout(settings_panel)
-        sp.setContentsMargins(12, 10, 12, 12)
+        sp.setContentsMargins(16, 8, 16, 16)
         sp.setSpacing(8)
 
         command_row = QHBoxLayout()
@@ -1595,6 +1678,8 @@ class GodAI(QWidget):
         self.runbar_settings_btn.setMenu(self.runbar_menu)
 
         self.model_box.currentTextChanged.connect(self.save_provider_model_preference)
+        self.model_box.activated.connect(self.note_manual_model_selection)
+        self.provider_box.activated.connect(self.note_manual_model_selection)
 
         self.input_box = QTextEdit()
         self.input_box.setObjectName("PromptInput")
@@ -1661,22 +1746,22 @@ class GodAI(QWidget):
 
         center_layout.addWidget(self.normal_panel)
 
-        self.build_manager_panel()
+        self.manager_panel = self.panels["manager"] = ManagerPanel(self)
         center_layout.addWidget(self.manager_panel)
 
-        self.build_osint_panel()
+        self.osint_panel = self.panels["osint"] = OsintPanel(self)
         center_layout.addWidget(self.osint_panel)
 
-        self.build_osint_heavy_panel()
+        self.osint_heavy_panel = self.panels["osint_heavy"] = OsintHeavyPanel(self)
         center_layout.addWidget(self.osint_heavy_panel)
 
-        self.build_wifi_panel()
+        self.wifi_panel = self.panels["wifi"] = WifiPanel(self)
         center_layout.addWidget(self.wifi_panel)
 
-        self.build_bug_bounty_panel()
+        self.bug_bounty_panel = self.panels["bug_bounty"] = BugBountyPanel(self)
         center_layout.addWidget(self.bug_bounty_panel)
 
-        self.build_vpn_panel()
+        self.vpn_panel = self.panels["vpn"] = VpnPanel(self)
         center_layout.addWidget(self.vpn_panel)
 
         self.output_label = QLabel("OUTPUT")
@@ -1710,1365 +1795,6 @@ class GodAI(QWidget):
             self.output_label.setVisible(False)
             self.output_box.setVisible(False)
     
-    def build_manager_panel(self):
-        self.manager_panel = QWidget()
-        self.manager_panel.setObjectName("ManagerPanel")
-        layout = QVBoxLayout(self.manager_panel)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(12)
-
-        # ── Idea input ──────────────────────────────────────────────
-        idea_group = QGroupBox("Describe Your Agent Idea")
-        idea_group.setObjectName("ManagerIdeaBox")
-        idea_layout = QVBoxLayout(idea_group)
-
-        self.manager_idea_input = QTextEdit()
-        self.manager_idea_input.setPlaceholderText(
-            "Example: A cybersecurity agent that helps analyse logs, detect anomalies, "
-            "and suggest mitigations. Should prefer local models for privacy."
-        )
-        self.manager_idea_input.setMinimumHeight(100)
-        self.manager_idea_input.setMaximumHeight(160)
-        idea_layout.addWidget(self.manager_idea_input)
-
-        idea_btn_row = QHBoxLayout()
-
-        self.manager_provider_box, self.manager_model_box = build_provider_row(
-            self, idea_btn_row, "manager", default="deepseek",
-            empty_placeholder=True)
-
-        idea_btn_row.addStretch()
-
-        self.manager_analyze_btn = QPushButton("Analyze Idea")
-        self.manager_analyze_btn.setMinimumWidth(140)
-        self.manager_analyze_btn.setObjectName("PrimaryAction")
-        self.manager_analyze_btn.clicked.connect(self.manager_analyze_idea)
-        idea_btn_row.addWidget(self.manager_analyze_btn)
-
-        self.manager_clear_btn = QPushButton("Clear")
-        self.manager_clear_btn.clicked.connect(self.manager_clear)
-        idea_btn_row.addWidget(self.manager_clear_btn)
-
-        idea_layout.addLayout(idea_btn_row)
-        layout.addWidget(idea_group)
-
-        # ── Generated spec ───────────────────────────────────────────
-        spec_group = QGroupBox("Generated Spec (review before approving)")
-        spec_group.setObjectName("ManagerSpecBox")
-        spec_layout = QVBoxLayout(spec_group)
-
-        self.manager_spec_display = QTextEdit()
-        self.manager_spec_display.setReadOnly(True)
-        self.manager_spec_display.setMinimumHeight(180)
-        self.manager_spec_display.setPlaceholderText("Spec will appear here after analysis...")
-        self.manager_spec_display.setStyleSheet("font-family: monospace; font-size: 12px;")
-        spec_layout.addWidget(self.manager_spec_display)
-
-        approve_row = QHBoxLayout()
-
-        self.manager_approve_btn = QPushButton("Approve & Create Agent")
-        self.manager_approve_btn.setEnabled(False)
-        self.manager_approve_btn.setMinimumWidth(200)
-        self.manager_approve_btn.setObjectName("PrimaryAction")
-        self.manager_approve_btn.clicked.connect(self.manager_approve_spec)
-        approve_row.addWidget(self.manager_approve_btn)
-
-        self.manager_reject_btn = QPushButton("Reject / Clear Spec")
-        self.manager_reject_btn.setEnabled(False)
-        self.manager_reject_btn.clicked.connect(self.manager_reject_spec)
-        approve_row.addWidget(self.manager_reject_btn)
-
-        approve_row.addStretch()
-        spec_layout.addLayout(approve_row)
-        layout.addWidget(spec_group)
-
-        # ── Creation log ─────────────────────────────────────────────
-        log_group = QGroupBox("Creation Log")
-        log_group.setObjectName("ManagerLogBox")
-        log_layout = QVBoxLayout(log_group)
-
-        self.manager_log = QTextEdit()
-        self.manager_log.setReadOnly(True)
-        self.manager_log.setMinimumHeight(100)
-        self.manager_log.setStyleSheet("font-family: monospace; font-size: 12px;")
-        log_layout.addWidget(self.manager_log)
-        layout.addWidget(log_group)
-
-        self.manager_panel.hide()
-
-
-    def build_osint_panel(self):
-        self.osint_panel = QWidget()
-        self.osint_panel.setObjectName("OSINTPanel")
-        layout = QVBoxLayout(self.osint_panel)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(10)
-
-        # ── Target form ──────────────────────────────────────────────────────
-        setup_group = QGroupBox("Target")
-        setup_group.setObjectName("OSINTSetupBox")
-        setup_layout = QGridLayout(setup_group)
-        setup_layout.setSpacing(6)
-
-        setup_layout.addWidget(QLabel("Target:"), 0, 0)
-        self.osint_target_input = QLineEdit()
-        self.osint_target_input.setPlaceholderText(
-            "Enter name, username, email, domain, company, phone, or IP…"
-        )
-        setup_layout.addWidget(self.osint_target_input, 0, 1, 1, 3)
-
-        setup_layout.addWidget(QLabel("Query Type:"), 1, 0)
-        self.osint_type_box = QComboBox()
-        self.osint_type_box.addItems([
-            "Auto-detect", "Person", "Username", "Email",
-            "Domain", "Company", "Phone", "IP Address",
-        ])
-        setup_layout.addWidget(self.osint_type_box, 1, 1)
-
-        provider_row_container = QWidget()
-        provider_row = FlowLayout(provider_row_container, spacing=6)
-        self.osint_provider_box, self.osint_model_box = build_provider_row(
-            self, provider_row, "osint")
-
-
-        self.osint_analyse_btn = QPushButton("Structure Query")
-        self.osint_analyse_btn.setMinimumWidth(150)
-        self.osint_analyse_btn.setObjectName("PrimaryAction")
-        self.osint_analyse_btn.clicked.connect(self.osint_analyse)
-        provider_row.addWidget(self.osint_analyse_btn)
-
-        self.osint_stop_btn = QPushButton("Stop")
-        self.osint_stop_btn.setEnabled(False)
-        self.osint_stop_btn.setObjectName("DangerAction")
-        self.osint_stop_btn.clicked.connect(self.osint_stop)
-        provider_row.addWidget(self.osint_stop_btn)
-
-        setup_layout.addWidget(provider_row_container, 2, 0, 1, 4)
-        layout.addWidget(setup_group)
-
-        # ── Output ────────────────────────────────────────────────────────────
-        # The answer is already parsed into four sections; render it as those
-        # sections rather than pouring each into its own tabbed text box. Copy
-        # lives per card, so the dorks are still one click from the clipboard.
-        self.osint_stream_box = QTextBrowser()
-        self.osint_stream_box.setOpenExternalLinks(False)
-        self.osint_stream_box.setVisible(False)
-        layout.addWidget(self.osint_stream_box, 1)
-
-        self.osint_sections = SectionView()
-        layout.addWidget(self.osint_sections, 1)
-
-        # ── Bottom bar ────────────────────────────────────────────────────────
-        bottom_row = QHBoxLayout()
-        self.osint_status_label = QLabel("Idle")
-        self.osint_status_label.setStyleSheet("font-size: 12px; color: #888;")
-        bottom_row.addWidget(self.osint_status_label)
-        bottom_row.addStretch()
-        osint_clear_btn = QPushButton("Clear")
-        osint_clear_btn.clicked.connect(self.osint_clear)
-        bottom_row.addWidget(osint_clear_btn)
-        layout.addLayout(bottom_row)
-
-        self.osint_panel.hide()
-
-    # ── OSINT Pro (Heavy) panel ──────────────────────────────────────────────
-    def build_osint_heavy_panel(self):
-        self.osint_heavy_panel = QWidget()
-        self.osint_heavy_panel.setObjectName("OSINTHeavyPanel")
-        layout = QVBoxLayout(self.osint_heavy_panel)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(10)
-
-        # ── Investigation Brief ──────────────────────────────────────────────
-        brief_group = QGroupBox("Investigation Brief")
-        brief_group.setObjectName("OSINTHeavyBriefBox")
-        brief_layout = QGridLayout(brief_group)
-        brief_layout.setSpacing(6)
-
-        brief_layout.addWidget(QLabel("Target:"), 0, 0)
-        self.osint_heavy_target_input = QLineEdit()
-        self.osint_heavy_target_input.setPlaceholderText(
-            "Name, username, email, domain, IP, phone number, or organisation…"
-        )
-        brief_layout.addWidget(self.osint_heavy_target_input, 0, 1, 1, 3)
-
-        brief_layout.addWidget(QLabel("Target Type:"), 1, 0)
-        self.osint_heavy_type_box = QComboBox()
-        self.osint_heavy_type_box.addItems([
-            "Person", "Username", "Email Address", "Domain / IP",
-            "Organisation", "Phone Number", "Auto-detect",
-        ])
-        brief_layout.addWidget(self.osint_heavy_type_box, 1, 1)
-
-        brief_layout.addWidget(QLabel("Scope:"), 1, 2)
-        self.osint_heavy_scope_box = QComboBox()
-        self.osint_heavy_scope_box.addItems(["Quick Scan", "Standard Investigation", "Deep Dive"])
-        self.osint_heavy_scope_box.setCurrentText("Standard Investigation")
-        brief_layout.addWidget(self.osint_heavy_scope_box, 1, 3)
-
-        brief_layout.addWidget(QLabel("Objective:"), 2, 0)
-        self.osint_heavy_objective_input = QTextEdit()
-        self.osint_heavy_objective_input.setPlaceholderText(
-            "What are you trying to establish? e.g. verify identity, map infrastructure, check breach exposure, assess threat level…"
-        )
-        self.osint_heavy_objective_input.setFixedHeight(60)
-        brief_layout.addWidget(self.osint_heavy_objective_input, 2, 1, 1, 3)
-
-        provider_row_container = QWidget()
-        provider_row = FlowLayout(provider_row_container, spacing=6)
-        self.osint_heavy_provider_box, self.osint_heavy_model_box = build_provider_row(
-            self, provider_row, "osint_heavy")
-
-
-        self.osint_heavy_investigate_btn = QPushButton("Investigate")
-        self.osint_heavy_investigate_btn.setMinimumWidth(140)
-        self.osint_heavy_investigate_btn.setObjectName("PrimaryAction")
-        self.osint_heavy_investigate_btn.clicked.connect(self.osint_heavy_investigate)
-        provider_row.addWidget(self.osint_heavy_investigate_btn)
-
-        self.osint_heavy_stop_btn = QPushButton("Stop")
-        self.osint_heavy_stop_btn.setEnabled(False)
-        self.osint_heavy_stop_btn.setObjectName("DangerAction")
-        self.osint_heavy_stop_btn.clicked.connect(self.osint_heavy_stop)
-        provider_row.addWidget(self.osint_heavy_stop_btn)
-
-        brief_layout.addWidget(provider_row_container, 3, 0, 1, 4)
-        layout.addWidget(brief_group)
-
-        # ── Target Image (optional) ──────────────────────────────────────────
-        image_group = QGroupBox("Target Image  —  optional, enables EXIF analysis & face search links")
-        image_group.setObjectName("OSINTHeavyImageBox")
-        image_outer = QVBoxLayout(image_group)
-        image_outer.setSpacing(4)
-        image_outer.setContentsMargins(6, 4, 6, 4)
-        image_top_row = QHBoxLayout()
-        self.osint_heavy_image_label = QLabel("No image selected")
-        self.osint_heavy_image_label.setStyleSheet("color: #666; font-style: italic;")
-        self.osint_heavy_image_label.setMinimumWidth(200)
-        image_top_row.addWidget(self.osint_heavy_image_label, 1)
-        osint_browse_btn = QPushButton("Browse…")
-        osint_browse_btn.setMaximumWidth(90)
-        osint_browse_btn.clicked.connect(self._osint_heavy_browse_image)
-        image_top_row.addWidget(osint_browse_btn)
-        osint_clear_img_btn = QPushButton("Clear Image")
-        osint_clear_img_btn.setMaximumWidth(90)
-        osint_clear_img_btn.clicked.connect(self._osint_heavy_clear_image)
-        image_top_row.addWidget(osint_clear_img_btn)
-        image_outer.addLayout(image_top_row)
-        self.osint_heavy_exif_display = QTextEdit()
-        self.osint_heavy_exif_display.setReadOnly(True)
-        self.osint_heavy_exif_display.setFixedHeight(52)
-        self.osint_heavy_exif_display.setPlaceholderText(
-            "EXIF metadata will appear here after selecting an image…"
-        )
-        self.osint_heavy_exif_display.setStyleSheet(
-            "font-family: monospace; font-size: 11px; color: #aaa;"
-        )
-        image_outer.addWidget(self.osint_heavy_exif_display)
-        layout.addWidget(image_group)
-
-        # ── Results splitter: tabs left, indicators right ────────────────────
-        results_splitter = QSplitter(Qt.Horizontal)
-
-        self.osint_heavy_tabs = QTabWidget()
-
-        self.osint_heavy_overview_box = QTextBrowser()
-        self.osint_heavy_overview_box.setOpenExternalLinks(True)
-        self.osint_heavy_tabs.addTab(self.osint_heavy_overview_box, "Overview")
-
-        self.osint_heavy_footprint_box = QTextBrowser()
-        self.osint_heavy_footprint_box.setOpenExternalLinks(True)
-        self.osint_heavy_tabs.addTab(self.osint_heavy_footprint_box, "Digital Footprint")
-
-        self.osint_heavy_infra_box = QTextBrowser()
-        self.osint_heavy_infra_box.setOpenExternalLinks(True)
-        self.osint_heavy_tabs.addTab(self.osint_heavy_infra_box, "Infra / Social")
-
-        self.osint_heavy_risk_box = QTextBrowser()
-        self.osint_heavy_risk_box.setOpenExternalLinks(True)
-        self.osint_heavy_tabs.addTab(self.osint_heavy_risk_box, "Risk & Red Flags")
-
-        self.osint_heavy_method_box = QTextBrowser()
-        self.osint_heavy_method_box.setOpenExternalLinks(True)
-        self.osint_heavy_tabs.addTab(self.osint_heavy_method_box, "Methodology")
-
-        self.osint_heavy_dossier_box = QTextBrowser()
-        self.osint_heavy_dossier_box.setOpenExternalLinks(True)
-        self.osint_heavy_tabs.addTab(self.osint_heavy_dossier_box, "Full Dossier")
-
-        self.osint_heavy_image_tab = QTextBrowser()
-        self.osint_heavy_image_tab.setOpenExternalLinks(True)
-        self.osint_heavy_tabs.addTab(self.osint_heavy_image_tab, "Image OSINT")
-
-        results_splitter.addWidget(self.osint_heavy_tabs)
-
-        # ── Indicators sidebar ───────────────────────────────────────────────
-        indicators_widget = QWidget()
-        indicators_layout = QVBoxLayout(indicators_widget)
-        indicators_layout.setContentsMargins(8, 0, 0, 0)
-        indicators_layout.setSpacing(10)
-
-        threat_group = QGroupBox("Threat Level")
-        threat_group.setObjectName("OSINTHeavyThreatBox")
-        threat_layout = QVBoxLayout(threat_group)
-        self.osint_heavy_threat_bar = QProgressBar()
-        self.osint_heavy_threat_bar.setRange(0, 10)
-        self.osint_heavy_threat_bar.setValue(0)
-        self.osint_heavy_threat_bar.setTextVisible(False)
-        self.osint_heavy_threat_bar.setFixedHeight(16)
-        self.osint_heavy_threat_bar.setStyleSheet(
-            "QProgressBar::chunk { background-color: #cc2200; }"
-        )
-        threat_layout.addWidget(self.osint_heavy_threat_bar)
-        self.osint_heavy_threat_label = QLabel("—")
-        self.osint_heavy_threat_label.setAlignment(Qt.AlignCenter)
-        threat_layout.addWidget(self.osint_heavy_threat_label)
-        indicators_layout.addWidget(threat_group)
-
-        conf_group = QGroupBox("Confidence")
-        conf_group.setObjectName("OSINTHeavyConfBox")
-        conf_layout = QVBoxLayout(conf_group)
-        self.osint_heavy_conf_label = QLabel("—")
-        self.osint_heavy_conf_label.setAlignment(Qt.AlignCenter)
-        self.osint_heavy_conf_label.setStyleSheet("font-size: 20px; font-weight: bold; color: #dd88ff;")
-        conf_layout.addWidget(self.osint_heavy_conf_label)
-        indicators_layout.addWidget(conf_group)
-
-        sources_group = QGroupBox("Sources")
-        sources_group.setObjectName("OSINTHeavySourcesBox")
-        sources_layout = QVBoxLayout(sources_group)
-        self.osint_heavy_sources_label = QLabel("—")
-        self.osint_heavy_sources_label.setAlignment(Qt.AlignCenter)
-        self.osint_heavy_sources_label.setStyleSheet("font-size: 18px; font-weight: bold; color: #4db8ff;")
-        sources_layout.addWidget(self.osint_heavy_sources_label)
-        indicators_layout.addWidget(sources_group)
-
-        depth_group = QGroupBox("Depth")
-        depth_group.setObjectName("OSINTHeavyDepthBox")
-        depth_layout = QVBoxLayout(depth_group)
-        self.osint_heavy_depth_label = QLabel("—")
-        self.osint_heavy_depth_label.setAlignment(Qt.AlignCenter)
-        self.osint_heavy_depth_label.setStyleSheet("font-size: 13px; font-weight: bold; color: #aaaaff;")
-        depth_layout.addWidget(self.osint_heavy_depth_label)
-        indicators_layout.addWidget(depth_group)
-
-        indicators_layout.addStretch()
-
-        self.osint_heavy_save_btn = QPushButton("Save Report")
-        self.osint_heavy_save_btn.setEnabled(False)
-        self.osint_heavy_save_btn.clicked.connect(self.osint_heavy_save)
-        indicators_layout.addWidget(self.osint_heavy_save_btn)
-
-        self.osint_heavy_clear_btn = QPushButton("Clear")
-        self.osint_heavy_clear_btn.clicked.connect(self.osint_heavy_clear)
-        indicators_layout.addWidget(self.osint_heavy_clear_btn)
-
-        results_splitter.addWidget(indicators_widget)
-        results_splitter.setSizes([680, 220])
-
-        layout.addWidget(results_splitter, 1)
-
-        self.osint_heavy_status_label = QLabel("")
-        self.osint_heavy_status_label.setStyleSheet("font-size: 12px; color: #888;")
-        layout.addWidget(self.osint_heavy_status_label)
-
-        self.osint_heavy_panel.hide()
-
-
-    # ── OSINT Light handlers ──────────────────────────────────────────────────
-    def osint_analyse(self):
-        target = self.osint_target_input.text().strip()
-        query_type = self.osint_type_box.currentText()
-        provider = self.osint_provider_box.currentText()
-        model = self.osint_model_box.currentText()
-
-        if not target:
-            QMessageBox.warning(self, "Missing Input", "Please enter a target.")
-            return
-        if not model:
-            QMessageBox.warning(self, "No Model", "Please select a model.")
-            return
-
-        agent = self.agent_instances["osint"]
-        messages = agent.build_messages(target, query_type)
-
-        if not self.authorize_request("osint", provider, model, target, label=query_type):
-            return
-
-        self._osint_clear_tabs()
-        self._last_osint_response = ""
-        self.osint_status_label.setText("Structuring query…")
-        self.osint_analyse_btn.setEnabled(False)
-        self.osint_stop_btn.setEnabled(True)
-
-        self.osint_worker = ChatWorker(self.run_backend, provider, model, messages, target)
-        self.osint_worker.token_signal.connect(self._osint_on_token)
-        self.osint_worker.finished_signal.connect(self._osint_on_finished)
-        self.osint_worker.usage_signal.connect(lambda u: self.note_request_usage("osint", u))
-        self.osint_worker.error_signal.connect(self._osint_on_error)
-        self.osint_worker.start()
-
-    def _osint_on_token(self, token: str):
-        # While tokens arrive there are no sections to show yet, so the raw
-        # stream is the view; the cards replace it once the answer is whole.
-        self._last_osint_response = getattr(self, "_last_osint_response", "") + token
-        self.osint_sections.setVisible(False)
-        self.osint_stream_box.setVisible(True)
-        self.osint_stream_box.setPlainText(self._last_osint_response)
-        self.osint_stream_box.moveCursor(QTextCursor.End)
-
-    def _osint_on_finished(self, full_response: str):
-        self._last_osint_response = full_response
-        self.record_request("osint", full_response)
-        self.osint_stream_box.setVisible(False)
-        self.osint_sections.setVisible(True)
-        self._populate_osint_tabs(full_response)
-        self.osint_status_label.setText("Done.")
-        self.osint_analyse_btn.setEnabled(True)
-        self.osint_stop_btn.setEnabled(False)
-
-    def _osint_on_error(self, error: str):
-        self.abandon_request("osint")
-        separator = "─" * 50
-        self.osint_stream_box.setVisible(True)
-        self.osint_sections.setVisible(False)
-        self.osint_stream_box.setPlainText(
-            f"⚠  ERROR\n{separator}\n{error}\n{separator}"
-        )
-        self.osint_status_label.setText("Error.")
-        self.osint_analyse_btn.setEnabled(True)
-        self.osint_stop_btn.setEnabled(False)
-
-    def osint_stop(self):
-        if self.osint_worker is not None and self.osint_worker.isRunning():
-            self.osint_worker.cancel()
-        self.osint_status_label.setText("Stopped.")
-        self.osint_analyse_btn.setEnabled(True)
-        self.osint_stop_btn.setEnabled(False)
-
-    def osint_clear(self):
-        self._osint_clear_tabs()
-        self.osint_target_input.clear()
-        self.osint_status_label.setText("Idle")
-        self._last_osint_response = ""
-
-    def _osint_clear_tabs(self):
-        self.osint_sections.clear()
-        self.osint_stream_box.clear()
-        self.osint_stream_box.setVisible(False)
-        self.osint_sections.setVisible(True)
-
-    def _populate_osint_tabs(self, text: str):
-        sections = self._parse_osint_sections(text)
-        self.osint_sections.show_sections(
-            [
-                ("Query structure", sections.get("structure", "")),
-                ("Google dorks", sections.get("dorks", ""), True),
-                ("Public sources", sections.get("sources", "")),
-                ("Summary and next steps", sections.get("summary", "")),
-            ],
-            raw=text,
-        )
-
-    def _parse_osint_sections(self, text: str) -> dict:
-        import re
-        patterns = {
-            "structure": r"##\s*QUERY STRUCTURE(.*?)(?=##\s*GOOGLE DORKS|$)",
-            "dorks":     r"##\s*GOOGLE DORKS(.*?)(?=##\s*PUBLIC SOURCES|$)",
-            "sources":   r"##\s*PUBLIC SOURCES(.*?)(?=##\s*SUMMARY|$)",
-            "summary":   r"##\s*SUMMARY.*?(.*?)$",
-        }
-        result = {}
-        for key, pat in patterns.items():
-            m = re.search(pat, text, re.DOTALL | re.IGNORECASE)
-            result[key] = m.group(1).strip() if m else ""
-        return result
-
-    # ── OSINT Pro (Heavy) handlers ───────────────────────────────────────────
-    def osint_heavy_investigate(self):
-        target = self.osint_heavy_target_input.text().strip()
-        target_type = self.osint_heavy_type_box.currentText()
-        scope = self.osint_heavy_scope_box.currentText()
-        objective = self.osint_heavy_objective_input.toPlainText().strip()
-        provider = self.osint_heavy_provider_box.currentText()
-        model = self.osint_heavy_model_box.currentText()
-
-        if not target:
-            QMessageBox.warning(self, "Missing Input", "Please enter a target identifier.")
-            return
-        if not model:
-            QMessageBox.warning(self, "No Model", "Please select a model.")
-            return
-
-        image_metadata = ""
-        if self._osint_heavy_image_path:
-            image_metadata = self._extract_image_exif_for_prompt(self._osint_heavy_image_path)
-
-        agent = self.agent_instances["osint_heavy"]
-        messages = agent.build_messages(target, target_type, scope, objective, image_metadata)
-
-        self._osint_heavy_clear_displays()
-        self._last_osint_heavy_response = ""
-        self.osint_heavy_depth_label.setText(scope)
-        self.osint_heavy_status_label.setText("Investigating…")
-        self.osint_heavy_investigate_btn.setEnabled(False)
-        self.osint_heavy_stop_btn.setEnabled(True)
-        self.osint_heavy_save_btn.setEnabled(False)
-
-        if not self.authorize_request("osint_heavy", provider, model, target):
-            return
-        self.osint_heavy_worker = ChatWorker(self.run_backend, provider, model, messages, target)
-        self.osint_heavy_worker.token_signal.connect(self._osint_heavy_on_token)
-        self.osint_heavy_worker.finished_signal.connect(self._osint_heavy_on_finished)
-        self.osint_heavy_worker.usage_signal.connect(lambda u: self.note_request_usage("osint_heavy", u))
-        self.osint_heavy_worker.error_signal.connect(self._osint_heavy_on_error)
-        self.osint_heavy_worker.start()
-
-    def _osint_heavy_on_token(self, token: str):
-        self._last_osint_heavy_response += token
-        self.osint_heavy_dossier_box.setPlainText(self._last_osint_heavy_response)
-        self.osint_heavy_dossier_box.moveCursor(QTextCursor.End)
-
-    def _osint_heavy_on_finished(self, full_response: str):
-        self.record_request("osint_heavy", full_response)
-        self._last_osint_heavy_response = full_response
-        self._populate_osint_heavy_tabs(full_response)
-        self._update_osint_heavy_indicators(full_response)
-        self.osint_heavy_status_label.setText("Investigation complete.")
-        self.osint_heavy_investigate_btn.setEnabled(True)
-        self.osint_heavy_stop_btn.setEnabled(False)
-        self.osint_heavy_save_btn.setEnabled(True)
-        self.osint_heavy_tabs.setCurrentIndex(0)
-
-    def _osint_heavy_on_error(self, error: str):
-        self.abandon_request("osint_heavy")
-        self.osint_heavy_dossier_box.setPlainText(f"[Error] {error}")
-        self.osint_heavy_status_label.setText("Error.")
-        self.osint_heavy_investigate_btn.setEnabled(True)
-        self.osint_heavy_stop_btn.setEnabled(False)
-
-    def osint_heavy_stop(self):
-        if self.osint_heavy_worker is not None and self.osint_heavy_worker.isRunning():
-            self.osint_heavy_worker.cancel()
-        self.osint_heavy_status_label.setText("Stopped.")
-        self.osint_heavy_investigate_btn.setEnabled(True)
-        self.osint_heavy_stop_btn.setEnabled(False)
-
-    def osint_heavy_save(self):
-        if not self._last_osint_heavy_response:
-            return
-        target = self.osint_heavy_target_input.text().strip().replace(" ", "_").replace("/", "-") or "target"
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        default_name = f"osint_dossier_{target}_{ts}.txt"
-        path, _ = QFileDialog.getSaveFileName(
-            self, "Save OSINT Dossier", str(DATA_DIR / default_name), "Text files (*.txt);;All files (*)"
-        )
-        if path:
-            Path(path).write_text(self._last_osint_heavy_response, encoding="utf-8")
-            self.osint_heavy_status_label.setText(f"Saved to {Path(path).name}")
-
-    def osint_heavy_clear(self):
-        self._osint_heavy_clear_displays()
-        self.osint_heavy_target_input.clear()
-        self.osint_heavy_objective_input.clear()
-        self.osint_heavy_status_label.setText("")
-        self._last_osint_heavy_response = ""
-        self._osint_heavy_clear_image()
-
-    def _osint_heavy_clear_displays(self):
-        for box in (
-            self.osint_heavy_overview_box,
-            self.osint_heavy_footprint_box,
-            self.osint_heavy_infra_box,
-            self.osint_heavy_risk_box,
-            self.osint_heavy_method_box,
-            self.osint_heavy_dossier_box,
-            self.osint_heavy_image_tab,
-        ):
-            box.clear()
-        self.osint_heavy_threat_bar.setValue(0)
-        self.osint_heavy_threat_label.setText("—")
-        self.osint_heavy_conf_label.setText("—")
-        self.osint_heavy_sources_label.setText("—")
-        self.osint_heavy_depth_label.setText("—")
-        self.osint_heavy_save_btn.setEnabled(False)
-
-    def _populate_osint_heavy_tabs(self, text: str):
-        sections = self._parse_osint_heavy_sections(text)
-        self.osint_heavy_overview_box.setPlainText(sections.get("overview", ""))
-        self.osint_heavy_footprint_box.setPlainText(sections.get("footprint", ""))
-        self.osint_heavy_infra_box.setPlainText(sections.get("infra", ""))
-        self.osint_heavy_risk_box.setPlainText(sections.get("risk", ""))
-        self.osint_heavy_method_box.setPlainText(sections.get("methodology", ""))
-        self.osint_heavy_dossier_box.setPlainText(text)
-
-    def _parse_osint_heavy_sections(self, text: str) -> dict:
-        patterns = {
-            "overview":    r"##\s*1\.\s*OVERVIEW(.*?)(?=##\s*2\.|$)",
-            "footprint":   r"##\s*2\.\s*DIGITAL FOOTPRINT(.*?)(?=##\s*3\.|$)",
-            "infra":       r"##\s*3\.\s*INFRASTRUCTURE.*?(.*?)(?=##\s*4\.|$)",
-            "risk":        r"##\s*4\.\s*RISK.*?(.*?)(?=##\s*5\.|$)",
-            "methodology": r"##\s*5\.\s*METHODOLOGY.*?(.*?)$",
-        }
-        result = {}
-        for key, pat in patterns.items():
-            m = re.search(pat, text, re.DOTALL | re.IGNORECASE)
-            result[key] = m.group(1).strip() if m else ""
-        return result
-
-    def _update_osint_heavy_indicators(self, text: str):
-        threat_m = re.search(r"THREAT LEVEL[:\s]+(\d+)\s*/\s*10", text, re.IGNORECASE)
-        if threat_m:
-            level = int(threat_m.group(1))
-            self.osint_heavy_threat_bar.setValue(min(level, 10))
-            self.osint_heavy_threat_label.setText(f"{level}/10")
-
-        conf_m = re.search(r"CONFIDENCE[:\s]+(\d+)\s*%", text, re.IGNORECASE)
-        if conf_m:
-            self.osint_heavy_conf_label.setText(f"{conf_m.group(1)}%")
-
-        sources_m = re.search(r"SOURCES REFERENCED[:\s]+(\d+)", text, re.IGNORECASE)
-        if sources_m:
-            self.osint_heavy_sources_label.setText(sources_m.group(1))
-
-    # ── OSINT Pro image helpers ──────────────────────────────────────────────
-    def _osint_heavy_browse_image(self):
-        path, _ = QFileDialog.getOpenFileName(
-            self, "Select Target Image", str(Path.home()),
-            "Images (*.jpg *.jpeg *.png *.tiff *.tif *.bmp *.webp *.heic);;All files (*)"
-        )
-        if not path:
-            return
-        self._osint_heavy_image_path = path
-        self.osint_heavy_image_label.setText(Path(path).name)
-        self.osint_heavy_image_label.setStyleSheet("color: #dd88ff; font-style: normal;")
-        self.osint_heavy_exif_display.setPlainText(self._extract_image_exif_display(path))
-        self._osint_heavy_populate_image_tab(path)
-
-    def _osint_heavy_clear_image(self):
-        self._osint_heavy_image_path = ""
-        self.osint_heavy_image_label.setText("No image selected")
-        self.osint_heavy_image_label.setStyleSheet("color: #666; font-style: italic;")
-        self.osint_heavy_exif_display.clear()
-        self.osint_heavy_image_tab.clear()
-
-    def _extract_image_exif_raw(self, path: str) -> dict:
-        try:
-            from PIL import Image as PILImage
-            from PIL.ExifTags import TAGS, GPSTAGS
-            img = PILImage.open(path)
-            raw = img._getexif()
-            if not raw:
-                return {}
-            result = {}
-            for tag_id, value in raw.items():
-                tag = TAGS.get(tag_id, str(tag_id))
-                if tag == "GPSInfo" and isinstance(value, dict):
-                    result["GPSInfo"] = {GPSTAGS.get(k, k): v for k, v in value.items()}
-                elif isinstance(value, (str, int, float, bytes)):
-                    result[tag] = value
-            return result
-        except Exception:
-            return {}
-
-    def _gps_to_decimal(self, dms, ref: str) -> float:
-        try:
-            d, m, s = float(dms[0]), float(dms[1]), float(dms[2])
-            decimal = d + m / 60 + s / 3600
-            return round(-decimal if ref in ("S", "W") else decimal, 6)
-        except Exception:
-            return 0.0
-
-    def _extract_image_exif_display(self, path: str) -> str:
-        exif = self._extract_image_exif_raw(path)
-        if not exif:
-            return "No EXIF data found in this image."
-        parts = []
-        for key in ("DateTimeOriginal", "DateTime", "DateTimeDigitized"):
-            if key in exif:
-                parts.append(f"Date: {exif[key]}")
-                break
-        device = (str(exif.get("Make", "")) + " " + str(exif.get("Model", ""))).strip()
-        if device:
-            parts.append(f"Device: {device}")
-        if exif.get("Software"):
-            parts.append(f"Software: {str(exif['Software'])[:40]}")
-        gps = exif.get("GPSInfo", {})
-        if gps.get("GPSLatitude") and gps.get("GPSLongitude"):
-            lat = self._gps_to_decimal(gps["GPSLatitude"], gps.get("GPSLatitudeRef", "N"))
-            lon = self._gps_to_decimal(gps["GPSLongitude"], gps.get("GPSLongitudeRef", "E"))
-            parts.append(f"GPS: {lat}°, {lon}°")
-        return "  ·  ".join(parts) if parts else "EXIF present but no key fields extracted."
-
-    def _extract_image_exif_for_prompt(self, path: str) -> str:
-        exif = self._extract_image_exif_raw(path)
-        if not exif:
-            return "No EXIF metadata could be extracted (data may have been stripped)."
-        lines = [f"Image file: {Path(path).name}"]
-        for key in ("DateTimeOriginal", "DateTime", "Make", "Model", "Software",
-                    "LensMake", "LensModel", "ImageWidth", "ImageLength",
-                    "Orientation", "Flash", "FocalLength"):
-            if key in exif:
-                lines.append(f"  {key}: {exif[key]}")
-        gps = exif.get("GPSInfo", {})
-        if gps.get("GPSLatitude") and gps.get("GPSLongitude"):
-            lat = self._gps_to_decimal(gps["GPSLatitude"], gps.get("GPSLatitudeRef", "N"))
-            lon = self._gps_to_decimal(gps["GPSLongitude"], gps.get("GPSLongitudeRef", "E"))
-            lines.append(f"  GPS Coordinates: {lat}, {lon}")
-            lines.append(f"  Google Maps link: https://maps.google.com/?q={lat},{lon}")
-            if gps.get("GPSAltitude"):
-                lines.append(f"  GPS Altitude: {gps['GPSAltitude']} m")
-            if gps.get("GPSImgDirection"):
-                lines.append(f"  Camera direction: {gps['GPSImgDirection']} degrees")
-        return "\n".join(lines)
-
-    def _osint_heavy_populate_image_tab(self, path: str):
-        exif = self._extract_image_exif_raw(path)
-        fname = Path(path).name
-        gps_block = ""
-        gps = exif.get("GPSInfo", {})
-        if gps.get("GPSLatitude") and gps.get("GPSLongitude"):
-            lat = self._gps_to_decimal(gps["GPSLatitude"], gps.get("GPSLatitudeRef", "N"))
-            lon = self._gps_to_decimal(gps["GPSLongitude"], gps.get("GPSLongitudeRef", "E"))
-            gps_block = (
-                f'<h3 style="color:#f0c040;">GPS Coordinates Extracted</h3>'
-                f"<p><b>Coordinates:</b> {lat}, {lon}</p>"
-                f'<p><a href="https://maps.google.com/?q={lat},{lon}">Google Maps</a>'
-                f' &nbsp;|&nbsp; <a href="https://www.openstreetmap.org/?mlat={lat}&mlon={lon}&zoom=15">OpenStreetMap</a>'
-                f' &nbsp;|&nbsp; <a href="https://suncalc.org/#/{lat},{lon},14/">SunCalc</a></p>'
-            )
-        exif_rows = ""
-        for key in ("DateTimeOriginal", "DateTime", "DateTimeDigitized",
-                    "Make", "Model", "Software", "LensMake", "LensModel",
-                    "ImageWidth", "ImageLength", "Orientation", "Flash", "FocalLength"):
-            if key in exif:
-                exif_rows += f"<tr><td style='color:#888;padding-right:14px;'>{key}</td><td>{exif[key]}</td></tr>"
-        no_exif = (
-            "<p style='color:#ff8888;'>No EXIF data found — the image may have been stripped "
-            "(common with screenshots, social media downloads, and edited files). This itself can be a signal.</p>"
-            if not exif else ""
-        )
-        html = (
-            "<html><body style='font-family:monospace;font-size:12px;color:#ccc;background:#1a1a1a;padding:8px;'>"
-            f"<h2 style='color:#dd88ff;'>Image OSINT &mdash; {fname}</h2>"
-            f"{no_exif}{gps_block}"
-            "<h3 style='color:#4db8ff;'>Reverse Image Search</h3>"
-            "<p style='color:#aaa;'>Upload the image at each service to search for matches:</p><ul>"
-            "<li><a href='https://tineye.com'>TinEye</a> &mdash; reverse image search with date history</li>"
-            "<li><a href='https://images.google.com'>Google Images</a> &mdash; click the camera icon to upload</li>"
-            "<li><a href='https://yandex.com/images'>Yandex Images</a> &mdash; strong face/person matching</li>"
-            "<li><a href='https://www.bing.com/visualsearch'>Bing Visual Search</a> &mdash; Microsoft image search</li>"
-            "</ul>"
-            "<h3 style='color:#ff88aa;'>Face Recognition Services</h3>"
-            "<p style='color:#aaa;'>Upload the image to search for the person across the public web:</p><ul>"
-            "<li><a href='https://pimeyes.com'>PimEyes</a> &mdash; facial recognition across billions of public images</li>"
-            "<li><a href='https://facecheck.id'>FaceCheck.ID</a> &mdash; face search across social media profiles</li>"
-            "<li><a href='https://lenso.ai'>Lenso.ai</a> &mdash; AI-powered reverse image and face search</li>"
-            "</ul>"
-            "<h3 style='color:#3cff88;'>Extracted EXIF Metadata</h3>"
-            + ("<table>" + exif_rows + "</table>" if exif_rows else "<p style='color:#888;'>No key EXIF fields found.</p>")
-            + "<br><p style='color:#555;font-size:11px;'>For authorised investigative use only.</p>"
-            "</body></html>"
-        )
-        self.osint_heavy_image_tab.setHtml(html)
-        self.osint_heavy_tabs.setCurrentIndex(self.osint_heavy_tabs.indexOf(self.osint_heavy_image_tab))
-
-    # ── Web Design panel ────────────────────────────────────────────────────
-    def build_wifi_panel(self):
-        self.wifi_panel = QWidget()
-        self.wifi_panel.setObjectName("WiFiPanel")
-        layout = QVBoxLayout(self.wifi_panel)
-        layout.setContentsMargins(8, 8, 8, 8)
-        layout.setSpacing(8)
-
-        # ── Quick Setup ─────────────────────────────────────────────────────
-        setup_group = QGroupBox("Quick Setup")
-        setup_group.setObjectName("WiFiSetupGroup")
-        setup_layout = QGridLayout(setup_group)
-        setup_layout.setSpacing(6)
-
-        setup_layout.addWidget(QLabel("Mode:"), 0, 0)
-        self.wifi_mode_box = QComboBox()
-        self.wifi_mode_box.addItems([
-            "Interface Info", "Scan Networks", "Signal Monitor",
-            "Ping Test", "Kali Command Builder",
-        ])
-        self.wifi_mode_box.currentTextChanged.connect(self._wifi_on_mode_changed)
-        setup_layout.addWidget(self.wifi_mode_box, 0, 1)
-
-        setup_layout.addWidget(QLabel("Interface:"), 0, 2)
-        self.wifi_interface_box = QComboBox()
-        self.wifi_interface_box.addItems(["en0", "en1", "en2", "en3"])
-        setup_layout.addWidget(self.wifi_interface_box, 0, 3)
-
-        setup_layout.addWidget(QLabel("Target Host:"), 1, 0)
-        self.wifi_target_input = QLineEdit()
-        self.wifi_target_input.setPlaceholderText("e.g. 192.168.1.1  (used for Ping Test)")
-        setup_layout.addWidget(self.wifi_target_input, 1, 1, 1, 3)
-
-        layout.addWidget(setup_group)
-
-        # ── Kali sub-form ───────────────────────────────────────────────────
-        self.wifi_kali_group = QGroupBox("Kali Command Builder")
-        self.wifi_kali_group.setObjectName("WiFiKaliGroup")
-        kali_layout = QGridLayout(self.wifi_kali_group)
-        kali_layout.setSpacing(6)
-
-        kali_layout.addWidget(QLabel("Operation:"), 0, 0)
-        self.wifi_kali_op_box = QComboBox()
-        self.wifi_kali_op_box.addItems([
-            "Handshake Capture", "Deauth Attack", "WPS Audit", "PMKID Attack",
-        ])
-        kali_layout.addWidget(self.wifi_kali_op_box, 0, 1)
-
-        kali_layout.addWidget(QLabel("Adapter:"), 0, 2)
-        self.wifi_kali_adapter_box = QComboBox()
-        self.wifi_kali_adapter_box.addItems([
-            "TL-WN722N (AR9271)",
-            "AWUS036ACH (RTL8812AU)",
-            "TL-WN725N V3 (RTL8188EU)",
-        ])
-        kali_layout.addWidget(self.wifi_kali_adapter_box, 0, 3)
-
-        kali_layout.addWidget(QLabel("BSSID:"), 1, 0)
-        self.wifi_kali_bssid_input = QLineEdit()
-        self.wifi_kali_bssid_input.setPlaceholderText("e.g. AA:BB:CC:DD:EE:FF")
-        kali_layout.addWidget(self.wifi_kali_bssid_input, 1, 1)
-
-        kali_layout.addWidget(QLabel("Channel:"), 1, 2)
-        self.wifi_kali_channel_input = QLineEdit()
-        self.wifi_kali_channel_input.setPlaceholderText("e.g. 6")
-        kali_layout.addWidget(self.wifi_kali_channel_input, 1, 3)
-
-        kali_layout.addWidget(QLabel("Network (ESSID):"), 2, 0)
-        self.wifi_kali_essid_input = QLineEdit()
-        self.wifi_kali_essid_input.setPlaceholderText("e.g. MyHomeNetwork")
-        kali_layout.addWidget(self.wifi_kali_essid_input, 2, 1, 1, 3)
-
-        layout.addWidget(self.wifi_kali_group)
-        self.wifi_kali_group.hide()
-
-        # ── Provider / action row ────────────────────────────────────────────
-        provider_row_container = QWidget()
-        provider_row = FlowLayout(provider_row_container, spacing=6)
-
-        self.wifi_provider_box, self.wifi_model_box = build_provider_row(
-            self, provider_row, "wifi", labels=False)
-
-        self.wifi_run_btn = QPushButton("Run")
-        self.wifi_run_btn.setMinimumWidth(110)
-        self.wifi_run_btn.setObjectName("PrimaryAction")
-        self.wifi_run_btn.clicked.connect(self.wifi_run)
-        provider_row.addWidget(self.wifi_run_btn)
-
-        self.wifi_detect_btn = QPushButton("Detect Adapters")
-        self.wifi_detect_btn.setToolTip("Scan USB bus for connected Wi-Fi adapters")
-        self.wifi_detect_btn.clicked.connect(self.wifi_detect_adapters)
-        provider_row.addWidget(self.wifi_detect_btn)
-
-        self.wifi_stop_btn = QPushButton("Stop")
-        self.wifi_stop_btn.setEnabled(False)
-        self.wifi_stop_btn.setObjectName("DangerAction")
-        self.wifi_stop_btn.clicked.connect(self.wifi_stop)
-        provider_row.addWidget(self.wifi_stop_btn)
-
-        self.wifi_help_btn = QPushButton("Help")
-
-
-        self.wifi_help_btn.setObjectName("ChipBtn")
-        self.wifi_help_btn.clicked.connect(self.show_agent_docs)
-        provider_row.addWidget(self.wifi_help_btn)
-
-        layout.addWidget(provider_row_container)
-
-        ai_row = QHBoxLayout()
-        self.wifi_ai_checkbox = QCheckBox("AI Analysis — feed results to LLM for interpretation")
-        self.wifi_ai_checkbox.setChecked(True)
-        ai_row.addWidget(self.wifi_ai_checkbox)
-        ai_row.addStretch()
-        layout.addLayout(ai_row)
-
-        # ── Results splitter ─────────────────────────────────────────────────
-        results_splitter = QSplitter(Qt.Horizontal)
-
-        self.wifi_tabs = QTabWidget()
-
-        self.wifi_raw_box = QTextBrowser()
-        self.wifi_raw_box.setOpenExternalLinks(False)
-        self.wifi_tabs.addTab(self.wifi_raw_box, "Raw Output")
-
-        self.wifi_analysis_box = QTextBrowser()
-        self.wifi_tabs.addTab(self.wifi_analysis_box, "AI Analysis")
-
-        self.wifi_kali_cmd_box = QTextBrowser()
-        self.wifi_tabs.addTab(self.wifi_kali_cmd_box, "Kali Commands")
-
-        results_splitter.addWidget(self.wifi_tabs)
-
-        # ── Sidebar indicators ───────────────────────────────────────────────
-        indicators_widget = QWidget()
-        indicators_layout = QVBoxLayout(indicators_widget)
-        indicators_layout.setContentsMargins(6, 6, 6, 6)
-        indicators_layout.setSpacing(8)
-
-        adapter_group = QGroupBox("Adapter")
-        adapter_group.setObjectName("WiFiAdapterGroup")
-        adapter_layout = QVBoxLayout(adapter_group)
-        self.wifi_adapter_label = QLabel("Not detected")
-        self.wifi_adapter_label.setAlignment(Qt.AlignCenter)
-        self.wifi_adapter_label.setStyleSheet("font-size: 13px; font-weight: bold; color: #4db8ff;")
-        self.wifi_adapter_label.setWordWrap(True)
-        adapter_layout.addWidget(self.wifi_adapter_label)
-        indicators_layout.addWidget(adapter_group)
-
-        chipset_group = QGroupBox("Chipset")
-        chipset_group.setObjectName("WiFiChipsetGroup")
-        chipset_layout = QVBoxLayout(chipset_group)
-        self.wifi_chipset_label = QLabel("—")
-        self.wifi_chipset_label.setAlignment(Qt.AlignCenter)
-        self.wifi_chipset_label.setStyleSheet("font-size: 12px; color: #aaa;")
-        chipset_layout.addWidget(self.wifi_chipset_label)
-        indicators_layout.addWidget(chipset_group)
-
-        caps_group = QGroupBox("Capabilities")
-        caps_group.setObjectName("WiFiCapsGroup")
-        caps_layout = QVBoxLayout(caps_group)
-        self.wifi_monitor_label = QLabel("Monitor  —")
-        self.wifi_inject_label = QLabel("Injection  —")
-        self.wifi_monitor_label.setStyleSheet("font-size: 12px;")
-        self.wifi_inject_label.setStyleSheet("font-size: 12px;")
-        caps_layout.addWidget(self.wifi_monitor_label)
-        caps_layout.addWidget(self.wifi_inject_label)
-        indicators_layout.addWidget(caps_group)
-
-        signal_group = QGroupBox("Signal (RSSI)")
-        signal_group.setObjectName("WiFiSignalGroup")
-        signal_layout = QVBoxLayout(signal_group)
-        self.wifi_signal_bar = QProgressBar()
-        self.wifi_signal_bar.setMinimum(0)
-        self.wifi_signal_bar.setMaximum(100)
-        self.wifi_signal_bar.setValue(0)
-        self.wifi_signal_bar.setTextVisible(True)
-        signal_layout.addWidget(self.wifi_signal_bar)
-        self.wifi_signal_val_label = QLabel("—")
-        self.wifi_signal_val_label.setAlignment(Qt.AlignCenter)
-        self.wifi_signal_val_label.setStyleSheet("font-size: 11px; color: #aaa;")
-        signal_layout.addWidget(self.wifi_signal_val_label)
-        indicators_layout.addWidget(signal_group)
-
-        sec_group = QGroupBox("Security")
-        sec_group.setObjectName("WiFiSecGroup")
-        sec_layout = QVBoxLayout(sec_group)
-        self.wifi_security_label = QLabel("—")
-        self.wifi_security_label.setAlignment(Qt.AlignCenter)
-        self.wifi_security_label.setStyleSheet("font-size: 14px; font-weight: bold;")
-        sec_layout.addWidget(self.wifi_security_label)
-        indicators_layout.addWidget(sec_group)
-
-        indicators_layout.addStretch()
-
-        self.wifi_save_btn = QPushButton("Save Output")
-        self.wifi_save_btn.setEnabled(False)
-        self.wifi_save_btn.clicked.connect(self.wifi_save)
-        indicators_layout.addWidget(self.wifi_save_btn)
-
-        self.wifi_clear_btn = QPushButton("Clear")
-        self.wifi_clear_btn.clicked.connect(self.wifi_clear)
-        indicators_layout.addWidget(self.wifi_clear_btn)
-
-        results_splitter.addWidget(indicators_widget)
-        results_splitter.setSizes([680, 220])
-        layout.addWidget(results_splitter, 1)
-
-        self.wifi_status_label = QLabel("")
-        self.wifi_status_label.setStyleSheet("font-size: 12px; color: #888;")
-        layout.addWidget(self.wifi_status_label)
-
-        self.wifi_panel.hide()
-
-    # ── Wi-Fi handlers ───────────────────────────────────────────────────────
-    def _wifi_on_mode_changed(self, mode: str):
-        is_kali = mode == "Kali Command Builder"
-        self.wifi_kali_group.setVisible(is_kali)
-        self.wifi_ai_checkbox.setEnabled(not is_kali)
-        if is_kali:
-            self.wifi_tabs.setCurrentIndex(2)
-
-    def wifi_detect_adapters(self):
-        self.wifi_status_label.setText("Scanning USB bus...")
-        self.wifi_detect_btn.setEnabled(False)
-        adapters = detect_usb_adapters()
-        self.wifi_detect_btn.setEnabled(True)
-
-        if not adapters or "error" in adapters[0]:
-            err = adapters[0].get("error", "Unknown error") if adapters else "No adapters found"
-            self.wifi_adapter_label.setText("None found")
-            self.wifi_chipset_label.setText("—")
-            self.wifi_monitor_label.setText("Monitor  —")
-            self.wifi_inject_label.setText("Injection  —")
-            self.wifi_raw_box.setPlainText(f"[Adapter Detection]\nNo known Wi-Fi adapters detected on USB bus.\n{err}")
-            self.wifi_status_label.setText("No known adapters detected.")
-            self._wifi_detected_adapter = {}
-            return
-
-        adapter = adapters[0]
-        self._wifi_detected_adapter = adapter
-        self.wifi_adapter_label.setText(adapter.get("name", "Unknown"))
-        self.wifi_chipset_label.setText(adapter.get("chipset", "—"))
-
-        mon_ok = adapter.get("monitor", False)
-        inj_ok = adapter.get("inject", False)
-        self.wifi_monitor_label.setText(f"Monitor  {'✅' if mon_ok else '❌'}")
-        self.wifi_inject_label.setText(f"Injection  {'✅' if inj_ok else '❌'}")
-        self.wifi_monitor_label.setStyleSheet(f"font-size: 12px; color: {'#3cff88' if mon_ok else '#ff5555'};")
-        self.wifi_inject_label.setStyleSheet(f"font-size: 12px; color: {'#3cff88' if inj_ok else '#ff5555'};")
-
-        bands = adapter.get("bands", "—")
-        driver = adapter.get("driver_note", "")
-        iface = adapter.get("kali_iface", "wlan0")
-        report = (
-            f"[Adapter Detected]\n"
-            f"Name    : {adapter.get('name')}\n"
-            f"Chipset : {adapter.get('chipset')}\n"
-            f"Bands   : {bands}\n"
-            f"Monitor : {'Yes' if mon_ok else 'No'}\n"
-            f"Inject  : {'Yes' if inj_ok else 'No'}\n"
-            f"Kali IF : {iface}\n"
-            f"Note    : {driver}\n"
-        )
-        if len(adapters) > 1:
-            report += f"\n[+] {len(adapters) - 1} additional adapter(s) also detected.\n"
-        self.wifi_raw_box.setPlainText(report)
-        self.wifi_tabs.setCurrentIndex(0)
-        self.wifi_status_label.setText(f"Detected: {adapter.get('name')} ({adapter.get('chipset')})")
-
-    def wifi_run(self):
-        mode = self.wifi_mode_box.currentText()
-
-        if mode == "Kali Command Builder":
-            self._wifi_run_kali_builder()
-            return
-
-        self._wifi_clear_displays()
-        self._last_wifi_response = ""
-        self.wifi_run_btn.setEnabled(False)
-        self.wifi_stop_btn.setEnabled(True)
-        self.wifi_save_btn.setEnabled(False)
-        self.wifi_status_label.setText(f"Running: {mode}…")
-        self.wifi_tabs.setCurrentIndex(0)
-
-        iface = self.wifi_interface_box.currentText()
-
-        if mode == "Interface Info":
-            cmd = ["networksetup", "-listallhardwareports"]
-        elif mode == "Scan Networks":
-            cmd = [AIRPORT, "-s"]
-        elif mode == "Signal Monitor":
-            cmd = [AIRPORT, "-I"]
-        elif mode == "Ping Test":
-            target = self.wifi_target_input.text().strip()
-            if not target:
-                QMessageBox.warning(self, "Missing Target", "Enter a target host or IP for Ping Test.")
-                self.wifi_run_btn.setEnabled(True)
-                self.wifi_stop_btn.setEnabled(False)
-                return
-            cmd = ["ping", "-c", "8", target]
-        else:
-            cmd = [AIRPORT, "-I"]
-
-        self.wifi_scan_worker = SubprocessWorker(cmd)
-        self.wifi_scan_worker.finished_signal.connect(self._wifi_scan_finished)
-        self.wifi_scan_worker.error_signal.connect(self._wifi_scan_error)
-        self.wifi_scan_worker.start()
-
-    def _wifi_run_kali_builder(self):
-        op = self.wifi_kali_op_box.currentText()
-        adapter_name = self.wifi_kali_adapter_box.currentText()
-        bssid = self.wifi_kali_bssid_input.text().strip()
-        channel = self.wifi_kali_channel_input.text().strip()
-        essid = self.wifi_kali_essid_input.text().strip()
-
-        adapter_map = {
-            "TL-WN722N (AR9271)": {"name": "TL-WN722N", "chipset": "AR9271", "monitor": True, "inject": True, "kali_iface": "wlan0", "driver_note": "ath9k_htc — works out of the box on Kali."},
-            "AWUS036ACH (RTL8812AU)": {"name": "AWUS036ACH", "chipset": "RTL8812AU", "monitor": True, "inject": True, "kali_iface": "wlan0", "driver_note": "Install driver in Kali: sudo apt install realtek-rtl88xxau-dkms"},
-            "TL-WN725N V3 (RTL8188EU)": {"name": "TL-WN725N V3", "chipset": "RTL8188EU", "monitor": True, "inject": False, "kali_iface": "wlan0", "driver_note": "Limited injection support — passive monitoring only."},
-        }
-        adapter = adapter_map.get(adapter_name, list(adapter_map.values())[0])
-        cmds = build_kali_commands(op, adapter, bssid, channel, essid)
-
-        self.wifi_kali_cmd_box.setPlainText(cmds)
-        self.wifi_tabs.setCurrentIndex(2)
-        self._last_wifi_response = cmds
-        self.wifi_save_btn.setEnabled(True)
-        self.wifi_status_label.setText(f"Kali commands generated: {op}")
-
-        if self.wifi_ai_checkbox.isEnabled() and self.wifi_ai_checkbox.isChecked():
-            model = self.wifi_model_box.currentText()
-            if model:
-                provider = self.wifi_provider_box.currentText()
-                prompt = f"Explain the following Kali Linux Wi-Fi attack command sequence for an authorised penetration test. Break down what each step does and what to watch for:\n\n{cmds}"
-                agent = self.agent_instances["wifi"]
-                messages = agent.build_messages(prompt)
-                if not self.authorize_request("wifi", provider, model, prompt):
-                    return
-                self.wifi_worker = ChatWorker(self.run_backend, provider, model, messages, prompt)
-                self.wifi_worker.token_signal.connect(self._wifi_on_token)
-                self.wifi_worker.finished_signal.connect(self._wifi_on_finished)
-                self.wifi_worker.usage_signal.connect(lambda u: self.note_request_usage("wifi", u))
-                self.wifi_worker.error_signal.connect(self._wifi_on_error)
-                self.wifi_worker.start()
-                self.wifi_tabs.setCurrentIndex(1)
-
-    def _wifi_scan_finished(self, raw: str):
-        self.wifi_raw_box.setPlainText(raw)
-        self.wifi_status_label.setText("Scan complete.")
-        self._update_wifi_indicators(raw)
-
-        if self.wifi_ai_checkbox.isChecked():
-            model = self.wifi_model_box.currentText()
-            if not model:
-                self.wifi_run_btn.setEnabled(True)
-                self.wifi_stop_btn.setEnabled(False)
-                return
-            mode = self.wifi_mode_box.currentText()
-            provider = self.wifi_provider_box.currentText()
-            prompt = f"Mode: {mode}\n\nRaw output:\n{raw}\n\nAnalyse this Wi-Fi scan result."
-            agent = self.agent_instances["wifi"]
-            messages = agent.build_messages(prompt)
-            if not self.authorize_request("wifi", provider, model, prompt):
-                return
-            self.wifi_worker = ChatWorker(self.run_backend, provider, model, messages, prompt)
-            self.wifi_worker.token_signal.connect(self._wifi_on_token)
-            self.wifi_worker.finished_signal.connect(self._wifi_on_finished)
-            self.wifi_worker.usage_signal.connect(lambda u: self.note_request_usage("wifi", u))
-            self.wifi_worker.error_signal.connect(self._wifi_on_error)
-            self.wifi_worker.start()
-            self.wifi_tabs.setCurrentIndex(1)
-            self.wifi_status_label.setText("Running AI analysis…")
-        else:
-            self._last_wifi_response = raw
-            self.wifi_run_btn.setEnabled(True)
-            self.wifi_stop_btn.setEnabled(False)
-            self.wifi_save_btn.setEnabled(True)
-
-    def _wifi_scan_error(self, error: str):
-        self.wifi_raw_box.setPlainText(f"[Error]\n{error}")
-        self.wifi_status_label.setText("Error running scan.")
-        self.wifi_run_btn.setEnabled(True)
-        self.wifi_stop_btn.setEnabled(False)
-
-    def _wifi_on_token(self, token: str):
-        self._last_wifi_response += token
-        self.wifi_analysis_box.setPlainText(self._last_wifi_response)
-        self.wifi_analysis_box.moveCursor(QTextCursor.End)
-
-    def _wifi_on_finished(self, full_response: str):
-        self.record_request("wifi", full_response)
-        self._last_wifi_response = full_response
-        self.wifi_analysis_box.setPlainText(full_response)
-        self.wifi_status_label.setText("Analysis complete.")
-        self.wifi_run_btn.setEnabled(True)
-        self.wifi_stop_btn.setEnabled(False)
-        self.wifi_save_btn.setEnabled(True)
-
-    def _wifi_on_error(self, error: str):
-        self.abandon_request("wifi")
-        self.wifi_analysis_box.setPlainText(f"[Error] {error}")
-        self.wifi_status_label.setText("Error.")
-        self.wifi_run_btn.setEnabled(True)
-        self.wifi_stop_btn.setEnabled(False)
-
-    def wifi_stop(self):
-        if self.wifi_scan_worker is not None and self.wifi_scan_worker.isRunning():
-            self.wifi_scan_worker.cancel()
-        if self.wifi_worker is not None and self.wifi_worker.isRunning():
-            self.wifi_worker.cancel()
-        self.wifi_status_label.setText("Stopped.")
-        self.wifi_run_btn.setEnabled(True)
-        self.wifi_stop_btn.setEnabled(False)
-
-    def wifi_save(self):
-        if not self._last_wifi_response:
-            return
-        mode = self.wifi_mode_box.currentText().lower().replace(" ", "_")
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        default_name = f"wifi_{mode}_{ts}.txt"
-        path, _ = QFileDialog.getSaveFileName(
-            self, "Save Wi-Fi Output", str(DATA_DIR / default_name), "Text files (*.txt);;All files (*)"
-        )
-        if path:
-            Path(path).write_text(self._last_wifi_response, encoding="utf-8")
-            self.wifi_status_label.setText(f"Saved to {Path(path).name}")
-
-    def wifi_clear(self):
-        self._wifi_clear_displays()
-        self.wifi_target_input.clear()
-        self.wifi_kali_bssid_input.clear()
-        self.wifi_kali_channel_input.clear()
-        self.wifi_kali_essid_input.clear()
-        self.wifi_status_label.setText("")
-        self._last_wifi_response = ""
-
-    def _wifi_clear_displays(self):
-        self.wifi_raw_box.clear()
-        self.wifi_analysis_box.clear()
-        self.wifi_kali_cmd_box.clear()
-        self.wifi_signal_bar.setValue(0)
-        self.wifi_signal_val_label.setText("—")
-        self.wifi_security_label.setText("—")
-        self.wifi_save_btn.setEnabled(False)
-
-    def _update_wifi_indicators(self, raw: str):
-        rssi_m = re.search(r"agrCtlRSSI:\s*(-\d+)", raw)
-        if rssi_m:
-            rssi = int(rssi_m.group(1))
-            quality = max(0, min(100, 2 * (rssi + 100)))
-            self.wifi_signal_bar.setValue(quality)
-            self.wifi_signal_val_label.setText(f"{rssi} dBm")
-            bar_color = "#3cff88" if quality >= 60 else "#f0c040" if quality >= 30 else "#ff5555"
-            self.wifi_signal_bar.setStyleSheet(
-                f"QProgressBar::chunk {{ background-color: {bar_color}; border-radius: 3px; }}"
-            )
-
-        sec_m = re.search(r"link auth:\s*(\S+)", raw, re.IGNORECASE)
-        if sec_m:
-            self.wifi_security_label.setText(sec_m.group(1).upper())
-        elif "WPA3" in raw:
-            self.wifi_security_label.setText("WPA3")
-        elif "WPA2" in raw:
-            self.wifi_security_label.setText("WPA2")
-        elif "WPA" in raw:
-            self.wifi_security_label.setText("WPA")
-        elif "WEP" in raw:
-            self.wifi_security_label.setText("WEP")
-            self.wifi_security_label.setStyleSheet("font-size: 14px; font-weight: bold; color: #ff5555;")
-
-
-    # ── Web Design handlers ──────────────────────────────────────────────────
-    def _extract_full_html(self, text: str) -> str:
-        import re as _re
-        m = _re.search("```(?:html)?\\s*\\n(.*?)```", text, _re.DOTALL | _re.IGNORECASE)
-        return m.group(1).strip() if m else text.strip()
-
-    def _compute_next_step_tip(self) -> str:
-        """Pick the single most useful next action, checked against real app state.
-        Ordered write → publish → market, so it walks the whole book lifecycle."""
-        import os
-
-        profile = self._author_get_book_profile()
-        draft_words = len(self.author_draft_box.toPlainText().split())
-        outline = self.author_outline_box.toPlainText().strip()
-
-        # ── Writing phase ──
-        if not profile["title"]:
-            return ("📖  Start here — fill in Title, Author and Type in the Project Bar, then open "
-                    "Book Profile and click Save Profile. Everything downstream reuses it.")
-        if not profile["hook"] or not profile["target_reader"]:
-            return ("📖  Complete your Book Profile (Hook + Target reader). These two fields shape "
-                    "every blurb, description and social caption you'll generate later.")
-        if draft_words == 0 and not outline:
-            return ("✍️  No draft yet — set Task to Generate Outline, describe the book in Direction, "
-                    "and click Write. Outline first is faster than drafting blind.")
-        if draft_words == 0:
-            return ("✍️  Outline exists but no draft — switch Task to "
-                    f"{'Write Chapter' if profile['content_type'] == 'Non-Fiction' else 'Write Scene'} "
-                    "and start drafting. Use Continue to extend.")
-        if draft_words < 5000:
-            return (f"✍️  Draft is {draft_words:,} words — keep going with Write / Continue. "
-                    "Add 'Chapter 1', 'Chapter 2' heading lines as you go so Chapters and Export pick them up.")
-        if not self._author_export_done:
-            return (f"📤  {draft_words:,} words written — export a formatted copy (EPUB / DOCX / PDF) "
-                    "from the Write sidebar to see how it reads as a real book.")
-
-        # ── Publishing phase ──
-        todos = self._get_pending_todo_titles()
-        if any("Upload to Amazon KDP" in t for t in todos):
-            return ("📣  Draft exported. Next: generate a Back-Cover Blurb in Publish mode, then a "
-                    "KDP Listing in Market mode — that one output covers your description, categories, "
-                    "keywords and pricing. Then create your KDP account and upload.")
-        if any("cover files" in t for t in todos):
-            return ("🎨  Cover files are still on your checklist — KDP needs 3000×4500px at 300dpi. "
-                    "This is the one step the app can't do for you; hire a designer or use Canva/Reedsy.")
-
-        # ── Marketing phase ──
-        if not os.environ.get("PUBLISHDRIVE_API_KEY", "").strip():
-            return ("🔌  Book is live-ready. Connect PublishDrive (see the Connections panel) to pull "
-                    "real sales data in, or skip it and drop KDP CSV reports into data/kdp_reports/ instead.")
-        if any("Create TikTok, Instagram" in t for t in todos):
-            return ("📱  Set up your TikTok / Instagram / Pinterest accounts (same username on all three), "
-                    "then use Quote Finder → Calendar to batch a few weeks of posts in one pass.")
-        if any("TikTokers/BookTokers" in t for t in todos):
-            return ("🎬  Content pipeline is ready — generate quote graphics and shorts, then pitch "
-                    "BookTok creators in your niche with a free copy plus ready-made clips.")
-        return ("✅  Core pipeline complete. Keep the Calendar filled, watch sales on the Overview tab, "
-                "and work through whatever's left on your Publishing Todos.")
-
-    def _get_pending_todo_titles(self) -> list:
-        """Pending, non-engineering todo titles — the advisor only nudges toward real
-        publishing/marketing work, never the (Dev) roadmap items."""
-        import sqlite3
-        from services.database import DB_PATH
-        try:
-            conn = sqlite3.connect(DB_PATH)
-            rows = conn.execute(
-                "SELECT title FROM manuscript_todos WHERE status != 'done' AND platform != 'engineering'"
-            ).fetchall()
-            conn.close()
-            return [r[0] for r in rows]
-        except Exception:
-            return []
-
-    def _refresh_next_step_tip(self):
-        tip = self._compute_next_step_tip()
-        for attr in ("author_next_step_label", "manuscript_next_step_label"):
-            label = getattr(self, attr, None)
-            if label is not None:
-                label.setText(f"Next step:   {tip}")
-
-    def _refresh_connections_status(self):
-        """Shows which 3rd-party API keys are actually configured (checked from the running
-        process's environment — restart the app after editing .env for changes to appear).
-        Services with no API at all (KDP, Draft2Digital, IngramSpark, BookBub, TikTok/IG/Pinterest)
-        aren't listed here since there's nothing to check — their account-creation steps are on
-        the Publishing Todos list below (hover the ℹ️ items)."""
-        import os
-
-        while self.manuscript_connections_layout.count():
-            item = self.manuscript_connections_layout.takeAt(0)
-            w = item.widget()
-            if w:
-                w.deleteLater()
-
-        note = QLabel(
-            "API-key-based services only — KDP/Draft2Digital/IngramSpark/BookBub/social accounts "
-            "have no API to check; see the ℹ️ Publishing Todos below for those."
-        )
-        note.setWordWrap(True)
-        note.setStyleSheet("color: #777; font-size: 11px;")
-        self.manuscript_connections_layout.addWidget(note)
-
-        checks = [
-            ("PublishDrive", bool(os.environ.get("PUBLISHDRIVE_API_KEY", "").strip()),
-             "publishdrive.com → Settings → API", False),
-            ("ElevenLabs", bool(os.environ.get("ELEVENLABS_API_KEY", "").strip()),
-             "elevenlabs.io → Profile → API Keys", True),
-            ("Anthropic", self.anthropic.key_available(), "console.anthropic.com → API Keys", False),
-            ("OpenAI", self.openai.key_available(), "platform.openai.com → API Keys", False),
-            ("DeepSeek", self.deepseek.key_available(), "platform.deepseek.com → API Keys", False),
-            ("Gemini", self.gemini.key_available(), "aistudio.google.com → API Keys", False),
-        ]
-        for name, connected, where, optional in checks:
-            opt_tag = " (optional)" if optional else ""
-            if connected:
-                text = f"✅  {name}{opt_tag} — Connected"
-                color = "#3cff88"
-            else:
-                text = f"⚪  {name}{opt_tag} — Not connected · get a key at {where}"
-                color = "#999999"
-            row = QLabel(text)
-            row.setStyleSheet(f"color: {color}; font-size: 12px;")
-            self.manuscript_connections_layout.addWidget(row)
-
     def build_right_panel(self) -> QWidget:
         right_widget = QWidget()
         right_widget.setObjectName("RightPanel")
@@ -3081,14 +1807,14 @@ class GodAI(QWidget):
         cards_container = QWidget()
         cards_container.setObjectName("RightCardsContainer")
         cards_layout = QVBoxLayout(cards_container)
-        cards_layout.setContentsMargins(2, 2, 2, 2)
+        cards_layout.setContentsMargins(4, 4, 4, 4)
         cards_layout.setSpacing(8)
 
         # ── Card 1: System ──────────────────────────────────────────────
         system_card = QGroupBox("SYSTEM")
         system_card.setObjectName("RightCard")
         system_layout = QVBoxLayout(system_card)
-        system_layout.setContentsMargins(10, 6, 10, 10)
+        system_layout.setContentsMargins(8, 8, 8, 8)
         system_layout.setSpacing(6)
 
         # Figures, not sentences: every one of these is "x of y", so it is drawn
@@ -3115,7 +1841,7 @@ class GodAI(QWidget):
         routing_card = QGroupBox("ROUTING")
         routing_card.setObjectName("RightCard")
         routing_layout = QVBoxLayout(routing_card)
-        routing_layout.setContentsMargins(10, 6, 10, 10)
+        routing_layout.setContentsMargins(8, 8, 8, 8)
         routing_layout.setSpacing(6)
 
         # Rows, not prose. The reasoning sentence became the tooltip — it is
@@ -3141,7 +1867,7 @@ class GodAI(QWidget):
         cost_card = QGroupBox("COST")
         cost_card.setObjectName("RightCard")
         cost_layout = QVBoxLayout(cost_card)
-        cost_layout.setContentsMargins(10, 6, 10, 10)
+        cost_layout.setContentsMargins(8, 8, 8, 8)
         cost_layout.setSpacing(6)
 
         self.cost_rows = {
@@ -3166,16 +1892,18 @@ class GodAI(QWidget):
         budget_card = QGroupBox("BUDGET")
         budget_card.setObjectName("RightCard")
         budget_layout = QVBoxLayout(budget_card)
-        budget_layout.setContentsMargins(10, 6, 10, 10)
+        budget_layout.setContentsMargins(8, 8, 8, 8)
         budget_layout.setSpacing(6)
 
         # Spend is "x of y" too, and the one figure worth seeing without reading.
         self.budget_meters = {
             "SESSION": Meter("SESSION", "Spent this session against the session cap"),
             "DAILY": Meter("DAILY", "Spent today against the daily cap"),
+            "PROJECT": Meter("PROJECT", "Spent today against the active project cap"),
         }
         for meter in self.budget_meters.values():
             budget_layout.addWidget(meter)
+        self.budget_meters["PROJECT"].hide()
 
         # The caps themselves are set in Settings. A rail reports state; two
         # text fields and two buttons in it made the busiest block on screen out
@@ -3201,7 +1929,7 @@ class GodAI(QWidget):
         actions_card = QGroupBox("ACTIONS")
         actions_card.setObjectName("RightCard")
         actions_layout = QVBoxLayout(actions_card)
-        actions_layout.setContentsMargins(10, 6, 10, 10)
+        actions_layout.setContentsMargins(8, 8, 8, 8)
         actions_layout.setSpacing(6)
 
         self.cost_history_btn = QPushButton("Cost history")
@@ -3222,7 +1950,7 @@ class GodAI(QWidget):
         keys_card = QGroupBox("API KEYS")
         keys_card.setObjectName("RightCard")
         keys_layout = QVBoxLayout(keys_card)
-        keys_layout.setContentsMargins(10, 6, 10, 10)
+        keys_layout.setContentsMargins(8, 8, 8, 8)
         keys_layout.setSpacing(4)
 
         # A tick and a cross in every row is five pieces of punctuation saying
@@ -3468,6 +2196,7 @@ class GodAI(QWidget):
                 models = []
 
             self.model_box.addItems(models)
+            self.decorate_model_costs(provider, self.model_box)
 
             if previous_model:
                 idx = self.model_box.findText(previous_model)
@@ -3499,699 +2228,6 @@ class GodAI(QWidget):
 
     def apply_global_style(self):
         self.setStyleSheet(GLOBAL_STYLESHEET)
-
-    def build_vpn_panel(self):
-        self.vpn_panel = QWidget()
-        self.vpn_panel.setObjectName("VPNPanel")
-        layout = QVBoxLayout(self.vpn_panel)
-        layout.setContentsMargins(8, 8, 8, 8)
-        layout.setSpacing(8)
-
-        # ── Deployment setup ─────────────────────────────────────────────────
-        setup_group = QGroupBox("Deployment")
-        setup_group.setObjectName("VPNSetupGroup")
-        setup_layout = QGridLayout(setup_group)
-        setup_layout.setSpacing(6)
-
-        setup_layout.addWidget(QLabel("Mode:"), 0, 0)
-        self.vpn_mode_box = QComboBox()
-        self.vpn_mode_box.addItems(["Remote (VPS)", "Native (home LAN)"])
-        self.vpn_mode_box.setToolTip(
-            "Remote: traffic exits at a rented VPS — hides your IP, changes your "
-            "apparent country.\nNative: runs on hardware you own — an encrypted way "
-            "INTO your LAN, exit IP stays your home ISP."
-        )
-        setup_layout.addWidget(self.vpn_mode_box, 0, 1)
-
-        setup_layout.addWidget(QLabel("Protocol:"), 0, 2)
-        self.vpn_protocol_box = QComboBox()
-        self.vpn_protocol_box.addItems(["WireGuard", "OpenVPN 443 fallback", "Both"])
-        setup_layout.addWidget(self.vpn_protocol_box, 0, 3)
-
-        setup_layout.addWidget(QLabel("Server host:"), 1, 0)
-        self.vpn_host_input = QLineEdit()
-        self.vpn_host_input.setPlaceholderText("VPS IP or DDNS hostname (Config Builder)")
-        setup_layout.addWidget(self.vpn_host_input, 1, 1)
-
-        setup_layout.addWidget(QLabel("SSH user:"), 1, 2)
-        self.vpn_ssh_input = QLineEdit()
-        self.vpn_ssh_input.setPlaceholderText("e.g. root")
-        setup_layout.addWidget(self.vpn_ssh_input, 1, 3)
-
-        setup_layout.addWidget(QLabel("LAN subnet:"), 2, 0)
-        self.vpn_lan_input = QLineEdit()
-        self.vpn_lan_input.setPlaceholderText("Native mode, e.g. 192.168.1.0/24")
-        setup_layout.addWidget(self.vpn_lan_input, 2, 1)
-
-        setup_layout.addWidget(QLabel("Egress iface:"), 2, 2)
-        self.vpn_egress_input = QLineEdit()
-        self.vpn_egress_input.setPlaceholderText("server NIC, e.g. eth0")
-        setup_layout.addWidget(self.vpn_egress_input, 2, 3)
-
-        layout.addWidget(setup_group)
-
-        # ── Advisor question ─────────────────────────────────────────────────
-        self.vpn_question_input = QLineEdit()
-        self.vpn_question_input.setPlaceholderText(
-            "Ask the advisor — e.g. \"WireGuard won't connect on hotel wifi, what now?\""
-        )
-        self.vpn_question_input.returnPressed.connect(self.vpn_run)
-        layout.addWidget(self.vpn_question_input)
-
-        # ── Provider / action row ────────────────────────────────────────────
-        provider_row_container = QWidget()
-        provider_row = FlowLayout(provider_row_container, spacing=6)
-
-        self.vpn_provider_box, self.vpn_model_box = build_provider_row(
-            self, provider_row, "vpn", labels=False)
-
-        self.vpn_run_btn = QPushButton("Ask Advisor")
-        self.vpn_run_btn.setMinimumWidth(120)
-        self.vpn_run_btn.setObjectName("PrimaryAction")
-        self.vpn_run_btn.clicked.connect(self.vpn_run)
-        provider_row.addWidget(self.vpn_run_btn)
-
-        self.vpn_build_btn = QPushButton("Build Config")
-        self.vpn_build_btn.setToolTip("Render WireGuard configs + a deploy runbook — offline, no LLM.")
-        self.vpn_build_btn.clicked.connect(self.vpn_build_config)
-        provider_row.addWidget(self.vpn_build_btn)
-
-        self.vpn_stop_btn = QPushButton("Stop")
-        self.vpn_stop_btn.setEnabled(False)
-        self.vpn_stop_btn.setObjectName("DangerAction")
-        self.vpn_stop_btn.clicked.connect(self.vpn_stop)
-        provider_row.addWidget(self.vpn_stop_btn)
-
-        self.vpn_help_btn = QPushButton("Help")
-        self.vpn_help_btn.setObjectName("ChipBtn")
-        self.vpn_help_btn.clicked.connect(self.show_agent_docs)
-        provider_row.addWidget(self.vpn_help_btn)
-
-        layout.addWidget(provider_row_container)
-
-        # ── Results tabs ─────────────────────────────────────────────────────
-        self.vpn_tabs = QTabWidget()
-
-        self.vpn_advisor_box = QTextBrowser()
-        self.vpn_advisor_box.setOpenExternalLinks(False)
-        self.vpn_tabs.addTab(self.vpn_advisor_box, "Advisor")
-
-        self.vpn_config_box = QTextBrowser()
-        self.vpn_config_box.setOpenExternalLinks(False)
-        self.vpn_tabs.addTab(self.vpn_config_box, "Config & Commands")
-
-        layout.addWidget(self.vpn_tabs, 1)
-
-        # ── Bottom bar ───────────────────────────────────────────────────────
-        bottom_row = QHBoxLayout()
-        self.vpn_status_label = QLabel("Idle")
-        self.vpn_status_label.setStyleSheet("font-size: 12px; color: #888;")
-        bottom_row.addWidget(self.vpn_status_label)
-        bottom_row.addStretch()
-        vpn_clear_btn = QPushButton("Clear")
-        vpn_clear_btn.clicked.connect(self.vpn_clear)
-        bottom_row.addWidget(vpn_clear_btn)
-        layout.addLayout(bottom_row)
-
-        self.vpn_panel.hide()
-
-    def _vpn_context_prefix(self) -> str:
-        """The deployment setup, phrased as context the advisor reasons from."""
-        parts = [
-            f"Deployment mode: {self.vpn_mode_box.currentText()}",
-            f"Protocol focus: {self.vpn_protocol_box.currentText()}",
-        ]
-        if self.vpn_host_input.text().strip():
-            parts.append(f"Server host: {self.vpn_host_input.text().strip()}")
-        if self.vpn_lan_input.text().strip():
-            parts.append(f"LAN subnet: {self.vpn_lan_input.text().strip()}")
-        return "Context — " + "; ".join(parts) + ".\n\n"
-
-    def vpn_run(self):
-        question = self.vpn_question_input.text().strip()
-        provider = self.vpn_provider_box.currentText()
-        model = self.vpn_model_box.currentText()
-
-        if not question:
-            QMessageBox.warning(self, "Missing Input", "Enter a question for the advisor.")
-            return
-        if not model:
-            QMessageBox.warning(self, "No Model", "Please select a model.")
-            return
-
-        prompt = self._vpn_context_prefix() + question
-        agent = self.agent_instances["vpn"]
-        messages = agent.build_messages(prompt)
-
-        if not self.authorize_request(
-            "vpn", provider, model, prompt, label=self.vpn_mode_box.currentText()
-        ):
-            return
-
-        self._last_vpn_response = ""
-        self.vpn_advisor_box.clear()
-        self.vpn_tabs.setCurrentWidget(self.vpn_advisor_box)
-        self.vpn_status_label.setText("Consulting advisor…")
-        self.vpn_run_btn.setEnabled(False)
-        self.vpn_stop_btn.setEnabled(True)
-
-        self.vpn_worker = ChatWorker(self.run_backend, provider, model, messages, prompt)
-        self.vpn_worker.token_signal.connect(self._vpn_on_token)
-        self.vpn_worker.finished_signal.connect(self._vpn_on_finished)
-        self.vpn_worker.usage_signal.connect(lambda u: self.note_request_usage("vpn", u))
-        self.vpn_worker.error_signal.connect(self._vpn_on_error)
-        self.vpn_worker.start()
-
-    def _vpn_on_token(self, token: str):
-        self._last_vpn_response = getattr(self, "_last_vpn_response", "") + token
-        self.vpn_advisor_box.setPlainText(self._last_vpn_response)
-        self.vpn_advisor_box.moveCursor(QTextCursor.End)
-
-    def _vpn_on_finished(self, full_response: str):
-        self._last_vpn_response = full_response
-        self.record_request("vpn", full_response)
-        self.vpn_advisor_box.setPlainText(full_response)
-        self.vpn_status_label.setText("Done.")
-        self.vpn_run_btn.setEnabled(True)
-        self.vpn_stop_btn.setEnabled(False)
-
-    def _vpn_on_error(self, error: str):
-        self.abandon_request("vpn")
-        separator = "─" * 50
-        self.vpn_advisor_box.setPlainText(f"⚠  ERROR\n{separator}\n{error}\n{separator}")
-        self.vpn_status_label.setText("Error.")
-        self.vpn_run_btn.setEnabled(True)
-        self.vpn_stop_btn.setEnabled(False)
-
-    def vpn_build_config(self):
-        """Render WireGuard configs + a deploy runbook. Deterministic, offline."""
-        text = build_vpn_configs(
-            mode=self.vpn_mode_box.currentText(),
-            protocol=self.vpn_protocol_box.currentText(),
-            server_host=self.vpn_host_input.text().strip(),
-            ssh_user=self.vpn_ssh_input.text().strip(),
-            lan_subnet=self.vpn_lan_input.text().strip(),
-            egress_iface=self.vpn_egress_input.text().strip() or "eth0",
-        )
-        self.vpn_config_box.setPlainText(text)
-        self.vpn_tabs.setCurrentWidget(self.vpn_config_box)
-        self.vpn_status_label.setText("Config rendered.")
-
-    def vpn_stop(self):
-        if self.vpn_worker is not None and self.vpn_worker.isRunning():
-            self.vpn_worker.cancel()
-        self.vpn_status_label.setText("Stopped.")
-        self.vpn_run_btn.setEnabled(True)
-        self.vpn_stop_btn.setEnabled(False)
-
-    def vpn_clear(self):
-        self.vpn_advisor_box.clear()
-        self.vpn_config_box.clear()
-        self.vpn_question_input.clear()
-        self.vpn_status_label.setText("Idle")
-        self._last_vpn_response = ""
-
-    def build_bug_bounty_panel(self):
-        self.bug_bounty_panel = QWidget()
-        self.bug_bounty_panel.setObjectName("BugBountyPanel")
-        layout = QVBoxLayout(self.bug_bounty_panel)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(10)
-
-        # ── Target / program setup ───────────────────────────────────────────
-        setup_group = QGroupBox("Target & Program")
-        setup_group.setObjectName("BBSetupBox")
-        setup_layout = QGridLayout(setup_group)
-        setup_layout.setSpacing(6)
-
-        setup_layout.addWidget(QLabel("Target URL / IP:"), 0, 0)
-        self.bb_target_input = QLineEdit()
-        self.bb_target_input.setPlaceholderText("https://target.example.com  or  10.0.0.1")
-        setup_layout.addWidget(self.bb_target_input, 0, 1, 1, 3)
-
-        setup_layout.addWidget(QLabel("Program:"), 1, 0)
-        self.bb_program_input = QLineEdit()
-        self.bb_program_input.setPlaceholderText("HackerOne — Acme Corp  /  Bugcrowd — Example")
-        setup_layout.addWidget(self.bb_program_input, 1, 1, 1, 3)
-
-        setup_layout.addWidget(QLabel("Scope Type:"), 2, 0)
-        self.bb_scope_box = QComboBox()
-        self.bb_scope_box.addItems([
-            "Web Application", "API / REST", "Mobile (Android)", "Mobile (iOS)",
-            "Network / Infrastructure", "Source Code Review", "Cloud Config", "Other",
-        ])
-        setup_layout.addWidget(self.bb_scope_box, 2, 1)
-
-        setup_layout.addWidget(QLabel("Severity Target:"), 2, 2)
-        self.bb_severity_box = QComboBox()
-        self.bb_severity_box.addItems(["Critical (P1)", "High (P2)", "Medium (P3)", "Low (P4)", "Informational"])
-        setup_layout.addWidget(self.bb_severity_box, 2, 3)
-
-        layout.addWidget(setup_group)
-
-        # ── Nmap scan section ────────────────────────────────────────────────
-        nmap_group = QGroupBox("Nmap Recon Scan")
-        nmap_group.setObjectName("BBNmapBox")
-        nmap_layout = QVBoxLayout(nmap_group)
-        nmap_layout.setSpacing(4)
-
-        nmap_cmd_row = QHBoxLayout()
-        self.bb_nmap_cmd_input = QLineEdit()
-        self.bb_nmap_cmd_input.setPlaceholderText("nmap -sV -sC -T4 --open <target>")
-        nmap_cmd_row.addWidget(self.bb_nmap_cmd_input, 1)
-        self.bb_nmap_run_btn = QPushButton("Run Nmap")
-        self.bb_nmap_run_btn.setMinimumWidth(120)
-        self.bb_nmap_run_btn.setObjectName("PrimaryAction")
-        self.bb_nmap_run_btn.clicked.connect(self.bb_run_nmap)
-        nmap_cmd_row.addWidget(self.bb_nmap_run_btn)
-        self.bb_nmap_stop_btn = QPushButton("Kill")
-        self.bb_nmap_stop_btn.setEnabled(False)
-        self.bb_nmap_stop_btn.setObjectName("DangerAction")
-        self.bb_nmap_stop_btn.clicked.connect(self.bb_kill_nmap)
-        nmap_cmd_row.addWidget(self.bb_nmap_stop_btn)
-        nmap_layout.addLayout(nmap_cmd_row)
-
-        self.bb_nmap_output = QTextBrowser()
-        self.bb_nmap_output.setOpenExternalLinks(False)
-        self.bb_nmap_output.setFixedHeight(130)
-        self.bb_nmap_output.setPlaceholderText("Nmap output will appear here…")
-        nmap_layout.addWidget(self.bb_nmap_output)
-        layout.addWidget(nmap_group)
-
-        # ── Findings / Burp paste area ───────────────────────────────────────
-        findings_group = QGroupBox("Findings / Burp Suite Output / Notes")
-        findings_group.setObjectName("BBFindingsBox")
-        findings_layout = QVBoxLayout(findings_group)
-        self.bb_findings_input = QTextEdit()
-        self.bb_findings_input.setPlaceholderText(
-            "Paste HTTP request/response, Burp Suite output, manual observations, "
-            "error messages, source code snippets — anything in scope."
-        )
-        self.bb_findings_input.setMinimumHeight(110)
-        findings_layout.addWidget(self.bb_findings_input)
-        layout.addWidget(findings_group)
-
-        # ── Provider row ─────────────────────────────────────────────────────
-        provider_row_container = QWidget()
-        provider_row = FlowLayout(provider_row_container, spacing=6)
-        self.bb_provider_box, self.bb_model_box = build_provider_row(
-            self, provider_row, "bug_bounty")
-
-        self.bb_analyse_btn = QPushButton("Analyse")
-        self.bb_analyse_btn.setMinimumWidth(130)
-        self.bb_analyse_btn.setObjectName("PrimaryAction")
-        self.bb_analyse_btn.clicked.connect(self.bb_analyse)
-        provider_row.addWidget(self.bb_analyse_btn)
-
-        self.bb_stop_btn = QPushButton("Stop")
-        self.bb_stop_btn.setEnabled(False)
-        self.bb_stop_btn.setObjectName("DangerAction")
-        self.bb_stop_btn.clicked.connect(self.bb_stop)
-        provider_row.addWidget(self.bb_stop_btn)
-        layout.addWidget(provider_row_container)
-
-        # ── Results: tabs + sidebar ───────────────────────────────────────────
-        results_splitter = QSplitter(Qt.Horizontal)
-
-        self.bb_tabs = QTabWidget()
-
-        self.bb_report_box = QTextBrowser()
-        self.bb_report_box.setOpenExternalLinks(False)
-        self.bb_tabs.addTab(self.bb_report_box, "Full Report")
-
-        self.bb_vuln_box = QTextBrowser()
-        self.bb_tabs.addTab(self.bb_vuln_box, "Vulnerability")
-
-        self.bb_poc_box = QTextBrowser()
-        self.bb_tabs.addTab(self.bb_poc_box, "PoC Draft")
-
-        self.bb_remediation_box = QTextBrowser()
-        self.bb_tabs.addTab(self.bb_remediation_box, "Remediation")
-
-        self.bb_submission_box = QTextBrowser()
-        self.bb_tabs.addTab(self.bb_submission_box, "Submission")
-
-        results_splitter.addWidget(self.bb_tabs)
-
-        # Sidebar indicators
-        indicators_widget = QWidget()
-        ind_layout = QVBoxLayout(indicators_widget)
-        ind_layout.setContentsMargins(8, 0, 0, 0)
-        ind_layout.setSpacing(10)
-
-        sev_group = QGroupBox("Severity")
-        sev_group.setObjectName("BBSevBox")
-        sev_inner = QVBoxLayout(sev_group)
-        self.bb_severity_label = QLabel("—")
-        self.bb_severity_label.setAlignment(Qt.AlignCenter)
-        self.bb_severity_label.setStyleSheet("font-size: 20px; font-weight: bold; color: #ff5555;")
-        sev_inner.addWidget(self.bb_severity_label)
-        ind_layout.addWidget(sev_group)
-
-        cvss_group = QGroupBox("CVSS Score")
-        cvss_group.setObjectName("BBCvssBox")
-        cvss_inner = QVBoxLayout(cvss_group)
-        self.bb_cvss_label = QLabel("—")
-        self.bb_cvss_label.setAlignment(Qt.AlignCenter)
-        self.bb_cvss_label.setStyleSheet("font-size: 22px; font-weight: bold;")
-        cvss_inner.addWidget(self.bb_cvss_label)
-        ind_layout.addWidget(cvss_group)
-
-        bounty_group = QGroupBox("Bounty Estimate")
-        bounty_group.setObjectName("BBBountyBox")
-        bounty_inner = QVBoxLayout(bounty_group)
-        self.bb_bounty_label = QLabel("—")
-        self.bb_bounty_label.setAlignment(Qt.AlignCenter)
-        self.bb_bounty_label.setStyleSheet("font-size: 14px; font-weight: bold; color: #3cff88;")
-        bounty_inner.addWidget(self.bb_bounty_label)
-        ind_layout.addWidget(bounty_group)
-
-        ind_layout.addStretch()
-
-        self.bb_save_btn = QPushButton("Save Report")
-        self.bb_save_btn.setEnabled(False)
-        self.bb_save_btn.clicked.connect(self.bb_save)
-        ind_layout.addWidget(self.bb_save_btn)
-
-        self.bb_clear_btn = QPushButton("Clear")
-        self.bb_clear_btn.clicked.connect(self.bb_clear)
-        ind_layout.addWidget(self.bb_clear_btn)
-
-        results_splitter.addWidget(indicators_widget)
-        results_splitter.setSizes([700, 200])
-        layout.addWidget(results_splitter, 1)
-
-        self.bb_status_label = QLabel("")
-        self.bb_status_label.setStyleSheet("font-size: 12px; color: #888;")
-        layout.addWidget(self.bb_status_label)
-
-        self.bug_bounty_panel.hide()
-        self._bb_nmap_process: Optional[QProcess] = None
-
-    # ── Bug Bounty handlers ───────────────────────────────────────────────────
-    def bb_run_nmap(self):
-        cmd_text = self.bb_nmap_cmd_input.text().strip()
-        if not cmd_text:
-            target = self.bb_target_input.text().strip()
-            if not target:
-                self.bb_nmap_output.setPlainText("[Error] Enter a target URL/IP or nmap command first.")
-                return
-            # strip protocol for nmap
-            host = target.replace("https://", "").replace("http://", "").split("/")[0]
-            cmd_text = f"nmap -sV -sC -T4 --open {host}"
-            self.bb_nmap_cmd_input.setText(cmd_text)
-
-        self.bb_nmap_output.setPlainText(f"[Running] {cmd_text}\n")
-        self.bb_nmap_run_btn.setEnabled(False)
-        self.bb_nmap_stop_btn.setEnabled(True)
-
-        self._bb_nmap_process = QProcess(self)
-        self._bb_nmap_process.setProcessChannelMode(QProcess.MergedChannels)
-        self._bb_nmap_process.readyRead.connect(self._bb_nmap_read)
-        self._bb_nmap_process.finished.connect(self._bb_nmap_finished)
-
-        parts = cmd_text.split()
-        self._bb_nmap_process.start(parts[0], parts[1:])
-
-    def _bb_nmap_read(self):
-        data = self._bb_nmap_process.readAll().data().decode("utf-8", errors="replace")
-        self.bb_nmap_output.moveCursor(QTextCursor.End)
-        self.bb_nmap_output.insertPlainText(data)
-        self.bb_nmap_output.moveCursor(QTextCursor.End)
-
-    def _bb_nmap_finished(self):
-        self.bb_nmap_run_btn.setEnabled(True)
-        self.bb_nmap_stop_btn.setEnabled(False)
-        self.bb_nmap_output.moveCursor(QTextCursor.End)
-        self.bb_nmap_output.insertPlainText("\n[Done]")
-
-    def bb_kill_nmap(self):
-        if self._bb_nmap_process is not None:
-            self._bb_nmap_process.kill()
-        self.bb_nmap_run_btn.setEnabled(True)
-        self.bb_nmap_stop_btn.setEnabled(False)
-
-    def bb_analyse(self):
-        target = self.bb_target_input.text().strip()
-        program = self.bb_program_input.text().strip()
-        scope_type = self.bb_scope_box.currentText()
-        findings = self.bb_findings_input.toPlainText().strip()
-        nmap_output = self.bb_nmap_output.toPlainText().strip()
-
-        if not target and not findings and not nmap_output:
-            self.bb_status_label.setText("Enter a target, paste findings, or run a scan first.")
-            return
-
-        provider = self.bb_provider_box.currentText()
-        model = self.bb_model_box.currentText()
-        if not model:
-            self.bb_status_label.setText("Select a model first.")
-            return
-
-        agent = self.agent_instances["bug_bounty"]
-        messages = agent.build_messages(target, program, scope_type, findings, nmap_output)
-
-        self._last_bb_response = ""
-        self.bb_report_box.clear()
-        self.bb_vuln_box.clear()
-        self.bb_poc_box.clear()
-        self.bb_remediation_box.clear()
-        self.bb_submission_box.clear()
-        self.bb_severity_label.setText("—")
-        self.bb_cvss_label.setText("—")
-        self.bb_bounty_label.setText("—")
-        self.bb_save_btn.setEnabled(False)
-        self.bb_status_label.setText("Analysing…")
-        self.bb_analyse_btn.setEnabled(False)
-        self.bb_stop_btn.setEnabled(True)
-        self.bb_tabs.setCurrentIndex(0)
-
-        if not self.authorize_request("bug_bounty", provider, model, target or "bug_bounty"):
-            return
-        self.bug_bounty_worker = ChatWorker(self.run_backend, provider, model, messages, target or "bug_bounty")
-        self.bug_bounty_worker.token_signal.connect(self._bb_on_token)
-        self.bug_bounty_worker.finished_signal.connect(self._bb_on_finished)
-        self.bug_bounty_worker.usage_signal.connect(lambda u: self.note_request_usage("bug_bounty", u))
-        self.bug_bounty_worker.error_signal.connect(self._bb_on_error)
-        self.bug_bounty_worker.start()
-
-    def _bb_on_token(self, token: str):
-        self._last_bb_response += token
-        self.bb_report_box.setPlainText(self._last_bb_response)
-        self.bb_report_box.moveCursor(QTextCursor.End)
-
-    def _bb_on_finished(self, full_response: str):
-        self.record_request("bug_bounty", full_response)
-        self._last_bb_response = full_response
-        self._bb_populate_tabs(full_response)
-        self._bb_update_indicators(full_response)
-        self.bb_status_label.setText("Analysis complete.")
-        self.bb_analyse_btn.setEnabled(True)
-        self.bb_stop_btn.setEnabled(False)
-        self.bb_save_btn.setEnabled(True)
-        self.bb_tabs.setCurrentIndex(0)
-
-    def _bb_on_error(self, error: str):
-        self.abandon_request("bug_bounty")
-        self.bb_report_box.setPlainText(f"[Error] {error}")
-        self.bb_status_label.setText("Error.")
-        self.bb_analyse_btn.setEnabled(True)
-        self.bb_stop_btn.setEnabled(False)
-
-    def bb_stop(self):
-        if self.bug_bounty_worker is not None and self.bug_bounty_worker.isRunning():
-            self.bug_bounty_worker.cancel()
-        self.bb_status_label.setText("Stopped.")
-        self.bb_analyse_btn.setEnabled(True)
-        self.bb_stop_btn.setEnabled(False)
-
-    def _bb_populate_tabs(self, text: str):
-        import re as _re
-
-        def extract(pattern):
-            m = _re.search(pattern, text, _re.IGNORECASE | _re.DOTALL)
-            return m.group(1).strip() if m else ""
-
-        vuln = extract(r"(?:##\s*VULNERABILITY\s*REPORT|##\s*Vulnerability Details?)(.*?)(?=##|$)")
-        poc = extract(r"(?:##\s*Proof of Concept|PoC\s*Draft?)(.*?)(?=##|$)")
-        rem = extract(r"(?:##\s*Remediation)(.*?)(?=##|$)")
-        sub = extract(r"(?:##\s*SUBMISSION\s*DRAFT|Submission\s*Draft?)(.*?)(?=##|$)")
-
-        self.bb_vuln_box.setPlainText(vuln or text)
-        self.bb_poc_box.setPlainText(poc)
-        self.bb_remediation_box.setPlainText(rem)
-        self.bb_submission_box.setPlainText(sub)
-
-    def _bb_update_indicators(self, text: str):
-        import re as _re
-
-        sev_m = _re.search(r"\*\*Severity\*\*.*?(Critical|High|Medium|Low|Informational)", text, _re.IGNORECASE)
-        if sev_m:
-            sev = sev_m.group(1).capitalize()
-            colors = {"Critical": "#ff3333", "High": "#ff7722", "Medium": "#f0c040",
-                      "Low": "#3cff88", "Informational": "#4db8ff"}
-            self.bb_severity_label.setText(sev)
-            self.bb_severity_label.setStyleSheet(
-                f"font-size: 20px; font-weight: bold; color: {colors.get(sev, '#ffffff')};"
-            )
-
-        cvss_m = _re.search(r"CVSS.*?(\d+\.\d+)", text, _re.IGNORECASE)
-        if cvss_m:
-            score = float(cvss_m.group(1))
-            color = "#ff3333" if score >= 9 else "#ff7722" if score >= 7 else "#f0c040" if score >= 4 else "#3cff88"
-            self.bb_cvss_label.setText(cvss_m.group(1))
-            self.bb_cvss_label.setStyleSheet(f"font-size: 22px; font-weight: bold; color: {color};")
-
-        bounty_m = _re.search(r"bounty.*?(\$[\d,]+(?:\s*[-–]\s*\$[\d,]+)?|\$[\d,]+\+?)", text, _re.IGNORECASE)
-        if bounty_m:
-            self.bb_bounty_label.setText(bounty_m.group(1))
-
-    def bb_save(self):
-        if not self._last_bb_response:
-            return
-        target = self.bb_target_input.text().strip().replace("/", "-").replace(":", "").replace(" ", "_") or "target"
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        path = QFileDialog.getSaveFileName(
-            self, "Save Bug Bounty Report",
-            str(Path.home() / "Downloads" / f"bb_report_{target}_{ts}.md"),
-            "Markdown (*.md);;Text (*.txt)",
-        )[0]
-        if path:
-            Path(path).write_text(self._last_bb_response, encoding="utf-8")
-            self.bb_status_label.setText(f"Saved: {path}")
-
-    def bb_clear(self):
-        self.bb_target_input.clear()
-        self.bb_program_input.clear()
-        self.bb_findings_input.clear()
-        self.bb_nmap_output.clear()
-        self.bb_nmap_cmd_input.clear()
-        for box in (self.bb_report_box, self.bb_vuln_box, self.bb_poc_box,
-                    self.bb_remediation_box, self.bb_submission_box):
-            box.clear()
-        self.bb_severity_label.setText("—")
-        self.bb_severity_label.setStyleSheet("font-size: 20px; font-weight: bold; color: #ff5555;")
-        self.bb_cvss_label.setText("—")
-        self.bb_cvss_label.setStyleSheet("font-size: 22px; font-weight: bold;")
-        self.bb_bounty_label.setText("—")
-        self.bb_status_label.setText("")
-        self.bb_save_btn.setEnabled(False)
-        self._last_bb_response = ""
-
-    # ──────────────────────────────────────────────────────────────────
-    # Manager Agent handlers
-    # ──────────────────────────────────────────────────────────────────
-
-    def manager_analyze_idea(self):
-        idea = self.manager_idea_input.toPlainText().strip()
-        if not idea:
-            QMessageBox.warning(self, "No Idea", "Please describe your agent idea first.")
-            return
-
-        if self.manager_worker is not None and self.manager_worker.isRunning():
-            QMessageBox.information(self, "Busy", "Analysis already running.")
-            return
-
-        provider = self.manager_provider_box.currentText()
-        model = self.manager_model_box.currentText()
-
-        messages = self.manager_agent.build_messages(idea)
-
-        self.manager_spec_display.setPlainText("Analyzing...")
-        self.manager_analyze_btn.setEnabled(False)
-        self.manager_approve_btn.setEnabled(False)
-        self.manager_reject_btn.setEnabled(False)
-        self.pending_spec = None
-
-        if not self.authorize_request("manager", provider, model, idea):
-            return
-        self.manager_worker = ChatWorker(self.run_backend, provider, model, messages, idea)
-        self.manager_worker.finished_signal.connect(self._manager_on_finished)
-        self.manager_worker.usage_signal.connect(lambda u: self.note_request_usage("manager", u))
-        self.manager_worker.error_signal.connect(self._manager_on_error)
-        self.manager_worker.start()
-
-    def _manager_on_finished(self, response: str):
-        self.record_request("manager", response)
-        self.manager_analyze_btn.setEnabled(True)
-        spec = self.manager_agent.parse_spec(response)
-        if spec is None:
-            self.manager_spec_display.setPlainText(
-                "[Error] Could not parse a valid JSON spec from the response.\n\n"
-                "Raw response:\n" + response
-            )
-            return
-
-        import json as _json
-        self.pending_spec = spec
-        self.manager_spec_display.setPlainText(_json.dumps(spec, indent=2))
-        self.manager_approve_btn.setEnabled(True)
-        self.manager_reject_btn.setEnabled(True)
-        self.manager_log.append("[Ready] Spec generated. Review and approve or reject.")
-
-    def _manager_on_error(self, error: str):
-        self.abandon_request("manager")
-        self.manager_analyze_btn.setEnabled(True)
-        self.manager_spec_display.setPlainText(f"[Error]\n{error}")
-        self.manager_log.append(f"[Error] {error}")
-
-    def manager_approve_spec(self):
-        if not self.pending_spec:
-            return
-
-        name = self.pending_spec.get("name", "unknown")
-        label = self.pending_spec.get("label", name)
-
-        confirm = QMessageBox.question(
-            self,
-            "Confirm Agent Creation",
-            f"Create agent '{label}' ({name})?\n\n"
-            f"This will:\n"
-            f"  • Write agents/{name}_agent.py\n"
-            f"  • Add entry to config/registry.json\n"
-            f"  • Add system prompt to config/tool_prompts.json\n\n"
-            f"The app must be restarted to use the new agent.",
-            QMessageBox.Yes | QMessageBox.No,
-        )
-
-        if confirm != QMessageBox.Yes:
-            return
-
-        report = self.agent_factory.create_agent(self.pending_spec)
-
-        if report["success"]:
-            self.manager_log.append(f"\n[Created] Agent '{name}' created successfully.")
-            for f in report["files_created"]:
-                self.manager_log.append(f"  ✓ {f}")
-            self.manager_log.append("\n[Info] Restart the app to activate the new agent.")
-            self.manager_approve_btn.setEnabled(False)
-            self.manager_reject_btn.setEnabled(False)
-            self.pending_spec = None
-            QMessageBox.information(
-                self,
-                "Agent Created",
-                f"Agent '{label}' created successfully.\n\n"
-                f"Restart the app to activate it.",
-            )
-        else:
-            errors = "\n".join(report["errors"])
-            self.manager_log.append(f"\n[Failed] Could not create agent:\n{errors}")
-            QMessageBox.warning(self, "Creation Failed", errors)
-
-    def manager_reject_spec(self):
-        self.pending_spec = None
-        self.manager_spec_display.setPlainText("")
-        self.manager_approve_btn.setEnabled(False)
-        self.manager_reject_btn.setEnabled(False)
-        self.manager_log.append("[Rejected] Spec cleared. You can describe a new idea.")
-
-    def manager_clear(self):
-        self.manager_idea_input.clear()
-        self.manager_spec_display.clear()
-        self.pending_spec = None
-        self.manager_approve_btn.setEnabled(False)
-        self.manager_reject_btn.setEnabled(False)
-        self.manager_log.append("[Cleared]")
 
     # ──────────────────────────────────────────────────────────────────
     # OP IDENTITY PANEL
@@ -4249,7 +2285,7 @@ class GodAI(QWidget):
         if hasattr(self, "agent_subtitle_label"):
             self.agent_subtitle_label.setText(agent_subtitles.get(agent_name, ""))
         if hasattr(self, "agent_status_pill"):
-            self.agent_status_pill.setText("●  READY")
+            self.agent_status_pill.setText("●  Ready")
             self.agent_status_pill.setStyleSheet("")
         is_manager = agent_name == "manager"
         is_osint = agent_name == "osint"
@@ -4301,10 +2337,52 @@ class GodAI(QWidget):
         tool_config = self.tool_prompts.get(selected_tool, {})
         system_prompt = tool_config.get("system", "You are a helpful assistant.")
 
-        return [
+        return self.apply_project_context([
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": full_prompt},
-        ]
+        ])
+
+    def active_project(self) -> dict | None:
+        if not self.active_project_id:
+            return None
+        return self.registry.get_project(self.active_project_id)
+
+    def project_instructions(self) -> str:
+        project = self.active_project()
+        return str((project or {}).get("instructions") or "").strip()
+
+    def apply_project_context(self, messages: list) -> list:
+        """Return a copy with the active project's instructions injected once."""
+        instructions = self.project_instructions()
+        result = [dict(message) for message in messages]
+        if not instructions:
+            return result
+        marker = "Project instructions:\n"
+        if any(marker in str(message.get("content", "")) for message in result):
+            return result
+        block = f"{marker}{instructions}"
+        for message in result:
+            if message.get("role") == "system":
+                existing = str(message.get("content") or "").rstrip()
+                message["content"] = f"{existing}\n\n{block}" if existing else block
+                break
+        else:
+            result.insert(0, {"role": "system", "content": block})
+        return result
+
+    def project_budget_context(self) -> dict:
+        project = self.active_project()
+        if not project:
+            return {"project_name": "", "project_cost": 0.0, "project_budget": None}
+        return {
+            "project_name": project["name"],
+            "project_cost": self.usage_tracker.get_project_total_today(project["id"]),
+            "project_budget": project.get("budget_eur"),
+        }
+
+    def project_prompt_for_estimate(self, prompt: str) -> str:
+        instructions = self.project_instructions()
+        return f"{instructions}\n\n{prompt}" if instructions else prompt
 
     def auto_route_agent(self):
         raw_text = self.input_box.toPlainText().strip()
@@ -4314,8 +2392,41 @@ class GodAI(QWidget):
 
         selected_agent = self.agent_box.currentText()
         selected_tool = self.tool_box.currentText() if hasattr(self, "tool_box") else "General Chat"
-        backend, model = self.resolve_backend_model()
-        self.route_result_label.setText(f"Router: {selected_agent} · {backend} · {model}")
+        permissions = {
+            "openai": self.allow_openai_checkbox.isChecked(), "deepseek": self.allow_deepseek_checkbox.isChecked(),
+            "kimi": self.allow_kimi_checkbox.isChecked(), "gemini": self.allow_gemini_checkbox.isChecked(),
+            "anthropic": self.allow_anthropic_checkbox.isChecked(), "qwen": self.allow_qwen_checkbox.isChecked(),
+            "ollama": True,
+        }
+        task = "coding" if selected_tool == "Coding" else "writing" if selected_tool in {"Writing", "Rewrite"} else "general"
+        router = ModelRouter(str(SETTINGS_FILE))
+        complexity = router.classify_complexity(selected_agent, raw_text)
+        input_tokens = max(1, len(self.project_prompt_for_estimate(raw_text)) // 4)
+        candidates = []
+        for provider in PROVIDERS:
+            models = self.models_for_provider(provider)
+            for model in models:
+                estimate = self.usage_tracker.estimate_cost_range(
+                    provider, model, input_tokens, max(128, input_tokens // 2), max(500, input_tokens * 2))
+                candidates.append(ModelCandidate(
+                    provider, model, enabled=self.registry.agent_allows_provider(selected_agent, provider),
+                    credentials=permissions[provider], service_healthy=bool(models), model_available=True,
+                    context_window=128_000, local=provider == "ollama",
+                    latency="high" if provider == "ollama" else "low",
+                    capabilities=frozenset({"general", complexity, task}), cost=estimate,
+                ))
+        remaining = min(self.session_budget_eur - self.session_cost_total,
+                        self.daily_budget_eur - self.usage_tracker.get_today_total())
+        recommendation = router.recommend(candidates, RoutingPreferences(
+            task=task, complexity=complexity, required_context=input_tokens,
+            budget_eur=max(0.0, remaining), local_only=self.execution_mode_box.currentText() == "Local only"))
+        self._last_routing_recommendation = recommendation
+        if recommendation.provider is None:
+            self.route_result_label.setText("Router: no eligible model")
+            return
+        explanation = "; ".join(recommendation.reasons[:3])
+        self.route_result_label.setText(
+            f"Recommended: {recommendation.provider} · {recommendation.model} — {explanation}")
 
     def resolve_backend_model(self):
         provider = self.provider_box.currentText()
@@ -4328,6 +2439,7 @@ class GodAI(QWidget):
             "kimi": self.allow_kimi_checkbox.isChecked(),
             "gemini": self.allow_gemini_checkbox.isChecked(),
             "anthropic": self.allow_anthropic_checkbox.isChecked(),
+            "qwen": self.allow_qwen_checkbox.isChecked(),
         }
 
         if execution_mode == "Local only":
@@ -4366,12 +2478,9 @@ class GodAI(QWidget):
     def send_prompt(self):
         selected_agent = self.agent_box.currentText()
 
-        if selected_agent == "audiobook":
-            self.start_selected_audiobook_book()
-            return
-
         if selected_agent == "manager":
-            self.manager_analyze_idea()
+            # Forge's Send goes to its own panel; the chat box is not its input.
+            self.panels["manager"].analyze_idea()
             return
 
         raw_text = self.input_box.toPlainText().strip()
@@ -4383,7 +2492,8 @@ class GodAI(QWidget):
         command_name, full_prompt = self.build_user_prompt(raw_text)
         final_backend, final_model = self.resolve_backend_model()
 
-        estimated_cost, approx_tokens = self.estimate_chat_cost(final_backend, final_model, full_prompt)
+        estimated_cost, approx_tokens = self.estimate_chat_cost(
+            final_backend, final_model, self.project_prompt_for_estimate(full_prompt))
 
         api_permissions = {
             "allow_openai": self.allow_openai_checkbox.isChecked(),
@@ -4404,6 +2514,7 @@ class GodAI(QWidget):
             daily_cost=self.usage_tracker.get_today_total(),
             daily_budget=self.daily_budget_eur,
             estimated_cost=estimated_cost,
+            **self.project_budget_context(),
         )
         if not validation.allowed:
             QMessageBox.warning(self, "Request Blocked", validation.reason)
@@ -4428,9 +2539,10 @@ class GodAI(QWidget):
                 messages = self.build_tool_messages(selected_tool, full_prompt)
             elif selected_agent in self.agent_instances:
                 agent = self.agent_instances[selected_agent]
-                messages = agent.build_messages(full_prompt)
+                messages = self.apply_project_context(agent.build_messages(full_prompt))
             else:
-                messages = [{"role": "user", "content": full_prompt}]
+                messages = self.apply_project_context(
+                    [{"role": "user", "content": full_prompt}])
 
             self.pending_agent = selected_agent
             self.pending_tool = selected_tool
@@ -4440,6 +2552,7 @@ class GodAI(QWidget):
             self.pending_messages = messages
             self.pending_prompt = full_prompt
             self.pending_usage = None
+            self.pending_project = self.active_project_id
 
             self.show_output_area()
             self.output_box.clear()
@@ -4511,7 +2624,7 @@ class GodAI(QWidget):
         These paths deliberately must not raise into the UI, but a bare
         `except: pass` made a failed model listing or history load look exactly
         like "there is nothing here". stderr is captured by the app launcher in
-        /tmp/sentinelai_launch.log; when a widget is given, the reason is also
+        /tmp/sentinel_launch.log; when a widget is given, the reason is also
         attached to it as a tooltip so it is visible without reading a log.
         """
         message = f"{context}: {type(exc).__name__}: {exc}"
@@ -4533,14 +2646,30 @@ class GodAI(QWidget):
             "allow_qwen": self.allow_qwen_checkbox.isChecked(),
         }
 
-    def note_request_usage(self, agent, usage):
+    def _resolve_request_id(self, identifier):
+        """Accept a request id, with a safe bridge for one legacy agent key.
+
+        The bridge keeps older internal callers working during the v2 split. It
+        deliberately refuses an ambiguous agent key instead of guessing when
+        two runs of the same agent are active.
+        """
+        if identifier in self._pending_requests:
+            return identifier
+        matches = [
+            request_id for request_id, context in self._pending_requests.items()
+            if context.get("agent") == identifier
+        ]
+        return matches[0] if len(matches) == 1 else None
+
+    def note_request_usage(self, request_id, usage):
         """Real token counts from the worker, when it reports them."""
-        context = self._pending_requests.get(agent)
+        request_id = self._resolve_request_id(request_id)
+        context = self._pending_requests.get(request_id)
         if context is not None:
             context["usage"] = usage
 
-    def authorize_request(self, agent, provider, model, prompt, tool=None, label=None) -> bool:
-        """Budget-check and confirm one request. False means: do not send it.
+    def authorize_request(self, agent, provider, model, prompt, tool=None, label=None):
+        """Budget-check and confirm one request. Return its id or ``None``.
 
         `tool` is a registry tool name and is validated as one — pass it only
         when the request really runs a registered tool (the chat panel does).
@@ -4548,10 +2677,11 @@ class GodAI(QWidget):
         is not a registry entry: pass that as `label` instead, so it still shows
         up in the run log and Saved Chats without failing the tool check.
 
-        On success the context record_request() needs is stashed per agent, so a
-        caller only has to pass the response back later.
+        Context is keyed by the run id rather than the agent, so concurrent runs
+        of the same agent cannot overwrite one another.
         """
-        estimated_cost, approx_tokens = self.estimate_chat_cost(provider, model, prompt)
+        estimated_cost, approx_tokens = self.estimate_chat_cost(
+            provider, model, self.project_prompt_for_estimate(prompt))
 
         validation = self.validator.validate(
             agent_name=agent,
@@ -4563,36 +2693,41 @@ class GodAI(QWidget):
             daily_cost=self.usage_tracker.get_today_total(),
             daily_budget=self.daily_budget_eur,
             estimated_cost=estimated_cost,
+            **self.project_budget_context(),
         )
         if not validation.allowed:
             QMessageBox.warning(self, "Request Blocked", validation.reason)
-            return False
+            return None
 
         if not self.confirm_external_api_request(provider, model, estimated_cost, approx_tokens):
-            return False
+            return None
 
         descriptor = label or tool or "-"
-        self._pending_requests[agent] = {
+        run_id = self.run_logger.start(
+            agent=agent,
+            tool=descriptor,
+            provider=provider,
+            model=model,
+            mode=self.execution_mode_box.currentText() if hasattr(self, "execution_mode_box") else "",
+            prompt_summary=prompt,
+        )
+        request_id = run_id or f"request-{uuid4().hex}"
+        self._pending_requests[request_id] = {
             "agent": agent,
             "tool": descriptor,
             "provider": provider,
             "model": model,
             "prompt": prompt,
             "usage": None,
-            "run_id": self.run_logger.start(
-                agent=agent,
-                tool=descriptor,
-                provider=provider,
-                model=model,
-                mode=self.execution_mode_box.currentText() if hasattr(self, "execution_mode_box") else "",
-                prompt_summary=prompt,
-            ),
+            "run_id": run_id,
+            "project": self.active_project_id,
         }
-        return True
+        return request_id
 
-    def record_request(self, agent, response, messages=None):
+    def record_request(self, request_id, response, messages=None):
         """Bill, save and close out a request authorised by authorize_request()."""
-        context = self._pending_requests.pop(agent, None)
+        request_id = self._resolve_request_id(request_id)
+        context = self._pending_requests.pop(request_id, None)
         if context is None:          # never authorised (or already recorded)
             return
 
@@ -4603,6 +2738,7 @@ class GodAI(QWidget):
             prompt_text=context["prompt"],
             response_text=response,
             usage=context["usage"],
+            project=context.get("project"),
         )
 
         self.last_request_cost = entry.get("cost_eur", entry.get("estimated_cost", 0.0))
@@ -4620,6 +2756,7 @@ class GodAI(QWidget):
             command=context["tool"],
             messages=messages + [{"role": "assistant", "content": response}],
             response=response,
+            project=context.get("project"),
         )
 
         if context["run_id"]:
@@ -4633,9 +2770,10 @@ class GodAI(QWidget):
 
         self.load_history_list()
 
-    def abandon_request(self, agent, reason="error"):
+    def abandon_request(self, request_id, reason="error"):
         """Drop a request that failed, so it is not billed and the log closes."""
-        context = self._pending_requests.pop(agent, None)
+        request_id = self._resolve_request_id(request_id)
+        context = self._pending_requests.pop(request_id, None)
         if context and context["run_id"]:
             self.run_logger.finish(run_id=context["run_id"], status=reason)
 
@@ -4757,6 +2895,7 @@ class GodAI(QWidget):
             prompt_text=self.pending_prompt,
             response_text=response,
             usage=self.pending_usage,
+            project=getattr(self, "pending_project", None),
         )
 
         self.last_request_cost = usage_entry.get("cost_eur", usage_entry.get("estimated_cost", 0.0))
@@ -4784,6 +2923,7 @@ class GodAI(QWidget):
             command=self.pending_command,
             messages=self.current_messages,
             response=response,
+            project=getattr(self, "pending_project", None),
         )
 
         self.load_history_list()
@@ -4819,73 +2959,25 @@ class GodAI(QWidget):
             self.active_run_id = None
 
     def stop_current_task(self):
+        """The window's Stop button: cancel whatever is actually running.
+
+        The 2026-08-19 cull left this method calling `self.author_worker`,
+        `music_worker`, `webdesign_worker`, `fiverr_*_worker` and the audiobook
+        process, none of which exist any more — so Stop raised `AttributeError`
+        before it reached a single surviving agent. Every agent vertical is now a
+        panel in `self.panels` that answers for itself (phase 4); only chat, which
+        still lives on the window, is handled directly.
+        """
         if self.chat_worker is not None and self.chat_worker.isRunning():
             self.stop_chat_worker()
             return
 
-        if self.author_worker is not None and self.author_worker.isRunning():
-            self.author_stop()
-            return
+        for panel in self.panels.values():
+            if panel.is_running():
+                panel.stop()
+                return
 
-        if self.author_pub_worker is not None and self.author_pub_worker.isRunning():
-            self.author_pub_stop()
-            return
-
-        if self.author_mkt_worker is not None and self.author_mkt_worker.isRunning():
-            self.author_mkt_stop()
-            return
-
-        if self.music_worker is not None and self.music_worker.isRunning():
-            self.music_stop()
-            return
-
-        if self.osint_worker is not None and self.osint_worker.isRunning():
-            self.osint_stop()
-            return
-
-        if self.osint_heavy_worker is not None and self.osint_heavy_worker.isRunning():
-            self.osint_heavy_stop()
-            return
-
-        if self.webdesign_worker is not None and self.webdesign_worker.isRunning():
-            self.webdesign_stop()
-            return
-
-        if self.wifi_worker is not None and self.wifi_worker.isRunning():
-            self.wifi_stop()
-            return
-
-        if self.wifi_scan_worker is not None and self.wifi_scan_worker.isRunning():
-            self.wifi_stop()
-            return
-
-        if self.fiverr_image_worker is not None and self.fiverr_image_worker.isRunning():
-            self.fiverr_stop()
-            return
-
-        if self.fiverr_text_worker is not None and self.fiverr_text_worker.isRunning():
-            self.fiverr_stop()
-            return
-
-        if self.bug_bounty_worker is not None and self.bug_bounty_worker.isRunning():
-            self.bb_stop()
-            return
-
-        stopped = False
-        if self.audiobook_process is not None:
-            if self.audiobook_process.state() != QProcess.NotRunning:
-                self.audiobook_process.kill()
-                stopped = True
-
-        self.stop_btn.setEnabled(False)
-        self.audiobook_start_btn.setEnabled(True)
-        self.audiobook_refresh_btn.setEnabled(True)
-
-        if stopped:
-            self.output_box.append("\n[Stopped] Current task stopped by user.")
-            self.audiobook_status_label.setText("[Stopped]")
-        else:
-            self.output_box.append("\n[Info] No running task to stop.")
+        self.output_box.append("\n[Info] No running task to stop.")
 
     def update_resource_label(self):
         """Drive the SYSTEM meters. The exact figures move to the tooltips —
@@ -4963,11 +3055,100 @@ class GodAI(QWidget):
                     level,
                     f"€{remaining:.2f} left of the €{cap:.2f} {key.lower()} cap",
                 )
+            project = self.active_project()
+            project_meter = self.budget_meters["PROJECT"]
+            if project and project.get("budget_eur") is not None:
+                spent = self.usage_tracker.get_project_total_today(project["id"])
+                cap = float(project["budget_eur"])
+                fraction = (spent / cap) if cap > 0 else 0.0
+                level = "red" if fraction >= 0.9 else "yellow" if fraction >= 0.6 else "green"
+                project_meter.set(
+                    fraction, f"€{spent:.2f} / €{cap:.0f}", level,
+                    f"{project['name']}: €{cap - spent:.2f} remaining today",
+                )
+                project_meter.show()
+            else:
+                project_meter.hide()
 
     def start_resource_timer(self):
         self.resource_timer = QTimer(self)
         self.resource_timer.timeout.connect(self.update_resource_label)
         self.resource_timer.start(1000)
+
+    def refresh_project_selector(self) -> None:
+        if not hasattr(self, "project_filter"):
+            return
+        current = self.project_filter.currentData()
+        self.project_filter.blockSignals(True)
+        self.project_filter.clear()
+        self.project_filter.addItem(ALL_PROJECTS_FILTER, "__all__")
+        self.project_filter.addItem(UNFILED_PROJECT_FILTER, "__unfiled__")
+        for project in self.registry.list_projects():
+            self.project_filter.addItem(project["name"], project["id"])
+        index = self.project_filter.findData(current)
+        self.project_filter.setCurrentIndex(index if index >= 0 else 0)
+        self.project_filter.blockSignals(False)
+        selected = self.project_filter.currentData()
+        self.active_project_id = (
+            selected if selected not in {"__all__", "__unfiled__", None} else None
+        )
+
+    def project_changed(self, _index: int = -1) -> None:
+        selected = self.project_filter.currentData() if hasattr(self, "project_filter") else "__all__"
+        self.active_project_id = selected if selected not in {"__all__", "__unfiled__", None} else None
+        project = self.active_project()
+        if project:
+            agent = project.get("default_agent") or "chat"
+            if hasattr(self, "agent_box") and self.agent_box.findText(agent) >= 0:
+                self.select_agent(agent)
+            provider = project.get("default_provider") or ""
+            model = project.get("default_model") or ""
+            panel = self.panels.get(agent)
+            provider_box = panel.provider_box if panel else getattr(self, "provider_box", None)
+            model_box = panel.model_box if panel else getattr(self, "model_box", None)
+            if provider and provider_box and provider_box.findText(provider) >= 0:
+                provider_box.setCurrentText(provider)
+            if model and model_box and model_box.findText(model) >= 0:
+                model_box.setCurrentText(model)
+            self.route_result_label.setText(f"Project: {project['name']}")
+        elif hasattr(self, "route_result_label"):
+            self.route_result_label.setText("Project: none")
+        self.load_history_list()
+        self.update_usage_labels()
+
+    def show_project_context_menu(self, position) -> None:
+        project = self.active_project()
+        if not project:
+            return
+        menu = QMenu(self)
+        save_defaults = menu.addAction("Save current setup as project defaults")
+        if menu.exec(self.project_filter.mapToGlobal(position)) != save_defaults:
+            return
+        agent = getattr(self, "_current_agent", "chat")
+        panel = self.panels.get(agent)
+        provider_box = panel.provider_box if panel else getattr(self, "provider_box", None)
+        model_box = panel.model_box if panel else getattr(self, "model_box", None)
+        project.update({
+            "default_agent": agent,
+            "default_provider": provider_box.currentText() if provider_box else "",
+            "default_model": model_box.currentText() if model_box else "",
+        })
+        self.registry.upsert_project(project)
+        QMessageBox.information(self, "Project defaults saved", project["name"])
+
+    def show_history_context_menu(self, position) -> None:
+        item = self.history_list.itemAt(position)
+        if item is None:
+            return
+        menu = QMenu(self)
+        assign = menu.addMenu("Assign to project")
+        choices = {assign.addAction("Unfiled"): None}
+        for project in self.registry.list_projects():
+            choices[assign.addAction(project["name"])] = project["id"]
+        selected = menu.exec(self.history_list.mapToGlobal(position))
+        if selected in choices:
+            self.history.assign_project(item.data(Qt.UserRole), choices[selected])
+            self.load_history_list()
 
     def chat_title_from_data(self, path: Path, data: Optional[dict] = None) -> str:
         try:
@@ -4991,7 +3172,7 @@ class GodAI(QWidget):
             return path.stem
 
     def load_history_list(self):
-        """Fill the Saved Chats list, honouring the search box and agent filter.
+        """Fill Saved Chats using the project, agent and text filters together.
 
         Every file is read once here and reused for both the filter options and
         the rows, so adding the filter costs no extra disk reads.
@@ -5010,9 +3191,16 @@ class GodAI(QWidget):
             self._refresh_history_agent_filter(loaded)
             wanted = (self.history_agent_filter.currentText()
                       if hasattr(self, "history_agent_filter") else ALL_AGENTS_FILTER)
+            project_wanted = (self.project_filter.currentData()
+                              if hasattr(self, "project_filter") else "__all__")
 
             for file, data in loaded:
                 if wanted != ALL_AGENTS_FILTER and data.get("agent", "chat") != wanted:
+                    continue
+                chat_project = data.get("project")
+                if project_wanted == "__unfiled__" and chat_project:
+                    continue
+                if project_wanted not in {"__all__", "__unfiled__"} and chat_project != project_wanted:
                     continue
                 title = self.chat_title_from_data(file, data)
                 if query and query not in title.lower():
@@ -5079,6 +3267,10 @@ class GodAI(QWidget):
         filepath = item.data(Qt.UserRole) or item.text()
         try:
             data = self.history.load_chat(filepath)
+            project_id = data.get("project")
+            project_index = self.project_filter.findData(project_id or "__unfiled__")
+            if project_index >= 0:
+                self.project_filter.setCurrentIndex(project_index)
             self.show_output_area()
             self.output_box.setPlainText(data.get("response", ""))
 
@@ -5315,8 +3507,6 @@ class GodAI(QWidget):
 
     def closeEvent(self, event):
         try:
-            if self.audiobook_process is not None and self.audiobook_process.state() != QProcess.NotRunning:
-                self.audiobook_process.kill()
             if self.chat_worker is not None and self.chat_worker.isRunning():
                 self.chat_worker.cancel()
                 self.chat_worker.terminate()
@@ -5325,7 +3515,7 @@ class GodAI(QWidget):
             self._note_failure("shutdown: stop background work", exc)
         event.accept()
 
-SINGLE_INSTANCE_KEY = "sentinel-ai.single-instance"
+SINGLE_INSTANCE_KEY = "sentinel-fork.single-instance.v2"
 
 
 def _hand_off_to_running_instance() -> bool:
@@ -5375,4 +3565,3 @@ if __name__ == "__main__":
     instance_server.newConnection.connect(_raise_existing_window)
 
     app.exec()
-

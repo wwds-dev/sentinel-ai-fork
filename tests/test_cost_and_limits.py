@@ -1,5 +1,5 @@
 """
-Sentinel AI — Cost & Permission Tests
+Sentinel — Cost & Permission Tests
 =====================================
 Type: Unit tests of the logic that decides whether a request may run and what
 it costs.
@@ -26,6 +26,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from services.validator import Validator
 from services.usage_tracker import UsageTracker
+from services.database import init_db
+from services.pricing import PricingUnavailable
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -188,11 +190,21 @@ def test_ollama_ignores_every_budget():
     assert result.allowed
 
 
+def test_request_over_project_budget_is_refused():
+    result = check(
+        project_name="Moonlight Novel", project_cost=0.95,
+        project_budget=1.0, estimated_cost=0.10,
+    )
+    assert not result.allowed
+    assert "Moonlight Novel" in result.reason
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Token accounting — decides what the user is billed for
 # ─────────────────────────────────────────────────────────────────────────────
 @pytest.fixture
 def tracker():
+    init_db()
     return UsageTracker()
 
 
@@ -237,8 +249,12 @@ def test_local_execution_is_always_free(tracker):
     assert tracker.calculate_cost_eur("ollama", "deepseek-r1:8b", 10**6, 10**6) == 0.0
 
 
-def test_unknown_backend_costs_nothing(tracker):
-    assert tracker.calculate_cost_eur("no-such-backend", "no-such-model", 1000, 1000) == 0.0
+def test_unknown_cloud_price_is_unavailable_not_free(tracker):
+    with pytest.raises(PricingUnavailable):
+        tracker.calculate_cost_eur("no-such-backend", "no-such-model", 1000, 1000)
+    estimate = tracker.estimate_cost_range("no-such-backend", "no-such-model", 1000, 500, 2000)
+    assert not estimate.available
+    assert estimate.minimum_eur is None
 
 
 def test_cost_scales_with_token_count(tracker):
@@ -251,3 +267,12 @@ def test_cost_scales_with_token_count(tracker):
 
 def test_cost_is_never_negative(tracker):
     assert tracker.calculate_cost_eur("openai", "gpt-4o", 0, 0) >= 0.0
+
+
+def test_kimi_cached_input_costs_less_than_ordinary_input(tracker):
+    ordinary = tracker.calculate_cost_eur(
+        "kimi", "kimi-k2.7-code", 1_000_000, 0)
+    cached = tracker.calculate_cost_eur(
+        "kimi", "kimi-k2.7-code", 1_000_000, 0,
+        cached_input_tokens=1_000_000)
+    assert 0 < cached < ordinary

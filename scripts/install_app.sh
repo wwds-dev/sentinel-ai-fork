@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Install "Sentinel AI.app" into /Applications — a thin launcher that runs the
+# Install "Sentinel Fork.app" into /Applications — a thin launcher that runs the
 # project's own main.py through the project's .venv.
 #
 #   ./scripts/install_app.sh
@@ -22,7 +22,7 @@
 set -euo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-APP_NAME="Sentinel AI"
+APP_NAME="Sentinel Fork"
 INSTALLED="/Applications/${APP_NAME}.app"
 PY="${PROJECT_ROOT}/.venv/bin/python"
 
@@ -51,10 +51,10 @@ cat > "$STAGE/launch.applescript" <<APPLESCRIPT
 set pythonBin to "${PY}"
 set mainPy to "${PROJECT_ROOT}/main.py"
 if (do shell script "[ -x " & quoted form of pythonBin & " ] && [ -f " & quoted form of mainPy & " ] && echo ok || echo missing") is not "ok" then
-    display alert "Sentinel AI cannot start" message "The project is not where the app expects it:" & return & return & "${PROJECT_ROOT}" & return & return & "Re-run scripts/install_app.sh from the project." as critical
+    display alert "Sentinel Fork cannot start" message "The project is not where the app expects it:" & return & return & "${PROJECT_ROOT}" & return & return & "Re-run scripts/install_app.sh from the project." as critical
     return
 end if
-do shell script "cd " & quoted form of "${PROJECT_ROOT}" & " && " & quoted form of pythonBin & " " & quoted form of mainPy & " > /tmp/sentinelai_launch.log 2>&1; exit 0"
+do shell script "cd " & quoted form of "${PROJECT_ROOT}" & " && " & quoted form of pythonBin & " " & quoted form of mainPy & " > /tmp/sentinel_fork_launch.log 2>&1; exit 0"
 APPLESCRIPT
 
 osacompile -o "$APP_DIR" "$STAGE/launch.applescript"
@@ -69,7 +69,7 @@ cp "$PROJECT_ROOT/assets/icon.icns" "$APP_DIR/Contents/Resources/applet.icns"
 rm -f "$APP_DIR/Contents/Resources/Assets.car"
 defaults write "$APP_DIR/Contents/Info" CFBundleName -string "${APP_NAME}"
 defaults write "$APP_DIR/Contents/Info" CFBundleDisplayName -string "${APP_NAME}"
-defaults write "$APP_DIR/Contents/Info" CFBundleIdentifier -string "com.netrunner3000.sentinelai"
+defaults write "$APP_DIR/Contents/Info" CFBundleIdentifier -string "com.netrunner3000.sentinel.fork"
 defaults write "$APP_DIR/Contents/Info" LSUIElement -bool false
 plutil -convert xml1 "$APP_DIR/Contents/Info.plist"
 

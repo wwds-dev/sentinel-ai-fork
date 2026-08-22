@@ -1,3 +1,3 @@
 {
-  "agents": ["chat", "writing", "coding", "osint", "audiobook", "author", "manuscript"]
+  "agents": ["chat", "writing", "coding", "osint"]
 }

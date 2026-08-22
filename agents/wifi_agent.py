@@ -32,7 +32,7 @@ KNOWN_ADAPTERS = {
 
 AIRPORT = "/System/Library/PrivateFrameworks/Apple80211.framework/Versions/Current/Resources/airport"
 
-SYSTEM_PROMPT = """You are a Wi-Fi Security Analyst embedded in Sentinel AI — a macOS security command centre. You specialise in wireless network reconnaissance, adapter diagnostics, and offensive wireless tooling for authorised penetration testing.
+SYSTEM_PROMPT = """You are a Wi-Fi Security Analyst embedded in Sentinel — a macOS security command centre. You specialise in wireless network reconnaissance, adapter diagnostics, and offensive wireless tooling for authorised penetration testing.
 
 ─────────────────────────────────────────────
 BEHAVIOUR

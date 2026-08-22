@@ -3,7 +3,7 @@ import re
 
 
 MANAGER_SYSTEM_PROMPT = """\
-You are a software architect assistant for Sentinel AI — a PySide6 AI desktop app.
+You are a software architect assistant for Sentinel — a PySide6 AI desktop app.
 Your job is to convert a user's agent idea into a structured agent specification.
 
 Always reply with a single valid JSON object. No explanation, no markdown fences, just raw JSON.

@@ -1,4 +1,4 @@
-# GOD_AI — Sentinel AI Documentation
+# Sentinel — Desktop AI Command Centre
 
 
 ![Screenshot](docs/screenshot.png)
@@ -57,7 +57,7 @@
 15. [File & Directory Structure](#15-file--directory-structure)
 16. [First-Run & Migration](#16-first-run--migration)
 17. [Configuration Reference](#17-configuration-reference)
-18. [Earning Income with Sentinel AI](#18-earning-income-with-sentinel-ai)
+18. [Earning Income with Sentinel](#18-earning-income-with-sentinel-ai)
     - 18.1 [Service-Based Income (Fiverr, Web Design, Author)](#181-service-based-income-fiverr-web-design-author)
     - 18.2 [Recurring Revenue (Music, Audiobook)](#182-recurring-revenue-music-audiobook)
     - 18.3 [Speculative Income (Playmaker)](#183-speculative-income-playmaker)
@@ -69,7 +69,7 @@
 
 ## 1. Overview
 
-GOD_AI (also referred to as Sentinel AI) is a PySide6 desktop application that acts as a unified command centre for interacting with multiple AI providers — local (Ollama) and cloud (Anthropic, OpenAI, DeepSeek, Gemini). It provides:
+Sentinel is a PySide6 desktop application that acts as a unified command centre for interacting with multiple AI providers — local (Ollama) and cloud (Anthropic, OpenAI, DeepSeek, Gemini). It provides:
 
 - A multi-agent interface with specialised agents for different task categories.
 - A permission and validation gate that enforces provider restrictions, tool rules, and cost budgets before any request is sent.
@@ -256,7 +256,7 @@ The output box is also used by the Audiobook agent to display conversion logs an
 
 ## 5. Agents
 
-Sentinel AI ships with 15 first-party agents, each defined by its own Python class in `agents/` and a tailored system prompt. The left-panel navigator groups them by category (General, Finance & Business, Research, Security, Creative, Wellness, System); clicking an agent button either loads its standard chat panel or swaps the centre area for a fully custom GUI built for that workflow. Every agent supports all five providers (Ollama local, Anthropic, OpenAI, DeepSeek, Gemini), and most expose a Help button that opens this documentation at the relevant section. Anthropic Claude (Sonnet or Opus) typically gives the most structured, parser-friendly output for the analytical agents; Ollama works offline at no cost; the other cloud providers are interchangeable and chosen by taste, latency, or budget.
+Sentinel ships with 15 first-party agents, each defined by its own Python class in `agents/` and a tailored system prompt. The left-panel navigator groups them by category (General, Finance & Business, Research, Security, Creative, Wellness, System); clicking an agent button either loads its standard chat panel or swaps the centre area for a fully custom GUI built for that workflow. Every agent supports all five providers (Ollama local, Anthropic, OpenAI, DeepSeek, Gemini), and most expose a Help button that opens this documentation at the relevant section. Anthropic Claude (Sonnet or Opus) typically gives the most structured, parser-friendly output for the analytical agents; Ollama works offline at no cost; the other cloud providers are interchangeable and chosen by taste, latency, or budget.
 
 ### 5.1 Chat Agent
 
@@ -2802,9 +2802,9 @@ The Audiobook agent reads its paths and defaults from `services/tool_runner.py`,
 
 ---
 
-## 18. Earning Income with Sentinel AI
+## 18. Earning Income with Sentinel
 
-Sentinel AI is not just a research and analysis tool — several of its agents are designed to produce **deliverables you can sell** or **decisions you can act on for financial return**. This chapter is the practical, no-nonsense guide to converting agent output into income, broken down by income type.
+Sentinel is not just a research and analysis tool — several of its agents are designed to produce **deliverables you can sell** or **decisions you can act on for financial return**. This chapter is the practical, no-nonsense guide to converting agent output into income, broken down by income type.
 
 > ⚠️ Nothing in this chapter is financial, legal, or tax advice. Income from freelancing, music streaming, betting, bug bounties, and investing is taxable in most jurisdictions. Always check local laws, register your activity if required, and consult a qualified professional for serious decisions.
 
@@ -2956,7 +2956,7 @@ Recurring revenue compounds — once published, content keeps earning. These two
 
 **Setup workflow:**
 
-1. Click **🎵 Maestro** in Sentinel AI and fill in the artist brief.
+1. Click **🎵 Maestro** in Sentinel and fill in the artist brief.
 2. Use the generated Artist Profile (short + long bio) to claim your Spotify for Artists account at https://artists.spotify.com.
 3. Sign up with a distributor (DistroKid $22.99/year recommended for most independent artists; CD Baby for one-off releases).
 4. Upload the release with the generated metadata, ISRC handled by distributor.
@@ -3177,7 +3177,7 @@ A summary of what you can realistically expect from each path, based on public d
 | **Bug bounty** | $0–$200 | $500–$2k | $5k–$30k/mo full-time |
 | **OSINT freelance** | $0–$200 | $500–$2k | $3k–$10k/mo specialist |
 
-**Combined strategy** — most successful Sentinel AI users **stack 2–4 income paths**, e.g.:
+**Combined strategy** — most successful Sentinel users **stack 2–4 income paths**, e.g.:
 
 - Fiverr logo gigs (immediate cash) + freelance web design (medium ticket) + self-published books (backlist/passive).
 - Bug bounty (skill-based) + OSINT freelance (similar skillset, different deliverable).

@@ -1,4 +1,4 @@
-"""Generates assets/icon.icns for the Sentinel AI app from a drawn PNG."""
+"""Generates assets/icon.icns for the Sentinel app from a drawn PNG."""
 import subprocess
 from pathlib import Path
 

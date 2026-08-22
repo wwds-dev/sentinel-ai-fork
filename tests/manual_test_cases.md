@@ -1,4 +1,4 @@
-# Sentinel AI — Manual Test Cases
+# Sentinel — Manual Test Cases
 **Type:** User Acceptance Testing (UAT)
 **How to use:** Open the app, pick the agent, paste the input, then check the output against the "What to verify" list. Tick each box as you go.
 

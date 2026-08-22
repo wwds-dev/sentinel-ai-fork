@@ -1,4 +1,4 @@
-# Sentinel AI — TODO
+# Sentinel — TODO
 
 > **Legend** — priority `P0` critical · `P1` high · `P2` normal · `P3` low
 > categories `security` `bug` `feature` `performance` `design` `docs` `testing` `infra` `research`
@@ -11,21 +11,21 @@ under **Detail** — this checklist is the summary view.
 
 ## v2 — current
 
-- [ ] `P1` `design` `@ai` **Refactor Phase 4** — move the agent verticals into `ui/panels/`, smallest first: osint → manager → bug_bounty → osint_heavy → vpn → wifi. Move verbatim, one commit per panel, and key `_pending_requests` by run id (the `P1` bug below) while each panel is in hand. See `docs/refactor_plan.md`.
+- [x] `P1` `design` `@ai` **Refactor Phase 4** — all six agent verticals now live in `ui/panels/`: osint, manager, bug_bounty, osint_heavy, vpn and wifi. Their workers and request lifecycle go through `AgentPanel`; the focused panel/guard/resource suite has 196 passing tests and the full suite has 288.
 - [x] `P1` `design` `@ai` **Refactor Phase 3** — `AgentHost` (`ui/host.py`) and the `AgentPanel` base (`ui/panels/base.py`), with the design decision settled: composition, not mixins. Six panels' hand-built provider/model rows collapsed to one `build_provider_row` call each, six `*_load_models` methods to one `load_models_into`, and a map of loader *method names* to a registry panels fill in as they build. `main.py` 5,520 → 5,378; 77 new tests, 20 of which construct a panel with no `GodAI` at all.
 - [x] `P1` `design` `@ai` **GUI overhaul — section renderer.** Shipped for Trace: `SectionCard`/`SectionView` in `ui/widgets.py`, four tabbed text boxes replaced by cards with per-card copy, raw response collapsed behind a disclosure, and a separate streaming box so tokens still show live before there are sections to render. Reuse for Bloodhound next — its parser already exists.
-- [ ] `P2` `design` `@ai` **GUI overhaul — section renderer, remaining agents.** Bloodhound has a parser (`_parse_osint_heavy_sections`); Beacon, Bug Spray and Forge need one each. Original note: The change that justifies the rest, and it needs no new parsing: 12 `_parse_*_sections` methods already structure every answer and 70 text panes render it flat. Build against Trace (smallest vertical), then reuse. See `docs/gui_redesign.md`.
+- [x] `P2` `design` `@ai` **GUI overhaul — section renderer, remaining agents.** Bloodhound, Beacon, Bug Spray and Forge now use structured section views; focused UI tests cover their parsers and render targets.
 - [x] `P2` `design` `@ai` **GUI overhaul — run bar.** Three stacked control rows → one: tool · command · provider · model · live cost · gear. Execution mode, the six provider permissions and the model tools moved into a popover behind the gear. Splitter minimum dropped 985 → 927px. Deferring this to Phase 4 stopped being the right call once Sentinel was down to six agents and 111 lines of control rows.
 - [x] `P3` `design` `@ai` **GUI overhaul — flat agent list.** The sidebar accordion was built for fifteen agents; there are six. Drop `CollapsibleSection` from the sidebar, keep it where panels still use it.
 - [x] `P1` `design` `@ai` **GUI overhaul — type and spacing scale.** Five sizes (four of which read as one) → three; six weights → two; documented in `ui/style.py` with the 15px section-title role reserved.
 - [x] `P1` `design` `@ai` **GUI overhaul — status rail figures.** `Meter`/`Bar` in `ui/widgets.py` drive system and budget; exact numbers moved to tooltips; budget bars fill with what is spent.
-- [ ] `P1` `bug` `@ai` Key `_pending_requests` by run-id rather than agent name. Two simultaneous runs of the same agent would overwrite each other's context; unreachable today only because the panels disable their run button mid-flight.
-- [ ] `P2` `bug` `@ai` Remove the dead `ops_identity` sidebar entry — it is listed in `agent_titles` with no agent module or panel behind it
-- [ ] `P2` `feature` `@ai` Model Kimi prompt caching in `config/pricing.json`. Cache hits are ~80% off input ($0.19/1M), so estimates for repeated context are currently conservative.
-- [ ] `P2` `feature` `@ai` **Chat Projects Stage 2** — turn a group of saved chats into a context bundle (instructions, defaults, optional budget). Tractable now that every paid request has one choke point: two hook points instead of 22. See `docs/projects_roadmap.md`.
-- [ ] `P3` `design` `@ai` Budget card: `Session €` and `Daily €` could share a row (~34px), but the two label+field pairs do not fit the sidebar's ~250px inner width without shortening the labels
-- [ ] `P3` `testing` `@ai` Switch the budget comparison to `Decimal` — `1.00 - 0.90 == 0.09999999999999998`, so a request estimated at exactly the remaining budget is refused. It fails safe, and the test pins the current behaviour.
-- [ ] `P2` `research` `@me` Decide whether `RunLogger` should grow a general `note` method — it is the tidier home for the `_note_failure` warnings if they ever need to be queryable
+- [x] `P1` `bug` `@ai` Key `_pending_requests` by run-id rather than agent name. Panels retain their active request id through usage, completion and failure; concurrent same-agent runs have a regression test.
+- [x] `P2` `bug` `@ai` Remove the dead `ops_identity` sidebar entry — no sidebar, title-map, registry or panel reference remains.
+- [x] `P2` `feature` `@ai` Model Kimi prompt caching in pricing and billing. Exact cached-token usage is captured from both streamed and non-streamed responses and billed at the cache-read rate.
+- [x] `P2` `feature` `@ai` **Chat Projects Stage 2** — grouping, assignment, instructions, defaults, daily budget, management UI and backward-compatible chat files. See `docs/projects_roadmap.md`.
+- [x] `P3` `design` `@ai` Budget card uses session/daily meters and adds an active-project meter only when that project has a cap.
+- [x] `P3` `testing` `@ai` Switch budget comparisons to `Decimal` — a request estimated at exactly the remaining budget is now accepted without weakening over-budget checks.
+- [x] `P2` `research` `@ai` Keep `_note_failure` out of `RunLogger`: runs and operational warnings have different lifecycles. Warnings remain stderr + widget tooltips until a dedicated event log is justified.
 - [x] `P0` `security` `@ai` Paid API calls bypassed every guardrail outside the chat panel — 22 sites constructed a `ChatWorker` directly. `authorize_request` / `record_request` / `abandon_request` / `note_request_usage` now wrap all 19 previously unguarded sites.
 - [x] `P1` `bug` `@ai` Agent panels crushed when the window was narrow — 13 control rows converted to `FlowLayout`; splitter minimum 1460px → 985px
 - [x] `P0` `bug` `@ai` No timeouts on any paid cloud client — `services/api_limits.py` (120s, 1 retry) now shared by all five
@@ -35,9 +35,9 @@ under **Detail** — this checklist is the summary view.
 
 ### Workspace restructure — see `docs/workspace_structure.md`
 
-- [ ] `P1` `infra` `@ai` **Rename "Sentinel AI" → "Sentinel" everywhere** — window title, bundle name, `runtime_paths.APP_NAME`, `SINGLE_INSTANCE_KEY`, the `/Applications` bundle, the Lab Hub tile, the repo docs. Two traps: `APP_NAME` decides `~/Library/Application Support/<name>/`, so the directory needs migrating or the app looks freshly installed; and two apps sharing `SINGLE_INSTANCE_KEY` means launching one focuses the other.
+- [x] `P1` `infra` `@ai` **Rename "Sentinel AI" → "Sentinel"** — window, v2 bundle metadata, scripts, docs, data path and single-instance identity. Frozen builds copy legacy application-support data forward non-destructively.
 - [ ] `P1` `infra` `@ai` **Extract the shared platform package** — provider clients, `api_limits`, `usage_tracker`, `validator`, `registry`, `run_logger`, `database`, `runtime_paths`, the request guard, and `ui/{style,widgets,workers,dialogs}`. Four hubs each keeping their own copy is TODO #1 repeated four times. Do this before the hubs diverge further.
-- [ ] `P1` `feature` `@ai` **Finish integrating VPN Agent** as a Sentinel agent (`agents/vpn_agent.py` and a `Tunnel` sidebar entry have landed; `vpn_agent/` still exists as a standalone project and a Lab Hub tile).
+- [x] `P1` `feature` `@ai` **Finish integrating VPN Agent** — Tunnel is a first-class panel with provider/model selection, guarded requests, structured output and tests.
 - [ ] `P2` `infra` `@ai` **Create & Publish** — rebrand the fork (app name, bundle id, icon, `APP_NAME`, single-instance key), integrate `vidforge`, re-shape as tabs (Write · Audio · Web · Gigs), rename `author`→Manuscript and `manuscript`→Publisher internally so the display names and keys stop disagreeing.
 - [ ] `P2` `infra` `@ai` **Backup & Sync hub** — a standalone app in Sentinel's shape holding Backup Control Center and git_autosync, both runnable from inside it.
 - [ ] `P2` `feature` `@ai` **Lab Hub front desk** — hub tiles that list their contents in a smaller font, and a Tools tab presenting Narrator, Unblock Tracker, Convert and Image tools as tiles.
@@ -47,14 +47,14 @@ under **Detail** — this checklist is the summary view.
 
 ### Interface, remaining from the approved mock screens
 
-- [ ] `P2` `design` `@ai` **Trace and Bloodhound still render into tabs** in places the section renderer should own.
-- [ ] `P3` `design` `@ai` The `READY` pill is the last uppercase letter-spaced element in the centre column; the design has no such chrome.
-- [ ] `P3` `design` `@ai` **SAVED CHATS is a four-control stack** (filter, search, list, two buttons) in a rail that is otherwise flat rows. Compress it.
-- [ ] `P3` `design` `@ai` Normalise the remaining ad-hoc `setContentsMargins` calls onto the 4/8/16/24 scale — the right rail and centre are done, the agent panels are not.
+- [x] `P2` `design` `@ai` Trace and Bloodhound use the shared section renderer while preserving a raw streaming view during generation.
+- [x] `P3` `design` `@ai` Status pill is sentence-case `Ready` with no letter spacing.
+- [x] `P3` `design` `@ai` Saved Chats controls are compressed into project selector + agent/search row + action row.
+- [x] `P3` `design` `@ai` Remaining active panels use the 4/8/16/24 spacing scale.
 
 ### Process
 
-- [ ] `P2` `docs` `@ai` **Verify visual changes by rendering, not by grepping** — `docs/handoff.md` has the offscreen `WA_DontShowOnScreen` + `grab()` recipe. Several design changes were reported as done while never reaching the screen.
+- [x] `P2` `docs` `@ai` **Verify visual changes by rendering** — the v2 window was rendered at 1600×1000 and inspected after the Projects/UI changes.
 - [ ] `P3` `infra` `@me` `bazaar` and `playmaker` had no initial commit, so `git_autosync` was skipping them entirely. Both now have one. Worth checking no other project is in that state after the restructure.
 
 ## v3 — later

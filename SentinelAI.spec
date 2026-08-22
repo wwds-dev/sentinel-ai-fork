@@ -1,8 +1,8 @@
 # -*- mode: python ; coding: utf-8 -*-
-"""PyInstaller spec for Sentinel AI — self-contained macOS .app bundle.
+"""PyInstaller spec for Sentinel Fork — self-contained macOS .app bundle.
 
 Build:   .venv/bin/pyinstaller --noconfirm SentinelAI.spec
-Output:  dist/Sentinel AI.app
+Output:  dist/Sentinel Fork.app
 """
 from PyInstaller.utils.hooks import collect_all, collect_submodules
 
@@ -11,7 +11,6 @@ binaries = []
 hiddenimports = [
     "tiktoken_ext",
     "tiktoken_ext.openai_public",
-    "services.narrator.converter",   # invoked via the --narrator-worker sentinel
     "whois",                         # lazy import in providers/domain_lookup
     "dns", "dns.resolver",           # lazy import in providers/domain_lookup
 ]
@@ -57,7 +56,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name="Sentinel AI",
+    name="Sentinel Fork",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -77,26 +76,27 @@ coll = COLLECT(
     strip=False,
     upx=False,
     upx_exclude=[],
-    name="Sentinel AI",
+    name="Sentinel Fork",
 )
 
 app = BUNDLE(
     coll,
-    name="Sentinel AI.app",
+    name="Sentinel Fork.app",
     icon="assets/icon.icns",
-    bundle_identifier="com.netrunner3000.sentinelai",
+    bundle_identifier="com.netrunner3000.sentinel.fork",
     info_plist={
-        "CFBundleName": "Sentinel AI",
-        "CFBundleDisplayName": "Sentinel AI",
-        "CFBundleShortVersionString": "1.0.0",
-        "CFBundleVersion": "1.0.0",
+        "CFBundleName": "Sentinel Fork",
+        "CFBundleDisplayName": "Sentinel Fork",
+        "CFBundleGetInfoString": "Sentinel Fork 2.0 — independent development build",
+        "CFBundleShortVersionString": "2.0.0",
+        "CFBundleVersion": "2.0.0",
         "NSHighResolutionCapable": True,
         "NSRequiresAquaSystemAppearance": False,   # allow dark mode
         "LSMinimumSystemVersion": "12.0",
         "LSApplicationCategoryType": "public.app-category.developer-tools",
         # App writes only to ~/Library/Application Support, but it reads the
         # user's ebook folder etc. — declare a usage string for Documents access.
-        "NSDesktopFolderUsageDescription": "Sentinel AI reads ebooks and saves outputs you choose.",
-        "NSDocumentsFolderUsageDescription": "Sentinel AI reads ebooks and saves outputs you choose.",
+        "NSDesktopFolderUsageDescription": "Sentinel Fork reads files and saves outputs you choose.",
+        "NSDocumentsFolderUsageDescription": "Sentinel Fork reads files and saves outputs you choose.",
     },
 )

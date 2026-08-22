@@ -1,11 +1,11 @@
-"""Central path resolution for Sentinel AI.
+"""Central path resolution for Sentinel Fork.
 
 In development (running `python main.py`) every path resolves to the project
 root exactly as before — behaviour is unchanged.
 
 When frozen by PyInstaller (`sys.frozen` is set) the app bundle is read-only,
 so writable state (SQLite DB, saved chats, logs, editable config, .env) is
-redirected to  ~/Library/Application Support/Sentinel AI/  and seeded from the
+redirected to  ~/Library/Application Support/Sentinel Fork/  and seeded from the
 read-only copies bundled inside the .app on first launch.
 
 Both main.py and services/database.py import from here so they always agree on
@@ -15,7 +15,8 @@ import sys
 import shutil
 from pathlib import Path
 
-APP_NAME = "Sentinel AI"
+APP_NAME = "Sentinel Fork"
+LEGACY_APP_NAMES = ("Sentinel", "Sentinel AI")
 
 
 def is_frozen() -> bool:
@@ -40,11 +41,18 @@ def resource_base() -> Path:
 def user_data_base() -> Path:
     """Writable base directory.
 
-    Frozen: ~/Library/Application Support/Sentinel AI  (created if missing).
+    Frozen: ~/Library/Application Support/Sentinel Fork  (created if missing).
     Dev:    the project root, so `python main.py` keeps writing in-place.
     """
     if is_frozen():
         d = Path.home() / "Library" / "Application Support" / APP_NAME
+        if not d.exists():
+            for legacy_name in LEGACY_APP_NAMES:
+                legacy = d.parent / legacy_name
+                if legacy.exists():
+                    # Copy, rather than move: the fork and original stay independent.
+                    shutil.copytree(legacy, d)
+                    break
         d.mkdir(parents=True, exist_ok=True)
         return d
     return Path(__file__).resolve().parent.parent

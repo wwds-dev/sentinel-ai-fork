@@ -170,7 +170,7 @@ if the recommendation system found each panel's loader through the new registry.
 Two mutants confirmed the tests bite: dropping the initial `load()` and making
 `register_model_loader` a no-op fail 3 and 13 tests respectively.
 
-**Phase 4 — move agent verticals one at a time**, smallest first:
+**Phase 4 — move agent verticals one at a time. DONE (2026-08-21).** Moved smallest first:
 osint → manager → bug_bounty → osint_heavy → vpn → wifi. (The 2026-08-19 cull
 took the app from fifteen agents to seven; the old order — webdesign, health,
 music, fiverr, ops_identity, nfl_bet, manuscript, author — went with it.)
@@ -178,8 +178,10 @@ music, fiverr, ops_identity, nfl_bet, manuscript, author — went with it.)
 Smallest first is deliberate: the first move proves the base class and the host
 protocol on a cheap target, and each later one is the same shape.
 
-**Phase 5 — `GodAI` becomes a shell**: build the three panes, own the shared
-services, hold the panel instances.
+**Phase 5 — `GodAI` becomes a shell. IN PROGRESS** It builds the three panes,
+owns shared services and holds the six extracted panel instances. The remaining
+chat/history/application-shell methods still need grouping before this phase is
+complete.
 
 ## The decision phase 3 settled
 
@@ -195,7 +197,9 @@ The coupling numbers above said the cost was affordable, and mixins would have
 left #2 half-done while looking finished. `AgentPanel` is the composition side of
 that: panels hold a host, not a shared namespace.
 
-**Phases 1–3 are complete**: **−1,733 lines** out of `main.py` (895 in Phase 1,
+**Phases 1–4 are complete**: the six verticals are standalone `AgentPanel`
+classes and `main.py` is 3,413 lines in the current working tree. Earlier,
+phases 1–3 removed **1,733 lines** from `main.py` (895 in Phase 1,
 696 in Phase 2, 142 in Phase 3) — the first two structural, the third the design
 commitment.
 

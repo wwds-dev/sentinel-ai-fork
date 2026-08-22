@@ -391,6 +391,51 @@ def show_settings(app):
     pl.addStretch()
     tabs.addTab(pricing_tab, "Pricing")
 
+    # ── Tab 5: Projects ──────────────────────────────────────────
+    projects_tab = QWidget()
+    pjl = QVBoxLayout(projects_tab)
+    pjl.setContentsMargins(8, 8, 8, 8)
+    pjl.addWidget(QLabel(
+        "Projects group chats and add their instructions to every request. "
+        "Archive hides a project without deleting its chats."
+    ))
+    projects_grid = QGridLayout()
+    for col, hdr in enumerate(
+        ["Name", "Instructions", "Agent", "Provider", "Model", "Budget €", "Archived"]
+    ):
+        projects_grid.addWidget(QLabel(f"<b>{hdr}</b>"), 0, col)
+
+    project_widgets = {}
+    agent_names = [agent["name"] for agent in app.registry.list_agents()]
+    for row_no, project in enumerate(app.registry.list_projects(include_archived=True), start=1):
+        name = QLineEdit(project["name"])
+        instructions = QLineEdit(project.get("instructions") or "")
+        instructions.setPlaceholderText("Context sent with every request")
+        agent = QComboBox(); agent.addItems(agent_names); agent.setCurrentText(project.get("default_agent") or "chat")
+        provider = QComboBox(); provider.addItems(["", "ollama", "openai", "deepseek", "kimi", "gemini", "anthropic", "qwen"]); provider.setCurrentText(project.get("default_provider") or "")
+        model = QLineEdit(project.get("default_model") or "")
+        budget = QLineEdit("" if project.get("budget_eur") is None else str(project["budget_eur"]))
+        budget.setMaximumWidth(80)
+        archived = QCheckBox(); archived.setChecked(bool(project.get("archived")))
+        widgets = (name, instructions, agent, provider, model, budget, archived)
+        for col, widget in enumerate(widgets):
+            projects_grid.addWidget(widget, row_no, col)
+        project_widgets[project["id"]] = widgets
+
+    new_row = len(project_widgets) + 1
+    new_name = QLineEdit(); new_name.setPlaceholderText("New project name")
+    new_instructions = QLineEdit(); new_instructions.setPlaceholderText("Optional project instructions")
+    new_agent = QComboBox(); new_agent.addItems(agent_names); new_agent.setCurrentText(getattr(app, "_current_agent", "chat"))
+    new_provider = QComboBox(); new_provider.addItems(["", "ollama", "openai", "deepseek", "kimi", "gemini", "anthropic", "qwen"])
+    new_model = QLineEdit(); new_model.setPlaceholderText("Optional model")
+    new_budget = QLineEdit(); new_budget.setPlaceholderText("none"); new_budget.setMaximumWidth(80)
+    new_archived = QCheckBox()
+    for col, widget in enumerate((new_name, new_instructions, new_agent, new_provider, new_model, new_budget, new_archived)):
+        projects_grid.addWidget(widget, new_row, col)
+    pjl.addLayout(projects_grid)
+    pjl.addStretch()
+    tabs.addTab(projects_tab, "Projects")
+
     # ── Save handler ──────────────────────────────────────────────
     def save_all():
         errors = []
@@ -450,9 +495,42 @@ def show_settings(app):
                     errors.append(f"Pricing {backend}/{model}: invalid number.")
             conn.commit()
 
+        # Projects
+        for project_id, widgets in project_widgets.items():
+            name, instructions, agent, provider, model, budget_edit, archived = widgets
+            raw_budget = budget_edit.text().strip()
+            try:
+                budget = float(raw_budget) if raw_budget else None
+            except ValueError:
+                errors.append(f"Project '{name.text()}': invalid budget value.")
+                continue
+            app.registry.upsert_project({
+                "id": project_id, "name": name.text(),
+                "instructions": instructions.text(),
+                "default_agent": agent.currentText(),
+                "default_provider": provider.currentText(),
+                "default_model": model.text().strip(),
+                "budget_eur": budget, "archived": archived.isChecked(),
+            })
+
+        if new_name.text().strip():
+            raw_budget = new_budget.text().strip()
+            try:
+                budget = float(raw_budget) if raw_budget else None
+                app.registry.upsert_project({
+                    "name": new_name.text(), "instructions": new_instructions.text(),
+                    "default_agent": new_agent.currentText(),
+                    "default_provider": new_provider.currentText(),
+                    "default_model": new_model.text().strip(),
+                    "budget_eur": budget, "archived": new_archived.isChecked(),
+                })
+            except ValueError:
+                errors.append("New project: invalid budget value.")
+
         app.update_usage_labels()
         app.registry = Registry()
         app.validator = Validator(app.registry)
+        app.refresh_project_selector()
 
         if errors:
             QMessageBox.warning(dialog, "Saved with errors", "\n".join(errors))
@@ -732,4 +810,3 @@ def show_model_guide(app):
     search_box.textChanged.connect(apply_search)
 
     dialog.exec()
-

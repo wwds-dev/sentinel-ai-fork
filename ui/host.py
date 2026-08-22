@@ -36,6 +36,11 @@ class AgentHost(Protocol):
     # ── Agent instances ─────────────────────────────────────────────────
     agent_instances: dict[str, Any]
 
+    # Writes a new agent's module and registry entries. A panel asks for it
+    # rather than owning it: it edits `agents/` and `config/` for the whole
+    # application (Forge's Approve button is the only caller today).
+    agent_factory: Any
+
     def run_backend(self, backend: str, model: str, messages: list,
                     prompt: str) -> Any:
         """Execute one request. Panels hand this to a ChatWorker."""
@@ -48,21 +53,25 @@ class AgentHost(Protocol):
 
     def authorize_request(self, agent: str, provider: str, model: str,
                           prompt: str, tool: str | None = None,
-                          label: str | None = None) -> bool:
-        """False means the request must not be sent."""
+                          label: str | None = None) -> str | None:
+        """Return a unique request id, or ``None`` when blocked."""
         ...
 
-    def record_request(self, agent: str, response: str,
+    def record_request(self, request_id: str, response: str,
                        messages: list | None = None) -> None:
         """Bill, save and close out an authorised request."""
         ...
 
-    def abandon_request(self, agent: str, reason: str = "error") -> None:
+    def abandon_request(self, request_id: str, reason: str = "error") -> None:
         """Drop a failed request so it is not billed."""
         ...
 
-    def note_request_usage(self, agent: str, usage: dict) -> None:
+    def note_request_usage(self, request_id: str, usage: dict) -> None:
         """Real token counts, when the worker reports them."""
+        ...
+
+    def apply_project_context(self, messages: list) -> list:
+        """Inject the active project's instructions into a request once."""
         ...
 
     # ── Shared services ─────────────────────────────────────────────────

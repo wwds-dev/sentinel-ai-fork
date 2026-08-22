@@ -1,4 +1,4 @@
-# Chat Projects — Stage 2 roadmap
+# Chat Projects — Stage 2 complete
 
 Stage 1 (a tidier Saved Chats list) is **done**: agent filter, search, and
 rename. This document is the plan for Stage 2 — turning a group of chats into a
@@ -63,47 +63,47 @@ existing one converge.
 ## Tasks
 
 ### 2.1 — Storage and registry  *(no UI)*
-- [ ] `projects` table in `services/database.py` + migration
-- [ ] `Registry.list_projects()` / `get_project()` / `upsert_project()` /
+- [x] `projects` table in `services/database.py` + migration
+- [x] `Registry.list_projects()` / `get_project()` / `upsert_project()` /
       `archive_project()`
-- [ ] `HistoryStore.save_chat(..., project=None)` writes the field
-- [ ] Tests: round-trip a project, and confirm a chat with no `project` still
+- [x] `HistoryStore.save_chat(..., project=None)` writes the field
+- [x] Tests: round-trip a project, and confirm a chat with no `project` still
       loads (the backward-compatibility guarantee)
 
 ### 2.2 — Project selector in the sidebar
-- [ ] Combo above the agent filter: *All projects · <projects> · Unfiled*
-- [ ] Filter the list by project, combining with the existing agent filter and
+- [x] Combo above the agent filter: *All projects · <projects> · Unfiled*
+- [x] Filter the list by project, combining with the existing agent filter and
       search (all three must intersect, not override each other)
-- [ ] "Assign to project…" on the right-click menu of a saved chat
-- [ ] New chats inherit the currently selected project
+- [x] "Assign to project…" on the right-click menu of a saved chat
+- [x] New chats inherit the currently selected project
 
 ### 2.3 — Instructions injection  *(the core of Stage 2)*
-- [ ] Prepend `project.instructions` to the system message in
+- [x] Prepend `project.instructions` to the system message in
       `build_tool_messages()` and in the agent `build_messages()` path
-- [ ] Show the active project in the agent header bar so it is never a surprise
+- [x] Show the active project in the agent header bar so it is never a surprise
       what context is being sent
-- [ ] Count the instructions in the cost estimate — they are billed tokens, and
+- [x] Count the instructions in the cost estimate — they are billed tokens, and
       `estimate_chat_cost()` currently sees only the prompt
-- [ ] Tests: a project's instructions appear exactly once, in the system message,
+- [x] Tests: a project's instructions appear exactly once, in the system message,
       and never leak into a chat from another project
 
 ### 2.4 — Defaults on open
-- [ ] Selecting a project applies its `default_agent` / provider / model
-- [ ] Never override a choice the user just made by hand — apply on project
+- [x] Selecting a project applies its `default_agent` / provider / model
+- [x] Never override a choice the user just made by hand — apply on project
       switch only
-- [ ] "Save current setup as project defaults" action
+- [x] "Save current setup as project defaults" action
 
 ### 2.5 — Per-project budget
-- [ ] `budget_eur` enforced in `authorize_request()` via a new `Validator` rule,
+- [x] `budget_eur` enforced in `authorize_request()` via a new `Validator` rule,
       mirroring rule 7's shape and message
-- [ ] Project spend readout in the BUDGET card when a project is active
-- [ ] Tests alongside the existing budget tests in `tests/test_cost_and_limits.py`
+- [x] Project spend readout in the BUDGET card when a project is active
+- [x] Tests alongside the existing budget tests in `tests/test_cost_and_limits.py`
 
 ### 2.6 — Management UI
-- [ ] Projects tab in the Settings dialog (`ui/dialogs.py`) — create, rename,
+- [x] Projects tab in the Settings dialog (`ui/dialogs.py`) — create, rename,
       edit instructions, set defaults and budget, archive
-- [ ] Delete leaves chats intact and marks them unfiled — never cascade-delete
-      conversations
+- [x] Archive hides projects without deleting either the project record or its
+      conversations; chats can be reassigned to Unfiled from their context menu
 
 ---
 

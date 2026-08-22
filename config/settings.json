@@ -7,7 +7,10 @@
   "kimi_model": "kimi-k2.7-code",
   "gemini_model": "gemini-2.5-flash",
   "hybrid_cloud_target": "auto",
-  "default_model_ollama": "deepseek-r1:8b",
+  "default_model_ollama": "muse-glimmer:30b-mlx",
   "default_model_deepseek": "deepseek-v4-flash",
-  "default_model_kimi": "kimi-k3"
+  "default_model_kimi": "kimi-k3",
+  "default_model_openai": "chatgpt-image-latest",
+  "default_model_anthropic": "claude-fable-5",
+  "default_model_qwen": "qwen3.8-max"
 }

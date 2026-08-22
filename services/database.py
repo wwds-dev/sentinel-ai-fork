@@ -4,7 +4,7 @@ from pathlib import Path
 
 from services.runtime_paths import user_data_base
 
-# Writable base: project root in dev, ~/Library/Application Support/Sentinel AI when frozen.
+# Writable base: project root in dev, ~/Library/Application Support/Sentinel when frozen.
 BASE_DIR = user_data_base()
 DB_PATH = BASE_DIR / "data" / "sentinel.db"
 
@@ -49,6 +49,19 @@ CREATE TABLE IF NOT EXISTS usage (
     cost_eur      REAL NOT NULL DEFAULT 0.0,
     cost_type     TEXT NOT NULL DEFAULT 'estimated',
     cloud         INTEGER NOT NULL DEFAULT 0
+    ,project       TEXT
+);
+
+CREATE TABLE IF NOT EXISTS projects (
+    id               TEXT PRIMARY KEY,
+    name             TEXT NOT NULL,
+    instructions     TEXT NOT NULL DEFAULT '',
+    default_agent    TEXT NOT NULL DEFAULT 'chat',
+    default_provider TEXT NOT NULL DEFAULT '',
+    default_model    TEXT NOT NULL DEFAULT '',
+    budget_eur       REAL,
+    archived         INTEGER NOT NULL DEFAULT 0,
+    created_at       TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS runs (
@@ -73,7 +86,13 @@ CREATE TABLE IF NOT EXISTS pricing (
     backend          TEXT NOT NULL,
     model            TEXT NOT NULL,
     input_per_1m_usd REAL NOT NULL DEFAULT 0.0,
+    cached_input_per_1m_usd REAL,
     output_per_1m_usd REAL NOT NULL DEFAULT 0.0,
+    price_source      TEXT,
+    verified_at       TEXT,
+    price_region      TEXT,
+    price_tier        TEXT,
+    price_status      TEXT NOT NULL DEFAULT 'unknown',
     PRIMARY KEY (backend, model)
 );
 
@@ -150,14 +169,91 @@ def init_db() -> None:
     is_new = not DB_PATH.exists()
     conn = get_connection()
     conn.executescript(SCHEMA)
+    _ensure_schema_columns(conn)
     conn.commit()
     if is_new:
         _migrate_from_json(conn)
     _seed_missing_pricing(conn)
+    _sync_cached_pricing(conn)
+    _sync_pricing_metadata(conn)
     _correct_stale_pricing(conn)
     _seed_default_agents(conn)
     _sync_agent_labels(conn)
     conn.close()
+
+
+def _ensure_schema_columns(conn: sqlite3.Connection) -> None:
+    pricing_columns = {
+        row["name"] for row in conn.execute("PRAGMA table_info(pricing)")
+    }
+    if "cached_input_per_1m_usd" not in pricing_columns:
+        conn.execute("ALTER TABLE pricing ADD COLUMN cached_input_per_1m_usd REAL")
+    for name, declaration in {
+        "price_source": "TEXT", "verified_at": "TEXT", "price_region": "TEXT",
+        "price_tier": "TEXT", "price_status": "TEXT NOT NULL DEFAULT 'unknown'",
+    }.items():
+        if name not in pricing_columns:
+            conn.execute(f"ALTER TABLE pricing ADD COLUMN {name} {declaration}")
+    usage_columns = {row["name"] for row in conn.execute("PRAGMA table_info(usage)")}
+    if "project" not in usage_columns:
+        conn.execute("ALTER TABLE usage ADD COLUMN project TEXT")
+    conn.commit()
+
+
+def _sync_cached_pricing(conn: sqlite3.Connection) -> None:
+    """Load cache-read rates and seed their rows without overwriting user prices."""
+    data = _load_json(BASE_DIR / "config" / "pricing.json", {})
+    for backend, models in data.items():
+        if not isinstance(models, dict):
+            continue
+        for model, prices in models.items():
+            if not isinstance(prices, dict):
+                continue
+            cached = prices.get("cached_input_per_1m_usd")
+            if cached is not None:
+                conn.execute(
+                    """INSERT INTO pricing
+                       (backend, model, input_per_1m_usd,
+                        cached_input_per_1m_usd, output_per_1m_usd)
+                       VALUES (?,?,?,?,?)
+                       ON CONFLICT(backend, model) DO UPDATE SET
+                         cached_input_per_1m_usd = excluded.cached_input_per_1m_usd""",
+                    (
+                        backend,
+                        model,
+                        float(prices.get("input_per_1m_usd", 0.0)),
+                        float(cached),
+                        float(prices.get("output_per_1m_usd", 0.0)),
+                    ),
+                )
+    conn.commit()
+
+
+def _sync_pricing_metadata(conn: sqlite3.Connection) -> None:
+    """Refresh catalogue provenance without overwriting user-edited rates."""
+    data = _load_json(BASE_DIR / "config" / "pricing.json", {})
+    fx = data.get("fx", {})
+    catalog = data.get("catalog", {})
+    if isinstance(fx, dict):
+        for key in ("source", "verified_at", "status"):
+            if fx.get(key) is not None:
+                conn.execute("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
+                             (f"eur_per_usd_{key}", str(fx[key])))
+    for backend, models in data.items():
+        if backend in {"eur_per_usd", "fx", "catalog"} or not isinstance(models, dict):
+            continue
+        for model, prices in models.items():
+            if not isinstance(prices, dict):
+                continue
+            conn.execute(
+                """UPDATE pricing SET price_source=?, verified_at=?, price_region=?,
+                   price_tier=?, price_status=? WHERE backend=? AND model=?""",
+                (prices.get("source", catalog.get("source")),
+                 prices.get("verified_at", catalog.get("verified_at")), prices.get("region"),
+                 prices.get("tier", catalog.get("tier")),
+                 prices.get("status", catalog.get("status", "unknown")), backend, model),
+            )
+    conn.commit()
 
 
 def _sync_agent_labels(conn: sqlite3.Connection) -> None:
@@ -419,12 +515,16 @@ def _migrate_pricing(conn: sqlite3.Connection) -> None:
             if not isinstance(prices, dict):
                 continue
             conn.execute("""
-                INSERT OR REPLACE INTO pricing (backend, model, input_per_1m_usd, output_per_1m_usd)
-                VALUES (?,?,?,?)
+                INSERT OR REPLACE INTO pricing
+                  (backend, model, input_per_1m_usd, cached_input_per_1m_usd,
+                   output_per_1m_usd)
+                VALUES (?,?,?,?,?)
             """, (
                 backend,
                 model,
                 float(prices.get("input_per_1m_usd", 0.0)),
+                (float(prices["cached_input_per_1m_usd"])
+                 if prices.get("cached_input_per_1m_usd") is not None else None),
                 float(prices.get("output_per_1m_usd", 0.0)),
             ))
 

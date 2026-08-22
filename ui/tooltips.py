@@ -18,7 +18,7 @@ def seed_tooltips(app):
         "model_box":               "Specific model under the chosen provider. Larger models cost more but produce stronger output.",
         "refresh_models_btn":      "Re-fetch the model list from the selected provider.",
         "model_guide_btn":         "Open the in-app Model Guide with current models, pricing, and recommendations.",
-        "docs_btn":                "Open the full Sentinel AI documentation.",
+        "docs_btn":                "Open the full Sentinel documentation.",
         "agent_docs_btn":          "Open the documentation for the currently active agent.",
         "execution_mode_box":      "Local-only: only Ollama. Hybrid: pick best of local/cloud. Cloud-only: only paid providers.",
         "allow_openai_checkbox":   "Allow this request to use the OpenAI API (paid).",
@@ -164,14 +164,14 @@ def seed_tooltips(app):
 
     # Wi-Fi (Beacon)
     app._set_tooltips({
-        "wifi_mode_box":          "What to run — Interface Info, Scan Networks, Signal Monitor, Ping Test, or Kali Command Builder.",
-        "wifi_interface_box":     "Which network interface to use (typically en0 on Mac).",
-        "wifi_target_input":      "Target host (only used by Ping Test mode).",
-        "wifi_run_btn":           "Run the selected mode.",
-        "wifi_stop_btn":          "Cancel the running scan / probe.",
-        "wifi_help_btn":          "Open the Beacon documentation section.",
-        "wifi_detect_btn":        "Scan USB for known compatible Wi-Fi adapters (TL-WN722N, AWUS036ACH, etc.).",
-        "wifi_save_btn":          "Save the raw output to a file.",
+        "wifi.mode_box":          "What to run — Interface Info, Scan Networks, Signal Monitor, Ping Test, or Kali Command Builder.",
+        "wifi.interface_box":     "Which network interface to use (typically en0 on Mac).",
+        "wifi.target_input":      "Target host (only used by Ping Test mode).",
+        "wifi.run_btn":           "Run the selected mode.",
+        "wifi.stop_btn":          "Cancel the running scan / probe.",
+        "wifi.help_btn":          "Open the Beacon documentation section.",
+        "wifi.detect_btn":        "Scan USB for known compatible Wi-Fi adapters (TL-WN722N, AWUS036ACH, etc.).",
+        "wifi.save_btn":          "Save the raw output to a file.",
     })
 
     # Fiverr (Atelier)
@@ -186,42 +186,43 @@ def seed_tooltips(app):
         "fiverr_clear_btn":        "Clear the brief and outputs.",
     })
 
-    # OSINT (Trace)
+    # OSINT (Trace) — moved to ui/panels/osint.py, so the names are dotted.
     app._set_tooltips({
-        "osint_query_input":    "What you want to research — name, handle, domain, email, etc.",
-        "osint_provider_box":   "Provider for the analysis call.",
-        "osint_model_box":      "Specific model.",
-        "osint_analyse_btn":    "Run the structured OSINT query.",
-        "osint_stop_btn":       "Cancel the analysis.",
+        "osint.target_input":   "What you want to research — name, handle, domain, email, etc.",
+        "osint.type_box":       "Narrow the search to one kind of identifier, or let Trace detect it.",
+        "osint.provider_box":   "Provider for the analysis call.",
+        "osint.model_box":      "Specific model.",
+        "osint.analyse_btn":    "Run the structured OSINT query.",
+        "osint.stop_btn":       "Cancel the analysis.",
     })
 
     # OSINT Pro (Bloodhound)
     app._set_tooltips({
-        "osint_heavy_target_input":     "Target identifier (person, username, domain, IP, organisation).",
-        "osint_heavy_type_box":         "Target type — guides which tools and pivots are used.",
-        "osint_heavy_scope_box":        "Investigation depth: Quick Scan / Standard / Deep Dive.",
-        "osint_heavy_objective_input":  "Investigation objective / context for the analyst.",
-        "osint_heavy_image_input":      "Optional — image to extract EXIF metadata from.",
-        "osint_heavy_investigate_btn":  "Generate the five-section investigation dossier.",
-        "osint_heavy_stop_btn":         "Cancel the investigation.",
-        "osint_heavy_save_btn":         "Save the full dossier to a .txt file.",
-        "osint_heavy_threat_bar":       "Threat level on a 0–10 scale, extracted from the dossier.",
+        "osint_heavy.target_input":     "Target identifier (person, username, domain, IP, organisation).",
+        "osint_heavy.type_box":         "Target type — guides which tools and pivots are used.",
+        "osint_heavy.scope_box":        "Investigation depth: Quick Scan / Standard / Deep Dive.",
+        "osint_heavy.objective_input":  "Investigation objective / context for the analyst.",
+        "osint_heavy.browse_btn":      "Optional — image to extract EXIF metadata from.",
+        "osint_heavy.investigate_btn":  "Generate the five-section investigation dossier.",
+        "osint_heavy.stop_btn":         "Cancel the investigation.",
+        "osint_heavy.save_btn":         "Save the full dossier to a .txt file.",
+        "osint_heavy.threat_bar":       "Threat level on a 0–10 scale, extracted from the dossier.",
     })
 
     # Bug Bounty (Bug Spray)
     app._set_tooltips({
-        "bb_target_input":       "Target asset in scope of the bug bounty program.",
-        "bb_program_input":      "Name of the bug bounty program (HackerOne, Bugcrowd, etc.).",
-        "bb_scope_box":          "Scope category — Web, Mobile, API, Network, etc.",
-        "bb_findings_input":     "Paste raw findings: HTTP responses, Burp output, source snippets, recon notes.",
-        "bb_nmap_cmd_input":     "Nmap command to run (will execute via subprocess locally).",
-        "bb_nmap_run_btn":       "Run the Nmap command and capture output below.",
-        "bb_nmap_stop_btn":      "Kill the running Nmap process.",
-        "bb_nmap_output":        "Live Nmap subprocess output.",
-        "bb_analyse_btn":        "Produce a CWE-classified vulnerability report and HackerOne-ready submission.",
-        "bb_stop_btn":           "Cancel the analysis.",
-        "bb_save_btn":           "Save the full report to a .txt file.",
-        "bb_clear_btn":          "Clear inputs and outputs.",
+        "bug_bounty.target_input":       "Target asset in scope of the bug bounty program.",
+        "bug_bounty.program_input":      "Name of the bug bounty program (HackerOne, Bugcrowd, etc.).",
+        "bug_bounty.scope_box":          "Scope category — Web, Mobile, API, Network, etc.",
+        "bug_bounty.findings_input":     "Paste raw findings: HTTP responses, Burp output, source snippets, recon notes.",
+        "bug_bounty.nmap_cmd_input":     "Nmap command to run (will execute via subprocess locally).",
+        "bug_bounty.nmap_run_btn":       "Run the Nmap command and capture output below.",
+        "bug_bounty.nmap_stop_btn":      "Kill the running Nmap process.",
+        "bug_bounty.nmap_output":        "Live Nmap subprocess output.",
+        "bug_bounty.analyse_btn":        "Produce a CWE-classified vulnerability report and HackerOne-ready submission.",
+        "bug_bounty.stop_btn":           "Cancel the analysis.",
+        "bug_bounty.save_btn":           "Save the full report to a .txt file.",
+        "bug_bounty.clear_btn":          "Clear inputs and outputs.",
     })
 
     # Audiobook (Narrator)
@@ -240,13 +241,13 @@ def seed_tooltips(app):
 
     # Manager (Forge)
     app._set_tooltips({
-        "manager_idea_input":   "Describe the agent you want to create in plain language.",
-        "manager_provider_box": "Provider used to generate the agent spec.",
-        "manager_model_box":    "Specific model.",
-        "manager_analyze_btn":  "Analyse the idea and produce a JSON spec for review.",
-        "manager_clear_btn":    "Clear the form.",
-        "manager_spec_display": "The generated spec — review before approving.",
-        "manager_approve_btn":  "Approve the spec — Forge will write the agent code and register it.",
-        "manager_reject_btn":   "Reject the spec and clear it.",
-        "manager_log":          "Log of spec generation, approval, and file creation events.",
+        "manager.idea_input":   "Describe the agent you want to create in plain language.",
+        "manager.provider_box": "Provider used to generate the agent spec.",
+        "manager.model_box":    "Specific model.",
+        "manager.analyze_btn":  "Analyse the idea and produce a JSON spec for review.",
+        "manager.clear_btn":    "Clear the form.",
+        "manager.spec_display": "The generated spec — review before approving.",
+        "manager.approve_btn":  "Approve the spec — Forge will write the agent code and register it.",
+        "manager.reject_btn":   "Reject the spec and clear it.",
+        "manager.log":          "Log of spec generation, approval, and file creation events.",
     })
