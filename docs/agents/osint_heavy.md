@@ -1,6 +1,6 @@
 # BLOODHOUND — Deep OSINT investigation
 
-`key: osint_heavy` · class: `agents/osint_heavy_agent.py → OsintHeavyAgent` · panel: `build_osint_heavy_panel()` · handler: `osint_heavy_investigate()`
+`key: osint_heavy` · class: `agents/osint_heavy_agent.py → OsintHeavyAgent` · panel: `ui/panels/osint_heavy.py → OsintHeavyPanel`
 
 ## What it does
 Produces a research-grade, five-section intelligence dossier on a target, with an embedded threat score, confidence score, and a curated tradecraft tool library (~60 tools grouped by target type: people, username, email, domain/IP, breach, phone, image, archive, geolocation). Accepts an optional **image** and folds its EXIF metadata into the analysis. A planning/reasoning layer — no live network calls.
@@ -12,8 +12,9 @@ Produces a research-grade, five-section intelligence dossier on a target, with a
 | Target type | Guides which tool families and pivots are emphasised. |
 | Scope | `Quick Scan` (3–5 pts/section), `Standard`, or `Deep Dive` (exhaustive). |
 | Objective / context | Free-text investigation goal. |
-| Image upload | Optional — EXIF is parsed and injected into the prompt. |
-| Investigate / Stop / Save Report | Run, cancel, export. |
+| Add target image | Optional collapsed section; EXIF is parsed and injected into the prompt. |
+| Model override | Optional provider/model change; a long-context reasoning model is selected by default. |
+| Investigate / Stop | Run, or cancel while a request is active. Save and Clear appear with results. |
 
 ## Outputs — the dossier (exact section headers the parser keys off)
 `## 1. OVERVIEW` (with `THREAT LEVEL: X/10`, `CONFIDENCE: X%`, `SOURCES REFERENCED: X`) · `## 2. DIGITAL FOOTPRINT` · `## 3. INFRASTRUCTURE / SOCIAL PROFILE` · `## 4. RISK & RED FLAGS` · `## 5. METHODOLOGY & TOOLS`. Sidebar indicators (threat bar, confidence, sources) are regex-parsed from those exact lines.
@@ -25,7 +26,7 @@ Produces a research-grade, five-section intelligence dossier on a target, with a
 | Location | Role |
 |---|---|
 | `agents/osint_heavy_agent.py` | `OsintHeavyAgent` + the tool library + section spec. |
-| `main.py: build_osint_heavy_panel()` | Panel, image picker, indicators. |
+| `ui/panels/osint_heavy.py` | Panel, optional image workflow, consolidated result tabs, and indicators. |
 | `main.py: osint_heavy_investigate()` | Reads form + EXIF, fires `ChatWorker`. |
 | `main.py: osint_heavy_save()` | Saves dossier to `.txt`. |
 
@@ -36,4 +37,4 @@ Produces a research-grade, five-section intelligence dossier on a target, with a
 - Keep section headers verbatim — the parser matches them exactly.
 
 ## Requirements
-Large-context model recommended (`claude-sonnet`/`opus`, `gpt-4o`). Optional OSINT API keys in `.env`. Pillow (bundled) handles EXIF.
+A large-context reasoning model is recommended automatically. Optional OSINT API keys in `.env`. Pillow (bundled) handles EXIF.

@@ -20,7 +20,7 @@ There is precedent too: `roi` and `investment` already left for SONAR, and
 
 ## Proposed homes
 
-### Sentinel — security and intelligence
+### Sentinel AI — security and intelligence
 `chat` · `osint` · `osint_heavy` · `wifi` · `bug_bounty` · `manager`
 
 This is Sentinel's actual identity: reconnaissance, investigation, vulnerability

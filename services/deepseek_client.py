@@ -4,6 +4,32 @@ from openai import OpenAI
 from services.api_limits import REQUEST_TIMEOUT_SECONDS, MAX_RETRIES
 
 
+DEEPSEEK_BALANCE_MESSAGE = (
+    "The DeepSeek cloud API could not run this request because the cloud account "
+    "has no API credit. Local DeepSeek models in Ollama remain free to use."
+)
+
+
+class DeepSeekInsufficientBalanceError(RuntimeError):
+    """A safe, user-facing form of DeepSeek's HTTP 402 response."""
+
+
+def is_insufficient_balance_error(error: object) -> bool:
+    """Recognize DeepSeek balance failures without depending on one SDK version."""
+    status_code = getattr(error, "status_code", None)
+    response = getattr(error, "response", None)
+    status_code = status_code or getattr(response, "status_code", None)
+    text = str(error).lower()
+    return status_code == 402 or "insufficient balance" in text or "no api credit" in text
+
+
+def _friendly_deepseek_error(error: Exception, *, streaming: bool) -> RuntimeError:
+    if is_insufficient_balance_error(error):
+        return DeepSeekInsufficientBalanceError(DEEPSEEK_BALANCE_MESSAGE)
+    action = "streaming request" if streaming else "request"
+    return RuntimeError(f"DeepSeek {action} failed: {error}")
+
+
 class DeepSeekClientWrapper:
     # Offline fallback only. Ordered to match what the API currently serves —
     # the older deepseek-chat / deepseek-reasoner ids are no longer offered.
@@ -48,10 +74,13 @@ class DeepSeekClientWrapper:
         if not self.client:
             raise RuntimeError("DEEPSEEK_API_KEY is not set.")
 
-        response = self.client.chat.completions.create(
-            model=model,
-            messages=messages,
-        )
+        try:
+            response = self.client.chat.completions.create(
+                model=model,
+                messages=messages,
+            )
+        except Exception as error:
+            raise _friendly_deepseek_error(error, streaming=False) from error
 
         text = response.choices[0].message.content or ""
 
@@ -83,5 +112,5 @@ class DeepSeekClientWrapper:
                 if delta:
                     yield delta
 
-        except Exception as e:
-            raise RuntimeError(f"DeepSeek streaming request failed: {e}")
+        except Exception as error:
+            raise _friendly_deepseek_error(error, streaming=True) from error

@@ -7,15 +7,9 @@ import time
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
-from uuid import uuid4
 
 from services.runtime_paths import resource_base, user_data_base, ensure_seeded, is_frozen
 ensure_seeded()
-
-# Anchor the working directory to the writable base so the handful of services
-# that still use relative paths ("data/chats", "config/settings.json", ...) resolve
-# correctly no matter how the app was launched (Finder launches with cwd="/").
-os.chdir(str(user_data_base()))
 
 from dotenv import load_dotenv
 # API keys: user-data .env when frozen, project .env in dev. Real env vars still win.
@@ -24,14 +18,17 @@ load_dotenv(user_data_base() / ".env")
 import markdown
 
 from PySide6.QtCore import Qt, QTimer, QProcess, QUrl, QThread, Signal, QEvent, QRect, QPoint, QSize
-from PySide6.QtGui import QTextCursor, QDesktopServices, QColor, QFont
+from PySide6.QtGui import (
+    QTextCursor, QDesktopServices, QColor, QFont, QTextDocument,
+    QKeySequence, QShortcut,
+)
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import (
     QApplication, QSizePolicy, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QGroupBox,
     QLabel, QTextEdit, QPushButton, QComboBox, QListWidget, QListWidgetItem,
     QMessageBox, QCheckBox, QTextBrowser, QSplitter, QLineEdit, QFileDialog,
     QProgressBar, QDialog, QTabWidget, QFrame, QScrollArea, QStackedWidget, QLayout,
-    QInputDialog, QMenu, QWidgetAction,
+    QInputDialog, QMenu, QWidgetAction, QToolTip,
 )
 
 from services.ollama_client import OllamaClient, MUSE_GLIMMER_VARIANTS, muse_glimmer_default
@@ -45,42 +42,51 @@ from services.resource_monitor import ResourceMonitor
 from services.history_store import HistoryStore
 from services.report_exporter import ReportExporter
 from services.usage_tracker import UsageTracker
-from services.pricing import CostEstimate, PricingUnavailable
-from services.model_router import ModelRouter, ModelCandidate, RoutingPreferences
 from services.database import init_db, get_setting, save_setting, get_connection
 from services.registry import Registry
 from services.validator import Validator
 from services.run_logger import RunLogger
 
 from agents.chat_agent import ChatAgent
-from agents.writing_agent import WritingAgent
-from agents.coding_agent import CodingAgent
 from agents.osint_agent import OSINTAgent
 from agents.bug_bounty_agent import BugBountyAgent
 from agents.wifi_agent import WiFiAgent
 from agents.osint_heavy_agent import OsintHeavyAgent
 from agents.vpn_agent import VpnAgent
 from services.agent_factory import AgentFactory
+from services.agent_catalog import BUILTIN_AGENTS, BUILTIN_AGENT_ORDER
+from services.provider_catalog import CLOUD_PROVIDERS
+from services.tool_catalog import runtime_tool_prompts
+from services.model_recommendations import (
+    AGENT_RECOMMENDATIONS as RECOMMENDATION_OBJECTS,
+    TASK_RECOMMENDATIONS, as_dict, resolve_available_model,
+    RoutingPreferences, route_request, pricing_metadata,
+)
 
 
-# Writable base = project root in dev, ~/Library/Application Support/Sentinel when frozen.
+# Writable base = project root in dev, ~/Library/Application Support/Sentinel Fork when frozen.
 BASE_DIR = user_data_base()
 # Read-only bundled resources (README, config defaults) = project root in dev, bundle when frozen.
 RESOURCE_DIR = resource_base()
 CONFIG_DIR = BASE_DIR / "config"
+
+
+def load_budget_setting(settings: dict, key: str, default: float) -> float:
+    """Load the persisted SQLite budget, falling back to the original JSON default."""
+    fallback = settings.get(key, default)
+    try:
+        return float(get_setting(key, str(fallback)))
+    except (TypeError, ValueError):
+        return float(fallback)
 DATA_DIR = BASE_DIR / "data"
 CHATS_DIR = DATA_DIR / "chats"
 
 # Sentinel value for the Saved Chats agent filter — not a real agent name.
 ALL_AGENTS_FILTER = "All agents"
-ALL_PROJECTS_FILTER = "All projects"
-UNFILED_PROJECT_FILTER = "Unfiled"
 
 SETTINGS_FILE = CONFIG_DIR / "settings.json"
-AGENTS_FILE = CONFIG_DIR / "agents.json"
 COMMANDS_FILE = CONFIG_DIR / "commands.json"
 TOOL_PROMPTS_FILE = CONFIG_DIR / "tool_prompts.json"
-REGISTRY_FILE = CONFIG_DIR / "registry.json"
 README_FILE = RESOURCE_DIR / "README.md"
 
 # ── Per-agent recommended setup ──────────────────────────────────────────────
@@ -95,36 +101,7 @@ README_FILE = RESOURCE_DIR / "README.md"
 RECOMMENDED_COLOR = "#ff5555"
 
 AGENT_RECOMMENDATIONS = {
-    "osint": {
-        "provider": "deepseek", "model": "deepseek-v4-flash",
-        "reason": "Light, high-volume lookups and summaries — DeepSeek's flash tier "
-                  "gives solid structured output at the lowest cost per query.",
-    },
-    "osint_heavy": {
-        "provider": "anthropic", "model": "claude-opus-5",
-        "reason": "Deep multi-source dossiers need the strongest long-context "
-                  "synthesis. Low volume, so the higher token price is worth it.",
-    },
-    "wifi": {
-        "provider": "anthropic", "model": "claude-sonnet-5",
-        "reason": "Generating correct Kali/aircrack command lines rewards precision; "
-                  "Sonnet is accurate on tooling syntax without Opus pricing.",
-    },
-    "bug_bounty": {
-        "provider": "anthropic", "model": "claude-sonnet-5",
-        "reason": "Vulnerability triage plus a readable HackerOne write-up — Sonnet "
-                  "handles both the security reasoning and the report prose.",
-    },
-    "manager": {
-        "provider": "anthropic", "model": "claude-sonnet-5",
-        "reason": "Forge writes real agent source files — code generation quality "
-                  "matters more here than cost.",
-    },
-    "vpn": {
-        "provider": "anthropic", "model": "claude-sonnet-5",
-        "reason": "WireGuard/OpenVPN config and kill-switch reasoning rewards precise "
-                  "command syntax; Sonnet is accurate on tooling without Opus pricing.",
-    },
+    key: as_dict(value) for key, value in RECOMMENDATION_OBJECTS.items()
 }
 
 # agent key -> (provider box attribute, model box attribute)
@@ -138,19 +115,13 @@ AGENT_SETUP_WIDGETS = {
     "vpn":         None,  # VpnPanel owns its boxes (phase 4)
 }
 
-AGENT_PRETTY_NAMES = {
-    "chat": "Chat", "osint": "Trace", "osint_heavy": "Bloodhound",
-    "wifi": "Beacon", "bug_bounty": "Bug Spray",
-    "manager": "Forge", "vpn": "Tunnel", }
-
-
 from ui.workers import (
     ChatWorker, SubprocessWorker, ModelPullWorker,
 )
 from ui.widgets import FlowLayout, KeyValue, Meter, SectionView
 from ui.style import GLOBAL_STYLESHEET
 from ui.tooltips import seed_tooltips
-from ui.panels.base import PROVIDERS, build_provider_row
+from ui.panels.base import PROVIDERS, build_provider_row, configure_model_controls
 from ui.panels.bug_bounty import BugBountyPanel
 from ui.panels.manager import ManagerPanel
 from ui.panels.osint_heavy import OsintHeavyPanel
@@ -178,12 +149,12 @@ class GodAI(QWidget):
         init_db()
 
         self.commands = self.load_json(COMMANDS_FILE, {"General Chat": ""})
-        self.tool_prompts = self.load_json(TOOL_PROMPTS_FILE, {
-            "General Chat": {"system": "You are a helpful general assistant."}
-        })
-        self.agents_config = self.load_json(
-            AGENTS_FILE,
-            {"agents": ["chat", "writing", "coding", "osint"]},
+        with get_connection() as conn:
+            registry_tools = [dict(row) for row in conn.execute(
+                "SELECT * FROM tools ORDER BY name"
+            ).fetchall()]
+        self.tool_prompts = runtime_tool_prompts(
+            self.load_json(TOOL_PROMPTS_FILE, {}), registry_tools
         )
         self.settings = self.load_json(SETTINGS_FILE, {})
 
@@ -201,7 +172,6 @@ class GodAI(QWidget):
 
         self.registry = Registry()
         self.validator = Validator(self.registry)
-        self.active_project_id: str | None = None
         self.run_logger = RunLogger()
         # agent name -> context for an in-flight request (see authorize_request)
         self._pending_requests = {}
@@ -214,12 +184,9 @@ class GodAI(QWidget):
         self.panels: dict = {}
 
         self.agent_factory = AgentFactory(BASE_DIR)
-        self._wifi_detected_adapter: dict = {}
 
         self.agent_instances = {
             "chat": ChatAgent(),
-            "writing": WritingAgent(),
-            "coding": CodingAgent(),
             "osint": OSINTAgent(),
             "bug_bounty": BugBountyAgent(),
             "wifi": WiFiAgent(),
@@ -228,14 +195,17 @@ class GodAI(QWidget):
         }
 
         self.current_messages = []
-        self.last_raw_osint = ""
 
         self.session_cost_total = 0.0
         self.session_request_count = 0
         self.last_request_cost = 0.0
         
-        self.session_budget_eur = float(self.settings.get("session_budget_eur", 1.00))
-        self.daily_budget_eur = float(self.settings.get("daily_budget_eur", 5.00))
+        self.session_budget_eur = load_budget_setting(
+            self.settings, "session_budget_eur", 1.00
+        )
+        self.daily_budget_eur = load_budget_setting(
+            self.settings, "daily_budget_eur", 5.00
+        )
 
         self.chat_worker: Optional[ChatWorker] = None
         self.active_run_id: Optional[str] = None
@@ -251,9 +221,15 @@ class GodAI(QWidget):
         self.pending_messages = []
 
         # Tooltip state — toggled via the chip in the centre header bar
-        self.tooltips_enabled = True
+        self.tooltips_enabled = str(
+            get_setting("tooltips_enabled", "true")
+        ).lower() not in ("0", "false", "off", "no")
+        self.inspector_visible = str(
+            get_setting("inspector_visible", "true")
+        ).lower() not in ("0", "false", "off", "no")
 
         self.build_ui()
+        self._install_workspace_shortcuts()
         self._polish_tab_widgets()
         self._seed_tooltips()
         # Install global event filter so we can suppress ToolTip events when disabled
@@ -265,8 +241,8 @@ class GodAI(QWidget):
         self.install_agent_recommendations()
         self.muse_pull_worker: Optional[ModelPullWorker] = None
         self.refresh_muse_button()
-        self.refresh_project_selector()
         self.load_history_list()
+        self.load_saved_searches()
         self.update_resource_label()
         self.update_usage_labels()
         self.start_resource_timer()
@@ -285,19 +261,95 @@ class GodAI(QWidget):
                 tab_bar.setExpanding(False)
                 tab_bar.setUsesScrollButtons(True)
 
+    def _install_workspace_shortcuts(self) -> None:
+        """Keep the same essential shortcuts in every agent workspace."""
+        self.run_shortcut = QShortcut(QKeySequence("Ctrl+Return"), self)
+        self.run_shortcut.setContext(Qt.ApplicationShortcut)
+        self.run_shortcut.activated.connect(self.run_current_action)
+
+        self.stop_shortcut = QShortcut(QKeySequence(Qt.Key_Escape), self)
+        self.stop_shortcut.setContext(Qt.ApplicationShortcut)
+        self.stop_shortcut.activated.connect(self.stop_current_task)
+
+        self.help_shortcut = QShortcut(QKeySequence(Qt.Key_F1), self)
+        self.help_shortcut.setContext(Qt.ApplicationShortcut)
+        self.help_shortcut.activated.connect(self.show_agent_docs)
+
+    def run_current_action(self) -> None:
+        """Run the visible primary action without special-casing each agent."""
+        agent_name = getattr(self, "_current_agent", "chat")
+        if agent_name == "chat":
+            if self.send_btn.isVisible() and self.send_btn.isEnabled():
+                self.send_btn.click()
+            return
+
+        panel = self.panels.get(agent_name)
+        if panel is None:
+            return
+        for button in panel.findChildren(QPushButton):
+            if (button.objectName() == "PrimaryAction"
+                    and button.isVisible() and button.isEnabled()):
+                button.click()
+                return
+
     # ── Tooltips ────────────────────────────────────────────────────────────
     def _toggle_tooltips(self):
         """Enable or disable hover tooltips application-wide."""
         self.tooltips_enabled = self.tooltips_toggle_btn.isChecked()
         self.tooltips_toggle_btn.setText(
-            "💡 Tooltips: On" if self.tooltips_enabled else "💡 Tooltips: Off"
+            "Tips on" if self.tooltips_enabled else "Tips off"
         )
+        save_setting("tooltips_enabled", "true" if self.tooltips_enabled else "false")
+        if not self.tooltips_enabled:
+            QToolTip.hideText()
 
     def eventFilter(self, obj, event):
         """Swallow QEvent.ToolTip when tooltips are toggled off."""
         if event.type() == QEvent.ToolTip and not self.tooltips_enabled:
             return True
         return super().eventFilter(obj, event)
+
+    def _toggle_saved_chats(self, expanded: bool) -> None:
+        if not hasattr(self, "saved_chats_panel"):
+            return
+        active = getattr(self, "_current_agent", "chat") == "chat"
+        self.saved_chats_panel.setVisible(active and bool(expanded))
+        self.saved_chats_toggle.setText(
+            "▾  History" if expanded else "▸  History"
+        )
+
+    def _toggle_saved_searches(self, expanded: bool) -> None:
+        if not hasattr(self, "saved_searches_panel"):
+            return
+        active = getattr(self, "_current_agent", "chat") == "osint"
+        self.saved_searches_panel.setVisible(active and bool(expanded))
+        self.saved_searches_toggle.setText(
+            "▾  Saved searches" if expanded else "▸  Saved searches"
+        )
+
+    def resizeEvent(self, event):
+        """Adapt secondary Chat metadata without hiding core controls."""
+        super().resizeEvent(event)
+        if hasattr(self, "runbar_cost"):
+            self.runbar_cost.setVisible(True)
+        if hasattr(self, "agent_subtitle_label"):
+            self.agent_subtitle_label.setVisible(self.width() >= 1150)
+        if hasattr(self, "right_panel") and hasattr(self, "inspector_btn"):
+            # The three-column shell is part of the requested interaction
+            # model, including at the app's 1200 px minimum width. The user may
+            # still collapse it explicitly with the Inspector chip.
+            self.right_panel.setVisible(self.inspector_visible)
+            self.inspector_btn.setChecked(self.inspector_visible)
+        self._update_workspace_margins()
+
+    def _update_workspace_margins(self):
+        """Keep Chat readable on ultrawide windows without reducing compact space."""
+        if not hasattr(self, "center_layout") or not hasattr(self, "center_widget"):
+            return
+        inset = 18
+        if getattr(self, "_current_agent", "chat") == "chat":
+            inset = max(inset, (self.center_widget.width() - 1240) // 2)
+        self.center_layout.setContentsMargins(inset, 16, inset, 16)
 
     def _set_tooltips(self, mapping: dict):
         """Helper: apply a {widget_attr_name: text} mapping in one call.
@@ -345,7 +397,7 @@ class GodAI(QWidget):
                 base = 12
             else:
                 base = 25
-        elif backend in {"openai", "deepseek", "kimi", "gemini"}:
+        elif backend in CLOUD_PROVIDERS:
             base = 15
         return min(180, max(10, base + words // 20))
 
@@ -359,25 +411,17 @@ class GodAI(QWidget):
         Validator.validate() no matter how expensive the model was.
         """
         approx_input_tokens = max(1, int(len(prompt) / 4))
-        approx_output_min = max(128, int(approx_input_tokens * 0.5))
-        approx_output_max = max(500, int(approx_input_tokens * 1.8))
-        approx_total_tokens = approx_input_tokens + approx_output_max
+        approx_output_tokens = max(250, int(approx_input_tokens * 1.2))
+        approx_total_tokens = approx_input_tokens + approx_output_tokens
 
         if backend == "ollama":
             return 0.0, approx_total_tokens
 
-        if hasattr(self.usage_tracker, "estimate_cost_range"):
-            estimate = self.usage_tracker.estimate_cost_range(
-                backend, model, approx_input_tokens, approx_output_min, approx_output_max)
-        else:
-            # Compatibility for injected/third-party trackers implementing the
-            # original scalar API. Production UsageTracker always supplies a range.
-            scalar = self.usage_tracker.calculate_cost_eur(
-                backend, model, approx_input_tokens, approx_output_max)
-            estimate = CostEstimate(True, scalar, scalar, approx_input_tokens,
-                                    approx_output_min, approx_output_max)
-        self._last_cost_range = estimate
-        return (round(estimate.maximum_eur, 5) if estimate.available else float("inf")), approx_total_tokens
+        estimated_cost = self.usage_tracker.calculate_cost_eur(
+            backend, model, approx_input_tokens, approx_output_tokens
+        )
+
+        return round(estimated_cost, 5), approx_total_tokens
 
     def get_current_cost_estimate(self):
         raw_text = self.input_box.toPlainText().strip()
@@ -416,22 +460,14 @@ class GodAI(QWidget):
             tokens = f"{approx_tokens/1000:.1f}k" if approx_tokens >= 1000 else str(approx_tokens)
             if backend == "ollama":
                 self.runbar_cost.setText(f"free · {tokens} tok")
-            elif estimated_cost == float("inf"):
-                self.runbar_cost.setText(f"price unavailable · {tokens} tok")
             else:
                 self.runbar_cost.setText(f"~€{estimated_cost:.2f} · {tokens} tok")
 
-        if not backend:
+        if backend == "ollama":
             self.live_estimate_label.setText("")
-        elif backend == "ollama":
-            self.live_estimate_label.setText("")
-        elif estimated_cost == float("inf"):
-            reason = getattr(getattr(self, "_last_cost_range", None), "reason", "Unknown pricing")
-            self.live_estimate_label.setText(f"⛔ {reason}")
-        elif backend != "ollama":
-            estimate = self._last_cost_range
+        elif backend in CLOUD_PROVIDERS:
             self.live_estimate_label.setText(
-                f"€{estimate.minimum_eur:.4f}–€{estimate.maximum_eur:.4f} · paid API"
+                f"⚠ Paid API"
             )
         else:
             self.live_estimate_label.setText("")
@@ -448,17 +484,13 @@ class GodAI(QWidget):
                 f"Estimated cost: €0.0000\n"
                 f"This is local execution."
             )
-        elif estimated_cost == float("inf"):
-            reason = getattr(getattr(self, "_last_cost_range", None), "reason", "Unknown pricing")
-            msg = f"Backend: {backend}\nModel: {model}\n\nCost unavailable: {reason}\nRequest will be blocked."
         else:
-            estimate = self._last_cost_range
             msg = (
                 f"Agent: {self.agent_box.currentText()}\n"
                 f"Backend: {backend}\n"
                 f"Model: {model}\n"
                 f"Approx tokens: {approx_tokens}\n\n"
-                f"Estimated cost: €{estimate.minimum_eur:.4f}–€{estimate.maximum_eur:.4f}\n"
+                f"Estimated cost: ~€{estimated_cost:.2f}\n"
                 f"⚠ This may use a paid API."
             )
 
@@ -614,11 +646,17 @@ class GodAI(QWidget):
         command = self.command_box.currentText() if hasattr(self, "command_box") else "General Chat"
         prompt = self.input_box.toPlainText().strip() if hasattr(self, "input_box") else ""
         tool_config = self.tool_prompts.get(tool, {})
-        tool_provider = tool_config.get("recommended_provider")
-        tool_model = tool_config.get("recommended_model")
+        task_key = {"General Chat": "general", "Writing": "writing",
+                    "Rewrite": "writing", "Coding": "coding",
+                    "Summarize": "summarize"}.get(tool)
+        policy = TASK_RECOMMENDATIONS.get(task_key) if task_key else None
+        tool_provider = policy.provider if policy else tool_config.get("recommended_provider")
+        tool_model = policy.model if policy else tool_config.get("recommended_model")
         
         if tool_provider:
-            model = tool_model or self.model_box.currentText()
+            available = self.models_for_provider(tool_provider)
+            model = resolve_available_model(tool_model, available) if tool_model else (
+                available[0] if available else self.model_box.currentText())
 
             # ===== CHECK API PERMISSION =====
             if tool_provider == "openai" and not self.allow_openai_checkbox.isChecked():
@@ -668,7 +706,7 @@ class GodAI(QWidget):
                 "mode": mode,
                 "provider": tool_provider,
                 "model": model,
-                "reason": f"{tool} tool recommends {tool_provider} for best results."
+                "reason": policy.reason if policy else f"{tool} recommends {tool_provider}."
             }
 
         text = f"{agent} {tool} {command} {prompt}".lower()
@@ -681,27 +719,27 @@ class GodAI(QWidget):
             if self.allow_kimi_checkbox.isChecked():
                 return {"mode": "Hybrid allowed", "provider": "kimi", "model": "kimi-k2.7-code", "reason": "Coding/debugging task; Kimi K2.7 Code is purpose-built for coding and long-context tool use."}
             if self.allow_deepseek_checkbox.isChecked():
-                return {"mode": "Hybrid allowed", "provider": "deepseek", "model": "deepseek-chat", "reason": "Coding/debugging task; DeepSeek is strong for code analysis."}
+                return as_dict(TASK_RECOMMENDATIONS["coding"])
             if self.allow_openai_checkbox.isChecked():
-                return {"mode": "Hybrid allowed", "provider": "openai", "model": "gpt-4o-mini", "reason": "Coding/debugging task; OpenAI is reliable for code assistance."}
+                return as_dict(TASK_RECOMMENDATIONS["writing"])
             return {"mode": "Local only", "provider": "ollama", "model": self.model_box.currentText(), "reason": "Coding task detected, but APIs are not enabled. Using local model."}
 
         if any(k in text for k in ["write", "rewrite", "email", "cv", "cover letter", "professional", "polish"]):
             if self.allow_anthropic_checkbox.isChecked():
                 return {"mode": "Hybrid allowed", "provider": "anthropic", "model": "claude-sonnet-4-6", "reason": "Writing task; Claude is highly recommended for polished professional text."}
             if self.allow_openai_checkbox.isChecked():
-                return {"mode": "Hybrid allowed", "provider": "openai", "model": "gpt-4o-mini", "reason": "Writing task; OpenAI is recommended for polished professional text."}
+                return as_dict(TASK_RECOMMENDATIONS["writing"])
             if self.allow_gemini_checkbox.isChecked():
-                return {"mode": "Hybrid allowed", "provider": "gemini", "model": "gemini-1.5-flash", "reason": "Writing task; Gemini is a good API fallback."}
+                return {"mode": "Hybrid allowed", "provider": "gemini", "model": "gemini-2.5-flash", "reason": "Gemini is a good writing fallback."}
             return {"mode": "Local only", "provider": "ollama", "model": self.model_box.currentText(), "reason": "Writing task detected, but APIs are not enabled. Using local model."}
 
         if any(k in text for k in ["osint", "investigate", "research", "summarize sources", "analysis", "report"]):
             if self.allow_kimi_checkbox.isChecked():
-                return {"mode": "Hybrid allowed", "provider": "kimi", "model": "kimi-k2.7-code", "reason": "Analysis/OSINT-style task; Kimi's strong tool-use/agentic performance suits multi-step investigation."}
+                return as_dict(TASK_RECOMMENDATIONS["research"])
             if self.allow_deepseek_checkbox.isChecked():
-                return {"mode": "Hybrid allowed", "provider": "deepseek", "model": "deepseek-chat", "reason": "Analysis/OSINT-style task; DeepSeek is recommended."}
+                return {"mode": "Hybrid allowed", "provider": "deepseek", "model": "deepseek-v4-flash", "reason": "DeepSeek is efficient for structured analysis."}
             if self.allow_gemini_checkbox.isChecked():
-                return {"mode": "Hybrid allowed", "provider": "gemini", "model": "gemini-1.5-flash", "reason": "Analysis task; Gemini is suitable for broad summarization."}
+                return as_dict(TASK_RECOMMENDATIONS["summarize"])
             return {"mode": "Local only", "provider": "ollama", "model": self.model_box.currentText(), "reason": "Analysis task detected, but APIs are not enabled. Using local model."}
 
         return {
@@ -711,8 +749,20 @@ class GodAI(QWidget):
             "reason": "General/simple task. Local Ollama is free and private."
         }
 
+    def get_recommended_setup(self):
+        """Use the same capability router as request execution and agent panels."""
+        agent = self.agent_box.currentText() if hasattr(self, "agent_box") else "chat"
+        tool = self.tool_box.currentText() if hasattr(self, "tool_box") else "General Chat"
+        prompt = self.input_box.toPlainText().strip() if hasattr(self, "input_box") else ""
+        try:
+            return self.route_for_request(prompt, agent=agent, tool=tool, keep_manual=False).as_dict()
+        except RuntimeError as exc:
+            provider = self.provider_box.currentText() if hasattr(self, "provider_box") else "ollama"
+            model = self.model_box.currentText() if hasattr(self, "model_box") else ""
+            return {"mode": "Local only" if provider == "ollama" else "Hybrid allowed",
+                    "provider": provider, "model": model, "reason": str(exc), "fallbacks": []}
+
     def apply_recommended_setup(self):
-        self._applying_recommendation = True
         rec = self.get_recommended_setup()
 
         if hasattr(self, "execution_mode_box"):
@@ -740,7 +790,6 @@ class GodAI(QWidget):
             )
 
         self.update_live_cost_estimate()
-        self._applying_recommendation = False
 
     def update_recommendation_label(self):
         if not hasattr(self, "recommendation_label"):
@@ -753,6 +802,8 @@ class GodAI(QWidget):
             self.routing_rows["Suggested"].set(rec["provider"], rec["reason"])
             self.routing_rows["Model"].set(rec["model"], rec["reason"])
             self.routing_rows["Mode"].set(rec.get("mode", "—"), rec["reason"])
+            pricing = rec.get("pricing") or pricing_metadata(rec["provider"], rec["model"])
+            self.routing_rows["Cost"].set(pricing.compact, rec["reason"])
         # Chat's recommendation moves with the tool/command/prompt, so repaint
         # the red dropdown markings whenever the label is refreshed.
         self.refresh_recommendation_marks("chat")
@@ -764,19 +815,7 @@ class GodAI(QWidget):
         if not self.auto_recommend_checkbox.isChecked():
             return
 
-        if getattr(self, "_applying_recommendation", False):
-            return
-        if time.monotonic() < getattr(self, "_manual_selection_until", 0):
-            return
-        if not hasattr(self, "_recommendation_timer"):
-            self._recommendation_timer = QTimer(self)
-            self._recommendation_timer.setSingleShot(True)
-            self._recommendation_timer.timeout.connect(self.apply_recommended_setup)
-        self._recommendation_timer.start(350)
-
-    def note_manual_model_selection(self, *_args) -> None:
-        if not getattr(self, "_applying_recommendation", False):
-            self._manual_selection_until = time.monotonic() + 5.0
+        self.apply_recommended_setup()
 
     # ── Muse Glimmer (local, via Ollama) ─────────────────────────────────────
 
@@ -949,24 +988,10 @@ class GodAI(QWidget):
         models = self.models_for_provider(provider, context, model_box)
         if models:
             model_box.addItems(models)
-            self.decorate_model_costs(provider, model_box)
         elif empty_placeholder:
             model_box.addItem(
                 "(no local models)" if provider == "ollama" else "(unavailable)"
             )
-
-    def decorate_model_costs(self, provider: str, model_box) -> None:
-        """Attach cost-aware tooltips while preserving exact API model ids."""
-        for index in range(model_box.count()):
-            quote = self.usage_tracker.get_price_quote(provider, model_box.itemText(index))
-            details = quote.label
-            if quote.available and quote.verified_at:
-                details += f" · verified {quote.verified_at}"
-            if quote.region:
-                details += f" · {quote.region}"
-            if not quote.available and quote.reason:
-                details += f" — {quote.reason}"
-            model_box.setItemData(index, details, Qt.ToolTipRole)
 
     def setup_widgets_for(self, agent_key: str):
         """One agent's provider and model boxes, wherever they now live.
@@ -1112,7 +1137,7 @@ class GodAI(QWidget):
             return
 
         provider_box, model_box = self.setup_widgets_for(agent_key)
-        pretty = AGENT_PRETTY_NAMES.get(agent_key, agent_key)
+        pretty = BUILTIN_AGENTS.get(agent_key, {}).get("label", agent_key)
         tooltip = (
             f"Recommended for {pretty}: {rec['provider']} · {rec['model']}\n"
             f"{rec['reason']}"
@@ -1214,18 +1239,25 @@ class GodAI(QWidget):
 
     def build_ui(self):
         outer_layout = QVBoxLayout(self)
+        outer_layout.setContentsMargins(0, 0, 0, 0)
         splitter = QSplitter(Qt.Horizontal)
         splitter.setChildrenCollapsible(False)
+        splitter.setHandleWidth(1)
+        splitter.setStyleSheet("QSplitter::handle { background: #262d29; }")
+        self.main_splitter = splitter
 
         left_widget = self.build_left_panel()
         center_widget = self.build_center_panel()
         right_widget = self.build_right_panel()
+        self.left_panel = left_widget
+        self.right_panel = right_widget
         self.update_recommendation_label()
 
         splitter.addWidget(left_widget)
         splitter.addWidget(center_widget)
         splitter.addWidget(right_widget)
-        splitter.setSizes([230, 870, 300])
+        splitter.setSizes([220, 920, 260])
+        right_widget.setVisible(self.inspector_visible)
 
         outer_layout.addWidget(splitter)
         self.apply_global_style()
@@ -1234,15 +1266,16 @@ class GodAI(QWidget):
         left_widget = QWidget()
         left_widget.setObjectName("LeftPanel")
         left_layout = QVBoxLayout(left_widget)
-        left_layout.setContentsMargins(8, 8, 8, 8)
+        left_layout.setContentsMargins(0, 12, 0, 10)
         left_layout.setSpacing(4)
 
-        fork_brand = QLabel("Sentinel Fork")
+        fork_brand = QLabel("SENTINEL FORK")
         fork_brand.setStyleSheet(
-            "color: #3cff88; font-size: 15px; font-weight: 600; "
-            "padding: 8px 4px 12px 4px;"
+            "color: #5d6862; font-family: Menlo, Monaco, monospace; "
+            "font-size: 10px; font-weight: 500; letter-spacing: 1.8px; "
+            "padding: 6px 16px 12px 16px;"
         )
-        fork_brand.setToolTip("Independent fork of Sentinel v2")
+        fork_brand.setToolTip("Independent Sentinel development fork")
         left_layout.addWidget(fork_brand)
 
         # Inner scrollable container holds all the agent categories so they never
@@ -1263,38 +1296,24 @@ class GodAI(QWidget):
         agents_layout.setContentsMargins(0, 0, 0, 0)
         agents_layout.setSpacing(2)
 
-        icons = {
-            "chat": "▸", "osint": "◈", "osint_heavy": "◉",
-            "manager": "✦",
-            "wifi": "≋", "bug_bounty": "⌁", "vpn": "⇄", }
-        labels = {
-            "chat": "Chat", "osint": "Trace", "osint_heavy": "Bloodhound",
-            "manager": "Forge",
-            "wifi": "Beacon",
-            "bug_bounty": "Bug Spray",
-            "vpn": "Tunnel",
-            # Without this the sidebar fell back to name.capitalize() and showed a
-            # other surface (header title, registry) calls this one Publisher.
-            }
-
         # Every section starts collapsed — launch shows just the category list,
         # and you open the one you want.
         # A flat list, in the order the work usually runs. The accordion this
         # replaced was built when there were fifteen agents; at six it was a
         # click between you and everything, and four headings for six rows.
-        sidebar_agents = ["chat", "osint", "osint_heavy", "wifi", "bug_bounty", "vpn", "manager"]
+        sidebar_agents = BUILTIN_AGENT_ORDER
 
         # Minimal sidebar row — clear separation via padding + hover fill
         agent_btn_style = """
             QPushButton#AgentBtn {
                 text-align: left;
-                padding: 14px 12px 14px 20px;
+                padding: 9px 12px 9px 18px;
                 background-color: transparent;
                 border: none;
-                border-left: 3px solid transparent;
+                border-left: 2px solid transparent;
                 border-radius: 0;
                 color: #a8b3ad;
-                font-size: 16px;
+                font-size: 13px;
                 font-weight: normal;
             }
             QPushButton#AgentBtn:hover {
@@ -1303,7 +1322,7 @@ class GodAI(QWidget):
             }
             QPushButton#AgentBtn:checked {
                 background-color: rgba(60, 255, 136, 0.07);
-                border-left: 3px solid #3cff88;
+                border-left: 2px solid #3cff88;
                 color: #3cff88;
                 font-weight: 500;
             }
@@ -1311,11 +1330,12 @@ class GodAI(QWidget):
 
         self.agent_buttons = {}
         for name in sidebar_agents:
-            btn = QPushButton(f"{icons.get(name, '⚙️')}  {labels.get(name, name.capitalize())}")
+            metadata = BUILTIN_AGENTS[name]
+            btn = QPushButton(f"{metadata['icon']}  {metadata['label']}")
             btn.setObjectName("AgentBtn")
             btn.setStyleSheet(agent_btn_style)
             btn.setCheckable(True)
-            btn.setMinimumHeight(40)
+            btn.setMinimumHeight(36)
             btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
             btn.clicked.connect(lambda checked, n=name: self.select_agent(n))
             agents_layout.addWidget(btn)
@@ -1325,66 +1345,120 @@ class GodAI(QWidget):
         agents_scroll.setWidget(agents_container)
         left_layout.addWidget(agents_scroll, 1)
 
+        # Saved chats are part of the Chat workflow, not every specialist
+        # workflow. The reference shell keeps them behind one quiet footer row
+        # rather than permanently filling half of the navigation rail.
+        self.saved_chats_toggle = QPushButton("▸  History")
+        self.saved_chats_toggle.setObjectName("RailFooterToggle")
+        self.saved_chats_toggle.setCheckable(True)
+        self.saved_chats_toggle.setToolTip("Show saved conversations")
+        self.saved_chats_toggle.clicked.connect(self._toggle_saved_chats)
+        left_layout.addWidget(self.saved_chats_toggle)
+
+        self.saved_chats_panel = QWidget()
+        saved_layout = QVBoxLayout(self.saved_chats_panel)
+        saved_layout.setContentsMargins(0, 0, 0, 0)
+        saved_layout.setSpacing(4)
+
         # ── Divider ──────────────────────────────────────────────
         divider = QFrame()
         divider.setFrameShape(QFrame.HLine)
         divider.setStyleSheet("color: #242424; background-color: #242424; max-height: 1px;")
-        left_layout.addWidget(divider)
+        saved_layout.addWidget(divider)
 
-        saved_header = QLabel("Saved chats")
+        saved_header = QLabel("  SAVED CHATS")
         saved_header.setStyleSheet(
-            "color: #909090; font-weight: 600; font-size: 12px; "
-            "padding: 8px 0 4px 4px; "
+            "color: #707070; font-weight: bold; font-size: 10px; "
+            "letter-spacing: 1.5px; padding: 8px 0 4px 8px; "
             "background: transparent;"
         )
-        left_layout.addWidget(saved_header)
+        saved_layout.addWidget(saved_header)
 
-        self.project_filter = QComboBox()
-        self.project_filter.currentIndexChanged.connect(self.project_changed)
-        self.project_filter.setContextMenuPolicy(Qt.CustomContextMenu)
-        self.project_filter.customContextMenuRequested.connect(self.show_project_context_menu)
-        left_layout.addWidget(self.project_filter)
-
-        history_tools = QHBoxLayout()
-        history_tools.setSpacing(8)
         # Narrow the list to one agent. Populated from the chats that exist, so
         # it only ever offers agents you have actually used.
         self.history_agent_filter = QComboBox()
         self.history_agent_filter.addItem(ALL_AGENTS_FILTER)
         self.history_agent_filter.currentTextChanged.connect(self.load_history_list)
-        history_tools.addWidget(self.history_agent_filter, 1)
+        saved_layout.addWidget(self.history_agent_filter)
 
         self.history_search = QLineEdit()
-        self.history_search.setPlaceholderText("Search…")
+        self.history_search.setPlaceholderText("Search saved chats...")
         self.history_search.textChanged.connect(self.load_history_list)
-        history_tools.addWidget(self.history_search, 2)
-        left_layout.addLayout(history_tools)
+        saved_layout.addWidget(self.history_search)
 
         self.history_list = QListWidget()
         self.history_list.itemClicked.connect(self.open_selected_chat)
         # Double-click renames: chat_title_from_data already prefers a stored
         # "title" over the truncated first prompt, it was just never written.
         self.history_list.itemDoubleClicked.connect(self.rename_selected_chat)
-        self.history_list.setContextMenuPolicy(Qt.CustomContextMenu)
-        self.history_list.customContextMenuRequested.connect(self.show_history_context_menu)
         # Keep the saved-chats list bounded so the agents area always has room
-        self.history_list.setMinimumHeight(120)
-        self.history_list.setMaximumHeight(200)
-        left_layout.addWidget(self.history_list)
+        self.history_list.setMinimumHeight(70)
+        self.history_list.setMaximumHeight(100)
+        saved_layout.addWidget(self.history_list)
 
         self.delete_chat_btn = QPushButton("Delete selected")
         self.delete_chat_btn.clicked.connect(self.delete_selected_chat)
+        saved_layout.addWidget(self.delete_chat_btn)
 
         self.new_chat_btn = QPushButton("New chat")
         self.new_chat_btn.clicked.connect(self.new_chat)
-        history_actions = QHBoxLayout()
-        history_actions.setSpacing(8)
-        history_actions.addWidget(self.new_chat_btn)
-        history_actions.addWidget(self.delete_chat_btn)
-        left_layout.addLayout(history_actions)
+        saved_layout.addWidget(self.new_chat_btn)
+        left_layout.addWidget(self.saved_chats_panel)
+        self.saved_chats_panel.hide()
 
-        left_widget.setMinimumWidth(230)
-        left_widget.setMaximumWidth(300)
+        # Trace uses the same durable history records as Chat, presented through
+        # a dedicated search-focused library whenever the Trace view is active.
+        self.saved_searches_toggle = QPushButton("▸  Saved searches")
+        self.saved_searches_toggle.setObjectName("RailFooterToggle")
+        self.saved_searches_toggle.setCheckable(True)
+        self.saved_searches_toggle.setToolTip("Show saved Trace searches")
+        self.saved_searches_toggle.clicked.connect(self._toggle_saved_searches)
+        left_layout.addWidget(self.saved_searches_toggle)
+
+        self.saved_searches_panel = QWidget()
+        searches_layout = QVBoxLayout(self.saved_searches_panel)
+        searches_layout.setContentsMargins(0, 0, 0, 0)
+        searches_layout.setSpacing(4)
+
+        searches_divider = QFrame()
+        searches_divider.setFrameShape(QFrame.HLine)
+        searches_divider.setStyleSheet(
+            "color: #242424; background-color: #242424; max-height: 1px;"
+        )
+        searches_layout.addWidget(searches_divider)
+
+        searches_header = QLabel("  SAVED SEARCHES")
+        searches_header.setStyleSheet(
+            "color: #707070; font-weight: bold; font-size: 10px; "
+            "letter-spacing: 1.5px; padding: 8px 0 4px 8px; "
+            "background: transparent;"
+        )
+        searches_layout.addWidget(searches_header)
+
+        self.saved_search_search = QLineEdit()
+        self.saved_search_search.setPlaceholderText("Search saved searches...")
+        self.saved_search_search.textChanged.connect(self.load_saved_searches)
+        searches_layout.addWidget(self.saved_search_search)
+
+        self.saved_search_list = QListWidget()
+        self.saved_search_list.itemClicked.connect(self.open_selected_search)
+        self.saved_search_list.itemDoubleClicked.connect(self.rename_selected_search)
+        self.saved_search_list.setMinimumHeight(70)
+        self.saved_search_list.setMaximumHeight(130)
+        searches_layout.addWidget(self.saved_search_list)
+
+        self.delete_search_btn = QPushButton("Delete selected")
+        self.delete_search_btn.clicked.connect(self.delete_selected_search)
+        searches_layout.addWidget(self.delete_search_btn)
+
+        self.new_search_btn = QPushButton("New search")
+        self.new_search_btn.clicked.connect(self.new_trace_search)
+        searches_layout.addWidget(self.new_search_btn)
+        left_layout.addWidget(self.saved_searches_panel)
+        self.saved_searches_panel.hide()
+
+        left_widget.setMinimumWidth(200)
+        left_widget.setMaximumWidth(250)
 
         left_widget.setStyleSheet("""
         QWidget#LeftPanel {
@@ -1442,12 +1516,14 @@ class GodAI(QWidget):
     def build_center_panel(self) -> QWidget:
         center_widget = QWidget()
         center_layout = QVBoxLayout(center_widget)
-        center_layout.setContentsMargins(24, 24, 24, 24)
-        center_layout.setSpacing(16)
+        self.center_widget = center_widget
+        self.center_layout = center_layout
+        center_layout.setContentsMargins(18, 16, 18, 16)
+        center_layout.setSpacing(12)
 
         # ── Agent header bar: big accent title + status pill ─────────────
         header_row = QHBoxLayout()
-        header_row.setSpacing(12)
+        header_row.setSpacing(10)
 
         self.agent_title_label = QLabel("Chat")
         self.agent_title_label.setObjectName("AgentTitle")
@@ -1460,25 +1536,57 @@ class GodAI(QWidget):
 
         header_row.addStretch()
 
-        self.agent_docs_btn = QPushButton("📖  Docs")
+        self.agent_docs_btn = QPushButton("Agent guide")
         self.agent_docs_btn.setObjectName("ChipBtn")
-        self.agent_docs_btn.setToolTip("Open the documentation for the current agent.")
+        self.agent_docs_btn.setToolTip("Open searchable documentation for the current agent.")
         self.agent_docs_btn.clicked.connect(self.show_agent_docs)
-        self.agent_docs_btn.hide()
+        header_row.addWidget(self.agent_docs_btn)
 
-        self.tooltips_toggle_btn = QPushButton("💡 Tooltips: On")
+        self.tooltips_toggle_btn = QPushButton(
+            "Tips on" if self.tooltips_enabled else "Tips off"
+        )
         self.tooltips_toggle_btn.setObjectName("ChipBtn")
         self.tooltips_toggle_btn.setCheckable(True)
-        self.tooltips_toggle_btn.setChecked(True)
+        self.tooltips_toggle_btn.setChecked(self.tooltips_enabled)
         self.tooltips_toggle_btn.setToolTip(
             "Toggle hover tooltips across the entire app. Tooltips explain what each control does."
         )
         self.tooltips_toggle_btn.clicked.connect(self._toggle_tooltips)
-        self.tooltips_toggle_btn.hide()
+        header_row.addWidget(self.tooltips_toggle_btn)
 
-        self.agent_status_pill = QLabel("●  Ready")
+        self.inspector_btn = QPushButton("Inspector")
+        self.inspector_btn.setObjectName("ChipBtn")
+        self.inspector_btn.setCheckable(True)
+        self.inspector_btn.setChecked(self.inspector_visible)
+        self.inspector_btn.setToolTip(
+            "Show system, routing, cost, budget, logs and API status."
+        )
+        self.inspector_btn.clicked.connect(self.toggle_inspector)
+        header_row.addWidget(self.inspector_btn)
+
+        # Keep infrequent application utilities available without permanently
+        # occupying the Inspector. This matters on specialist screens, where
+        # the Chat run-bar Options menu is not present.
+        self.header_more_btn = QPushButton("•••")
+        self.header_more_btn.setObjectName("ChipBtn")
+        self.header_more_btn.setToolTip("More application tools")
+        header_more_menu = QMenu(self.header_more_btn)
+        header_more_menu.addAction("Cost history").triggered.connect(
+            self.show_cost_history
+        )
+        header_more_menu.addAction("Run log").triggered.connect(
+            self.show_run_log
+        )
+        header_more_menu.addSeparator()
+        header_more_menu.addAction("Settings").triggered.connect(
+            self.show_settings
+        )
+        self.header_more_btn.setMenu(header_more_menu)
+        header_row.addWidget(self.header_more_btn)
+
+        self.agent_status_pill = QLabel("●  READY")
         self.agent_status_pill.setObjectName("StatusPill")
-        header_row.addWidget(self.agent_status_pill)
+        self.agent_status_pill.hide()
 
         center_layout.addLayout(header_row)
 
@@ -1495,26 +1603,28 @@ class GodAI(QWidget):
         # the model tools — moved behind the gear. They were occupying the strip
         # directly above the input box permanently.
         self.agent_box = QComboBox()
-        agent_items = self.agents_config.get("agents", [])
-        for extra in ("manager",):
-            if extra not in agent_items:
-                agent_items = list(agent_items) + [extra]
+        # Built-ins come exclusively from the canonical catalog.
+        agent_items = list(BUILTIN_AGENT_ORDER)
         self.agent_box.addItems(agent_items)
         self.agent_box.hide()
 
         runbar_container = QWidget()
         runbar_container.setObjectName("RunBar")
+        # Without a fixed vertical policy this surface absorbs all spare height
+        # when the response area is empty and centres its controls in a huge
+        # blank card.
+        runbar_container.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         # A plain QWidget does not paint a stylesheet background unless asked;
         # without this the run bar has no surface and its controls float loose.
         runbar_container.setAttribute(Qt.WA_StyledBackground, True)
         runbar = QHBoxLayout(runbar_container)
-        runbar.setContentsMargins(16, 16, 16, 16)
-        runbar.setSpacing(10)
+        runbar.setContentsMargins(10, 8, 10, 8)
+        runbar.setSpacing(8)
 
         self.tool_box = QComboBox()
         self.tool_box.setObjectName("ToolChip")
         self.tool_box.addItems(self.tool_prompts.keys())
-        self.tool_box.setMinimumWidth(110)
+        self.tool_box.setMinimumWidth(100)
         runbar.addWidget(self.tool_box)
 
         self.provider_box = QComboBox()
@@ -1529,8 +1639,15 @@ class GodAI(QWidget):
 
         self.model_box = QComboBox()
         self.model_box.setObjectName("MachinePick")
-        self.model_box.setMinimumWidth(140)
+        configure_model_controls(self.provider_box, self.model_box)
         runbar.addWidget(self.model_box)
+
+        self.model_summary_label = QLabel("Recommended model")
+        self.model_summary_label.setObjectName("ModelSummary")
+        self.model_summary_label.setToolTip(
+            "Sentinel applies the recommended model. Use the gear to override it."
+        )
+        self.model_summary_label.hide()
 
         # The one number that changes with every keystroke, next to the controls
         # that change it rather than in the far rail.
@@ -1544,17 +1661,18 @@ class GodAI(QWidget):
         self.stop_chat_btn.setObjectName("StopAction")
         self.stop_chat_btn.setEnabled(False)
         self.stop_chat_btn.clicked.connect(self.stop_current_task)
-        runbar.addWidget(self.stop_chat_btn)
+        self.stop_chat_btn.hide()
 
         self.run_btn = QPushButton("Run")
         self.run_btn.setObjectName("RunAction")
         self.run_btn.clicked.connect(self.send_prompt)
-        runbar.addWidget(self.run_btn)
 
-        self.runbar_settings_btn = QPushButton("⚙")
+        self.runbar_settings_btn = QPushButton("Options")
         self.runbar_settings_btn.setObjectName("ChipBtn")
         self.runbar_settings_btn.setToolTip("Execution mode, provider permissions and model tools")
         runbar.addWidget(self.runbar_settings_btn)
+        runbar.addWidget(self.stop_chat_btn)
+        runbar.addWidget(self.run_btn)
 
         normal_layout.addWidget(runbar_container)
 
@@ -1569,7 +1687,7 @@ class GodAI(QWidget):
         settings_panel.setObjectName("RunBarPopover")
         settings_panel.setAttribute(Qt.WA_StyledBackground, True)
         sp = QVBoxLayout(settings_panel)
-        sp.setContentsMargins(16, 8, 16, 16)
+        sp.setContentsMargins(12, 10, 12, 12)
         sp.setSpacing(8)
 
         command_row = QHBoxLayout()
@@ -1665,10 +1783,25 @@ class GodAI(QWidget):
         self.model_guide_btn.clicked.connect(self.show_model_guide)
         tools.addWidget(self.model_guide_btn)
 
-        self.docs_btn = QPushButton("Docs")
+        self.docs_btn = QPushButton("App docs")
         self.docs_btn.setObjectName("ChipBtn")
         self.docs_btn.clicked.connect(self.show_docs)
         tools.addWidget(self.docs_btn)
+
+        self.options_cost_history_btn = QPushButton("Cost history")
+        self.options_cost_history_btn.setObjectName("ChipBtn")
+        self.options_cost_history_btn.clicked.connect(self.show_cost_history)
+        tools.addWidget(self.options_cost_history_btn)
+
+        self.options_run_log_btn = QPushButton("Run log")
+        self.options_run_log_btn.setObjectName("ChipBtn")
+        self.options_run_log_btn.clicked.connect(self.show_run_log)
+        tools.addWidget(self.options_run_log_btn)
+
+        self.options_settings_btn = QPushButton("Settings")
+        self.options_settings_btn.setObjectName("ChipBtn")
+        self.options_settings_btn.clicked.connect(self.show_settings)
+        tools.addWidget(self.options_settings_btn)
         sp.addWidget(tools_container)
 
         self.runbar_menu = QMenu(self)
@@ -1678,14 +1811,20 @@ class GodAI(QWidget):
         self.runbar_settings_btn.setMenu(self.runbar_menu)
 
         self.model_box.currentTextChanged.connect(self.save_provider_model_preference)
-        self.model_box.activated.connect(self.note_manual_model_selection)
-        self.provider_box.activated.connect(self.note_manual_model_selection)
+
+        def update_model_summary(*_args):
+            provider = self.provider_box.currentText()
+            model = self.model_box.currentText()
+            self.model_summary_label.setText(f"Auto · {provider} / {model}".rstrip(" /"))
+
+        self.provider_box.currentTextChanged.connect(update_model_summary)
+        self.model_box.currentTextChanged.connect(update_model_summary)
+        update_model_summary()
 
         self.input_box = QTextEdit()
         self.input_box.setObjectName("PromptInput")
         self.input_box.setPlaceholderText("Type your message here…")
-        self.input_box.setMinimumHeight(110)
-        self.input_box.setMaximumHeight(170)
+        self.input_box.setFixedHeight(74)
         normal_layout.addWidget(self.input_box)
 
         self.send_btn = self.run_btn
@@ -1744,31 +1883,53 @@ class GodAI(QWidget):
         self.chat_status_label.hide()
         normal_layout.addWidget(self.chat_status_label)
 
-        center_layout.addWidget(self.normal_panel)
+        # Chat controls are a compact workflow stack. Aligning the container to
+        # the top prevents Qt from stretching the run bar and prompt apart when
+        # there is no response yet.
+        center_layout.addWidget(self.normal_panel, 0, Qt.AlignTop)
 
-        self.manager_panel = self.panels["manager"] = ManagerPanel(self)
-        center_layout.addWidget(self.manager_panel)
+        # Every specialist workspace gets its own vertical viewport. This keeps
+        # controls readable on smaller displays instead of compressing and
+        # clipping rows at the bottom of the window.
+        self.panel_scrolls = {}
 
-        self.osint_panel = self.panels["osint"] = OsintPanel(self)
-        center_layout.addWidget(self.osint_panel)
+        def add_specialist_panel(key, panel):
+            self.panels[key] = panel
+            panel.setMaximumWidth(1600)
+            scroll = QScrollArea()
+            scroll.setObjectName("AgentWorkspaceScroll")
+            scroll.setWidgetResizable(True)
+            scroll.setFrameShape(QFrame.NoFrame)
+            scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+            scroll.setAlignment(Qt.AlignHCenter | Qt.AlignTop)
+            scroll.setWidget(panel)
+            scroll.hide()
+            self.panel_scrolls[key] = scroll
+            center_layout.addWidget(scroll, 1)
 
-        self.osint_heavy_panel = self.panels["osint_heavy"] = OsintHeavyPanel(self)
-        center_layout.addWidget(self.osint_heavy_panel)
+        self.manager_panel = ManagerPanel(self)
+        add_specialist_panel("manager", self.manager_panel)
 
-        self.wifi_panel = self.panels["wifi"] = WifiPanel(self)
-        center_layout.addWidget(self.wifi_panel)
+        self.osint_panel = OsintPanel(self)
+        add_specialist_panel("osint", self.osint_panel)
 
-        self.bug_bounty_panel = self.panels["bug_bounty"] = BugBountyPanel(self)
-        center_layout.addWidget(self.bug_bounty_panel)
+        self.osint_heavy_panel = OsintHeavyPanel(self)
+        add_specialist_panel("osint_heavy", self.osint_heavy_panel)
 
-        self.vpn_panel = self.panels["vpn"] = VpnPanel(self)
-        center_layout.addWidget(self.vpn_panel)
+        self.wifi_panel = WifiPanel(self)
+        add_specialist_panel("wifi", self.wifi_panel)
 
-        self.output_label = QLabel("OUTPUT")
-        self.output_label.setStyleSheet(
-            "font-size: 10px; font-weight: bold; color: #707070; "
-            "letter-spacing: 1.5px; padding: 6px 0 2px 0; background: transparent;"
-        )
+        self.bug_bounty_panel = BugBountyPanel(self)
+        add_specialist_panel("bug_bounty", self.bug_bounty_panel)
+
+        self.vpn_panel = VpnPanel(self)
+        add_specialist_panel("vpn", self.vpn_panel)
+
+        self.output_label = QPushButton("▾  Response")
+        self.output_label.setObjectName("OutputToggle")
+        self.output_label.setCheckable(True)
+        self.output_label.setChecked(True)
+        self.output_label.clicked.connect(self._toggle_chat_output)
         self.output_label.hide()
         center_layout.addWidget(self.output_label)
 
@@ -1776,6 +1937,7 @@ class GodAI(QWidget):
         self.output_box.setObjectName("OutputBox")
         self.output_box.setReadOnly(True)
         self.output_box.setMinimumHeight(130)
+        self.output_box.setPlaceholderText("Responses and generated results appear here.")
         self.output_box.hide()
         center_layout.addWidget(self.output_box, 1)
 
@@ -1786,6 +1948,8 @@ class GodAI(QWidget):
     def show_output_area(self):
         """Reveal the output label and box. Called when content arrives."""
         if hasattr(self, "output_label") and hasattr(self, "output_box"):
+            self.output_label.setChecked(True)
+            self.output_label.setText("▾  Response")
             self.output_label.setVisible(True)
             self.output_box.setVisible(True)
 
@@ -1794,46 +1958,69 @@ class GodAI(QWidget):
         if hasattr(self, "output_label") and hasattr(self, "output_box"):
             self.output_label.setVisible(False)
             self.output_box.setVisible(False)
+
+    def _toggle_chat_output(self, expanded: bool) -> None:
+        """Collapse previous output into the compact row used by the reference."""
+        self.output_label.setText(
+            "▾  Response" if expanded else "▸  Previous turn"
+        )
+        self.output_box.setVisible(bool(expanded))
+
+    def toggle_inspector(self, visible: bool) -> None:
+        """Reveal diagnostics only when requested, preserving workspace width."""
+        if not hasattr(self, "right_panel"):
+            return
+        self.right_panel.setVisible(bool(visible))
+        self.inspector_btn.setChecked(bool(visible))
+        self.inspector_visible = bool(visible)
+        save_setting("inspector_visible", "true" if visible else "false")
+        if visible:
+            sizes = self.main_splitter.sizes()
+            total = sum(sizes) or self.width()
+            right = min(300, max(244, total // 5))
+            left = min(250, max(200, total // 7))
+            self.main_splitter.setSizes([left, max(520, total - left - right), right])
     
     def build_right_panel(self) -> QWidget:
         right_widget = QWidget()
         right_widget.setObjectName("RightPanel")
 
         right_layout = QVBoxLayout(right_widget)
-        right_layout.setContentsMargins(8, 8, 8, 8)
+        right_layout.setContentsMargins(14, 12, 14, 12)
         right_layout.setSpacing(0)
 
         # ── Inner container that holds all cards (scrollable) ───────────
         cards_container = QWidget()
         cards_container.setObjectName("RightCardsContainer")
         cards_layout = QVBoxLayout(cards_container)
-        cards_layout.setContentsMargins(4, 4, 4, 4)
-        cards_layout.setSpacing(8)
+        cards_layout.setContentsMargins(0, 0, 0, 0)
+        cards_layout.setSpacing(0)
 
         # ── Card 1: System ──────────────────────────────────────────────
         system_card = QGroupBox("SYSTEM")
         system_card.setObjectName("RightCard")
         system_layout = QVBoxLayout(system_card)
-        system_layout.setContentsMargins(8, 8, 8, 8)
-        system_layout.setSpacing(6)
+        system_layout.setContentsMargins(0, 4, 0, 8)
+        system_layout.setSpacing(8)
 
         # Figures, not sentences: every one of these is "x of y", so it is drawn
         # as a proportion. "Used: 11.3 GB · Free: 9.4 GB" cannot be read at a
         # glance, and reading at a glance is the whole job of a status rail.
         self.resource_meters = {
-            "RAM": Meter("RAM", "Physical memory in use"),
-            "CPU": Meter("CPU", "Processor load across all cores"),
-            "SWAP": Meter("SWAP", "Memory paged out to disk. Sustained high swap "
+            "RAM": Meter("Memory", "Physical memory in use"),
+            "SWAP": Meter("Swap", "Memory paged out to disk. Sustained high swap "
                                   "means real pressure; a large idle figure is "
                                   "usually just accumulated history."),
-            "BATT": Meter("BATT", "Charge remaining"),
+            "CPU": Meter("CPU", "Processor load across all cores"),
+            "BATT": Meter("Battery", "Charge remaining"),
         }
         for meter in self.resource_meters.values():
             system_layout.addWidget(meter)
+        self.resource_meters["BATT"].hide()
 
         self.realtime_monitor_btn = QPushButton("Realtime monitor")
         self.realtime_monitor_btn.setEnabled(False)
-        system_layout.addWidget(self.realtime_monitor_btn)
+        self.realtime_monitor_btn.hide()
 
         cards_layout.addWidget(system_card)
 
@@ -1841,19 +2028,23 @@ class GodAI(QWidget):
         routing_card = QGroupBox("ROUTING")
         routing_card.setObjectName("RightCard")
         routing_layout = QVBoxLayout(routing_card)
-        routing_layout.setContentsMargins(8, 8, 8, 8)
-        routing_layout.setSpacing(6)
+        routing_layout.setContentsMargins(0, 4, 0, 8)
+        routing_layout.setSpacing(7)
 
         # Rows, not prose. The reasoning sentence became the tooltip — it is
         # an explanation you want occasionally, not four wrapped lines you read
         # past every time.
         self.routing_rows = {
-            "Suggested": KeyValue("Suggested", "—"),
+            "Suggested": KeyValue("Provider", "—"),
             "Model": KeyValue("Model", "—"),
             "Mode": KeyValue("Mode", "—"),
+            "Cost": KeyValue("Cost", "—"),
+            "Last run": KeyValue("Last run", "—"),
         }
         for row in self.routing_rows.values():
             routing_layout.addWidget(row)
+        self.routing_rows["Mode"].hide()
+        self.routing_rows["Cost"].hide()
 
         # kept so the existing update paths still have something to write to
         self.route_result_label = QLabel()
@@ -1861,13 +2052,11 @@ class GodAI(QWidget):
         self.recommendation_label = QLabel()
         self.recommendation_label.hide()
 
-        cards_layout.addWidget(routing_card)
-
         # ── Card 3: Cost ────────────────────────────────────────────────
         cost_card = QGroupBox("COST")
         cost_card.setObjectName("RightCard")
         cost_layout = QVBoxLayout(cost_card)
-        cost_layout.setContentsMargins(8, 8, 8, 8)
+        cost_layout.setContentsMargins(10, 6, 10, 10)
         cost_layout.setSpacing(6)
 
         self.cost_rows = {
@@ -1887,23 +2076,22 @@ class GodAI(QWidget):
         self.request_count_label = QLabel(); self.request_count_label.hide()
 
         cards_layout.addWidget(cost_card)
+        cost_card.hide()
 
         # ── Card 4: Budget ──────────────────────────────────────────────
         budget_card = QGroupBox("BUDGET")
         budget_card.setObjectName("RightCard")
         budget_layout = QVBoxLayout(budget_card)
-        budget_layout.setContentsMargins(8, 8, 8, 8)
-        budget_layout.setSpacing(6)
+        budget_layout.setContentsMargins(0, 4, 0, 8)
+        budget_layout.setSpacing(8)
 
         # Spend is "x of y" too, and the one figure worth seeing without reading.
         self.budget_meters = {
-            "SESSION": Meter("SESSION", "Spent this session against the session cap"),
-            "DAILY": Meter("DAILY", "Spent today against the daily cap"),
-            "PROJECT": Meter("PROJECT", "Spent today against the active project cap"),
+            "SESSION": Meter("Session", "Spent this session against the session cap"),
+            "DAILY": Meter("Today", "Spent today against the daily cap"),
         }
         for meter in self.budget_meters.values():
             budget_layout.addWidget(meter)
-        self.budget_meters["PROJECT"].hide()
 
         # The caps themselves are set in Settings. A rail reports state; two
         # text fields and two buttons in it made the busiest block on screen out
@@ -1921,15 +2109,16 @@ class GodAI(QWidget):
         self.edit_budget_btn = QPushButton("Edit limits…")
         self.edit_budget_btn.setObjectName("RailLink")
         self.edit_budget_btn.clicked.connect(self.show_settings)
-        budget_layout.addWidget(self.edit_budget_btn)
+        self.edit_budget_btn.hide()
 
         cards_layout.addWidget(budget_card)
+        cards_layout.addWidget(routing_card)
 
         # ── Card 5: Quick Actions ───────────────────────────────────────
         actions_card = QGroupBox("ACTIONS")
         actions_card.setObjectName("RightCard")
         actions_layout = QVBoxLayout(actions_card)
-        actions_layout.setContentsMargins(8, 8, 8, 8)
+        actions_layout.setContentsMargins(10, 6, 10, 10)
         actions_layout.setSpacing(6)
 
         self.cost_history_btn = QPushButton("Cost history")
@@ -1945,12 +2134,13 @@ class GodAI(QWidget):
         actions_layout.addWidget(self.settings_btn)
 
         cards_layout.addWidget(actions_card)
+        actions_card.hide()
 
         # ── Card 6: API Keys ────────────────────────────────────────────
         keys_card = QGroupBox("API KEYS")
         keys_card.setObjectName("RightCard")
         keys_layout = QVBoxLayout(keys_card)
-        keys_layout.setContentsMargins(8, 8, 8, 8)
+        keys_layout.setContentsMargins(10, 6, 10, 10)
         keys_layout.setSpacing(4)
 
         # A tick and a cross in every row is five pieces of punctuation saying
@@ -1980,6 +2170,7 @@ class GodAI(QWidget):
         self.anthropic_key_label = QLabel(); self.anthropic_key_label.hide()
 
         cards_layout.addWidget(keys_card)
+        keys_card.hide()
 
         cards_layout.addStretch()
 
@@ -1992,8 +2183,8 @@ class GodAI(QWidget):
         scroll_area.setStyleSheet("QScrollArea { background: transparent; border: none; }")
         right_layout.addWidget(scroll_area)
 
-        right_widget.setMinimumWidth(260)
-        right_widget.setMaximumWidth(320)
+        right_widget.setMinimumWidth(244)
+        right_widget.setMaximumWidth(300)
 
         # ── Sizing for buttons/inputs ───────────────────────────────────
         for w in [
@@ -2027,24 +2218,24 @@ class GodAI(QWidget):
             background: transparent;
             border: none;
             border-top: 1px solid #262d29;
-            margin-top: 26px;
-            padding: 16px 2px 2px 2px;
+            margin-top: 16px;
+            padding: 11px 1px 3px 1px;
         }
         QGroupBox#RightCard::title {
             subcontrol-origin: margin;
             subcontrol-position: top left;
             left: 0px;
-            top: 4px;
-            padding: 0 8px 0 0;
+            top: 2px;
+            padding: 0 6px 0 0;
             background: transparent;
             color: #5d6862;
-            font-size: 12px;
+            font-size: 10px;
             font-weight: 500;
             letter-spacing: 2px;
         }
 
         QGroupBox#RightCard QLabel {
-            font-size: 12px;
+            font-size: 11px;
             font-weight: normal;
             color: #c8c8c8;
             letter-spacing: 0;
@@ -2196,7 +2387,6 @@ class GodAI(QWidget):
                 models = []
 
             self.model_box.addItems(models)
-            self.decorate_model_costs(provider, self.model_box)
 
             if previous_model:
                 idx = self.model_box.findText(previous_model)
@@ -2206,7 +2396,12 @@ class GodAI(QWidget):
             self.update_live_cost_estimate()
 
         except Exception as e:
-            self.output_box.append(f"[Model Load Error] {e}")
+            # Model discovery is setup metadata, not conversation output. Keep
+            # the Chat canvas clean and expose the diagnostic through the model
+            # control tooltip and launcher log instead.
+            if provider == "ollama" and self.model_box.count() == 0:
+                self.model_box.addItems(list(OllamaClient.KNOWN_MODELS))
+            self._note_failure("chat: load models", e, self.model_box)
             
     def save_provider_model_preference(self):
         if not hasattr(self, "provider_box") or not hasattr(self, "model_box"):
@@ -2265,27 +2460,15 @@ class GodAI(QWidget):
 
     def update_agent_ui(self, agent_name):
         self._current_agent = agent_name  # track for show_agent_docs()
+        self._update_workspace_margins()
         # ── Update the agent header bar (title + subtitle + status pill) ─
-        agent_titles = {
-            "chat": "Chat", "osint": "Trace", "osint_heavy": "Bloodhound",
-            "wifi": "Beacon", "bug_bounty": "Bug Spray",
-            "vpn": "Tunnel",
-            "manager": "Forge", }
-        agent_subtitles = {
-            "chat":        "General reasoning, any provider",
-            "osint":       "Open-source identity research",
-            "osint_heavy": "Deep investigation and dossier",
-            "wifi":        "Wireless reconnaissance",
-            "bug_bounty":  "Vulnerability triage",
-            "vpn":         "Self-hosted VPN design & kill switch",
-            "manager":      "Build and register new agents",
-            }
+        metadata = BUILTIN_AGENTS.get(agent_name, {})
         if hasattr(self, "agent_title_label"):
-            self.agent_title_label.setText(agent_titles.get(agent_name, agent_name.capitalize()))
+            self.agent_title_label.setText(metadata.get("label", agent_name.capitalize()))
         if hasattr(self, "agent_subtitle_label"):
-            self.agent_subtitle_label.setText(agent_subtitles.get(agent_name, ""))
+            self.agent_subtitle_label.setText(metadata.get("subtitle", ""))
         if hasattr(self, "agent_status_pill"):
-            self.agent_status_pill.setText("●  Ready")
+            self.agent_status_pill.setText("●  READY")
             self.agent_status_pill.setStyleSheet("")
         is_manager = agent_name == "manager"
         is_osint = agent_name == "osint"
@@ -2297,6 +2480,18 @@ class GodAI(QWidget):
                      or is_osint or is_osint_heavy or is_wifi
                      or is_bug_bounty or is_vpn)
 
+        chat_active = agent_name == "chat"
+        if hasattr(self, "saved_chats_toggle"):
+            self.saved_chats_toggle.setVisible(chat_active)
+            self.saved_chats_panel.setVisible(
+                chat_active and self.saved_chats_toggle.isChecked()
+            )
+        if hasattr(self, "saved_searches_toggle"):
+            self.saved_searches_toggle.setVisible(is_osint)
+            self.saved_searches_panel.setVisible(
+                is_osint and self.saved_searches_toggle.isChecked()
+            )
+
         self.normal_panel.setVisible(not is_custom)
         self.manager_panel.setVisible(is_manager)
         self.osint_panel.setVisible(is_osint)
@@ -2304,23 +2499,27 @@ class GodAI(QWidget):
         self.wifi_panel.setVisible(is_wifi)
         self.bug_bounty_panel.setVisible(is_bug_bounty)
         self.vpn_panel.setVisible(is_vpn)
-        # Output area only relevant for standard (non-custom) agents like Chat.
-        # Within those, auto-hide if there is no content yet — keeps the UI clean.
-        standard_agent_with_output = not is_custom
-        has_output_content = bool(self.output_box.toPlainText().strip())
-        # The output area keeps its place whether or not it has content yet —
-        # a column that reflows every time an answer arrives is disorienting.
-        show_output = standard_agent_with_output
+        for key, scroll in self.panel_scrolls.items():
+            scroll.setVisible(key == agent_name)
+        has_output = bool(self.output_box.toPlainText().strip())
+        show_output = chat_active and has_output
         self.output_label.setVisible(show_output)
-        self.output_box.setVisible(show_output)
+        self.output_box.setVisible(show_output and self.output_label.isChecked())
+        self.update_routing_tile_for_agent(agent_name)
 
-        if is_manager:
-            self.output_label.setText("Forge Output")
-            self.output_box.setPlainText("[Forge] Describe an idea above and click Analyze.")
-        elif is_osint or is_osint_heavy or is_wifi or is_bug_bounty or is_vpn:
-            pass
-        else:
-            self.output_label.setText("Output")
+    def update_routing_tile_for_agent(self, agent_name):
+        """Show the active agent's recommendation using shared catalog metadata."""
+        if not hasattr(self, "routing_rows"):
+            return
+        rec = self._recommendation_for(agent_name)
+        if not rec:
+            return
+        pricing = rec.get("pricing") or pricing_metadata(rec["provider"], rec["model"])
+        reason = rec.get("reason", "")
+        self.routing_rows["Suggested"].set(rec["provider"], reason)
+        self.routing_rows["Model"].set(rec["model"], reason)
+        self.routing_rows["Mode"].set(rec.get("mode", "—"), reason)
+        self.routing_rows["Cost"].set(pricing.compact, reason)
 
     def load_models(self):
         self.model_box.clear()
@@ -2337,52 +2536,10 @@ class GodAI(QWidget):
         tool_config = self.tool_prompts.get(selected_tool, {})
         system_prompt = tool_config.get("system", "You are a helpful assistant.")
 
-        return self.apply_project_context([
+        return [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": full_prompt},
-        ])
-
-    def active_project(self) -> dict | None:
-        if not self.active_project_id:
-            return None
-        return self.registry.get_project(self.active_project_id)
-
-    def project_instructions(self) -> str:
-        project = self.active_project()
-        return str((project or {}).get("instructions") or "").strip()
-
-    def apply_project_context(self, messages: list) -> list:
-        """Return a copy with the active project's instructions injected once."""
-        instructions = self.project_instructions()
-        result = [dict(message) for message in messages]
-        if not instructions:
-            return result
-        marker = "Project instructions:\n"
-        if any(marker in str(message.get("content", "")) for message in result):
-            return result
-        block = f"{marker}{instructions}"
-        for message in result:
-            if message.get("role") == "system":
-                existing = str(message.get("content") or "").rstrip()
-                message["content"] = f"{existing}\n\n{block}" if existing else block
-                break
-        else:
-            result.insert(0, {"role": "system", "content": block})
-        return result
-
-    def project_budget_context(self) -> dict:
-        project = self.active_project()
-        if not project:
-            return {"project_name": "", "project_cost": 0.0, "project_budget": None}
-        return {
-            "project_name": project["name"],
-            "project_cost": self.usage_tracker.get_project_total_today(project["id"]),
-            "project_budget": project.get("budget_eur"),
-        }
-
-    def project_prompt_for_estimate(self, prompt: str) -> str:
-        instructions = self.project_instructions()
-        return f"{instructions}\n\n{prompt}" if instructions else prompt
+        ]
 
     def auto_route_agent(self):
         raw_text = self.input_box.toPlainText().strip()
@@ -2392,46 +2549,138 @@ class GodAI(QWidget):
 
         selected_agent = self.agent_box.currentText()
         selected_tool = self.tool_box.currentText() if hasattr(self, "tool_box") else "General Chat"
-        permissions = {
-            "openai": self.allow_openai_checkbox.isChecked(), "deepseek": self.allow_deepseek_checkbox.isChecked(),
-            "kimi": self.allow_kimi_checkbox.isChecked(), "gemini": self.allow_gemini_checkbox.isChecked(),
-            "anthropic": self.allow_anthropic_checkbox.isChecked(), "qwen": self.allow_qwen_checkbox.isChecked(),
-            "ollama": True,
-        }
-        task = "coding" if selected_tool == "Coding" else "writing" if selected_tool in {"Writing", "Rewrite"} else "general"
-        router = ModelRouter(str(SETTINGS_FILE))
-        complexity = router.classify_complexity(selected_agent, raw_text)
-        input_tokens = max(1, len(self.project_prompt_for_estimate(raw_text)) // 4)
-        candidates = []
-        for provider in PROVIDERS:
-            models = self.models_for_provider(provider)
-            for model in models:
-                estimate = self.usage_tracker.estimate_cost_range(
-                    provider, model, input_tokens, max(128, input_tokens // 2), max(500, input_tokens * 2))
-                candidates.append(ModelCandidate(
-                    provider, model, enabled=self.registry.agent_allows_provider(selected_agent, provider),
-                    credentials=permissions[provider], service_healthy=bool(models), model_available=True,
-                    context_window=128_000, local=provider == "ollama",
-                    latency="high" if provider == "ollama" else "low",
-                    capabilities=frozenset({"general", complexity, task}), cost=estimate,
-                ))
-        remaining = min(self.session_budget_eur - self.session_cost_total,
-                        self.daily_budget_eur - self.usage_tracker.get_today_total())
-        recommendation = router.recommend(candidates, RoutingPreferences(
-            task=task, complexity=complexity, required_context=input_tokens,
-            budget_eur=max(0.0, remaining), local_only=self.execution_mode_box.currentText() == "Local only"))
-        self._last_routing_recommendation = recommendation
-        if recommendation.provider is None:
-            self.route_result_label.setText("Router: no eligible model")
+        decision = self.route_for_request(
+            raw_text, agent=selected_agent, tool=selected_tool,
+            keep_manual=False,
+        )
+        self._apply_route_to_widgets(decision, self.provider_box, self.model_box)
+        self._show_route(decision)
+
+    def _enabled_provider_names(self) -> set[str]:
+        enabled = {"ollama"}
+        for provider in ("openai", "deepseek", "kimi", "gemini", "anthropic", "qwen"):
+            checkbox = getattr(self, f"allow_{provider}_checkbox", None)
+            if checkbox is not None and checkbox.isChecked():
+                enabled.add(provider)
+        return enabled
+
+    def _routing_preferences(self) -> RoutingPreferences:
+        mode = self.execution_mode_box.currentText() if hasattr(self, "execution_mode_box") else "Hybrid allowed"
+        priority = str(self.settings.get("routing_priority", "balanced")).lower()
+        if priority not in {"balanced", "cost", "speed", "quality", "privacy"}:
+            priority = "balanced"
+        return RoutingPreferences(
+            local_only=mode == "Local only",
+            cloud_only=mode == "Cloud only",
+            priority=priority,
+        )
+
+    def route_for_request(self, prompt: str, *, agent: str = "chat", tool: str = "",
+                          keep_manual: bool = True):
+        enabled = self._enabled_provider_names()
+        available = {provider: self.models_for_provider(provider) for provider in sorted(enabled)}
+        manual_provider = self.provider_box.currentText() if keep_manual and hasattr(self, "provider_box") else None
+        manual_model = self.model_box.currentText() if keep_manual and hasattr(self, "model_box") else None
+        return route_request(
+            prompt, agent=agent, tool=tool,
+            preferences=self._routing_preferences(),
+            available_models=available, enabled_providers=enabled,
+            manual_provider=manual_provider, manual_model=manual_model,
+        )
+
+    def _show_route(self, decision) -> None:
+        text = f"Auto: {decision.provider} · {decision.model} — {decision.reason}"
+        if hasattr(self, "route_result_label"):
+            self.route_result_label.setText(text)
+            self.route_result_label.setToolTip(
+                decision.reason + ("\nFallbacks: " + ", ".join(
+                    f"{item.provider} · {item.model}" for item in decision.fallbacks
+                ) if decision.fallbacks else "")
+            )
+        if hasattr(self, "routing_rows"):
+            self.routing_rows["Suggested"].set(decision.provider, decision.reason)
+            self.routing_rows["Model"].set(decision.model, decision.reason)
+            self.routing_rows["Mode"].set(decision.mode, decision.reason)
+            pricing = getattr(decision, "pricing", None) or pricing_metadata(
+                decision.provider, decision.model
+            )
+            self.routing_rows["Cost"].set(pricing.compact, decision.reason)
+
+    def _apply_route_to_widgets(self, decision, provider_box, model_box) -> None:
+        if provider_box is None or model_box is None:
             return
-        explanation = "; ".join(recommendation.reasons[:3])
-        self.route_result_label.setText(
-            f"Recommended: {recommendation.provider} · {recommendation.model} — {explanation}")
+        index = provider_box.findText(decision.provider)
+        if index >= 0:
+            provider_box.setCurrentIndex(index)
+        model_index = self._find_model_index(model_box, decision.model)
+        if model_index >= 0:
+            model_box.setCurrentIndex(model_index)
+        tooltip = f"Auto-selected {decision.provider} · {decision.model}\n{decision.reason}"
+        provider_box.setToolTip(tooltip)
+        model_box.setToolTip(tooltip)
+
+    def prepare_agent_route(self, agent: str, prompt: str, provider_box, model_box,
+                            *, tool: str = ""):
+        """Shared request-time auto-routing entry point for every agent panel."""
+        auto = getattr(self, "auto_recommend_checkbox", None)
+        provider = provider_box.currentText() if provider_box is not None else ""
+        panel = self.panels.get(agent) if hasattr(self, "panels") else None
+        if getattr(panel, "_prefer_local_retry_once", False):
+            panel._prefer_local_retry_once = False
+            if provider == "ollama":
+                return None
+        permissions = self.current_api_permissions()
+        permitted = provider == "ollama" or permissions.get(f"allow_{provider}", False)
+        # A configured cloud provider can be granted for this request by the
+        # single consent dialog in authorize_request(). Do not silently replace
+        # the user's explicit selection merely because persistent permission is off.
+        if not permitted and self.provider_key_available(provider):
+            return None
+        if (auto is None or not auto.isChecked()) and permitted:
+            return None
+        try:
+            decision = self.route_for_request(
+                prompt, agent=agent, tool=tool, keep_manual=False
+            )
+        except RuntimeError as exc:
+            panel = self.panels.get(agent) if hasattr(self, "panels") else None
+            status = getattr(panel, "status_label", None)
+            if status is not None:
+                if not permitted:
+                    status.setText(
+                        f"{provider} permission is off. Enable it in Inspector, "
+                        "or choose an available local model."
+                    )
+                else:
+                    status.setText(str(exc))
+            return False
+        self._apply_route_to_widgets(decision, provider_box, model_box)
+        self._show_route(decision)
+        if not permitted and hasattr(self, "panels"):
+            panel = self.panels.get(agent)
+            status = getattr(panel, "status_label", None)
+            if status is not None:
+                panel._route_notice = (
+                    f"{provider} permission is off — using "
+                    f"{decision.provider} · {decision.model}."
+                )
+                status.setText(panel._route_notice)
+        return decision
 
     def resolve_backend_model(self):
         provider = self.provider_box.currentText()
         model = self.model_box.currentText()
         execution_mode = self.execution_mode_box.currentText()
+
+        auto = getattr(self, "auto_recommend_checkbox", None)
+        if auto is not None and auto.isChecked():
+            prompt = self.input_box.toPlainText().strip() if hasattr(self, "input_box") else ""
+            agent = self.agent_box.currentText() if hasattr(self, "agent_box") else "chat"
+            tool = self.tool_box.currentText() if hasattr(self, "tool_box") else ""
+            decision = self.route_for_request(prompt, agent=agent, tool=tool, keep_manual=False)
+            self._apply_route_to_widgets(decision, self.provider_box, self.model_box)
+            self._show_route(decision)
+            return decision.provider, decision.model
 
         allowed_apis = {
             "openai": self.allow_openai_checkbox.isChecked(),
@@ -2492,8 +2741,7 @@ class GodAI(QWidget):
         command_name, full_prompt = self.build_user_prompt(raw_text)
         final_backend, final_model = self.resolve_backend_model()
 
-        estimated_cost, approx_tokens = self.estimate_chat_cost(
-            final_backend, final_model, self.project_prompt_for_estimate(full_prompt))
+        estimated_cost, approx_tokens = self.estimate_chat_cost(final_backend, final_model, full_prompt)
 
         api_permissions = {
             "allow_openai": self.allow_openai_checkbox.isChecked(),
@@ -2514,7 +2762,6 @@ class GodAI(QWidget):
             daily_cost=self.usage_tracker.get_today_total(),
             daily_budget=self.daily_budget_eur,
             estimated_cost=estimated_cost,
-            **self.project_budget_context(),
         )
         if not validation.allowed:
             QMessageBox.warning(self, "Request Blocked", validation.reason)
@@ -2539,10 +2786,9 @@ class GodAI(QWidget):
                 messages = self.build_tool_messages(selected_tool, full_prompt)
             elif selected_agent in self.agent_instances:
                 agent = self.agent_instances[selected_agent]
-                messages = self.apply_project_context(agent.build_messages(full_prompt))
+                messages = agent.build_messages(full_prompt)
             else:
-                messages = self.apply_project_context(
-                    [{"role": "user", "content": full_prompt}])
+                messages = [{"role": "user", "content": full_prompt}]
 
             self.pending_agent = selected_agent
             self.pending_tool = selected_tool
@@ -2552,7 +2798,6 @@ class GodAI(QWidget):
             self.pending_messages = messages
             self.pending_prompt = full_prompt
             self.pending_usage = None
-            self.pending_project = self.active_project_id
 
             self.show_output_area()
             self.output_box.clear()
@@ -2566,7 +2811,9 @@ class GodAI(QWidget):
 
             self.route_result_label.setText(f"Router: {selected_agent} · {final_backend} · {final_model}")
 
+            self.send_btn.hide()
             self.send_btn.setEnabled(False)
+            self.stop_chat_btn.show()
             self.stop_chat_btn.setEnabled(True)
 
             self.start_chat_timer(final_backend, final_model, full_prompt)
@@ -2624,7 +2871,7 @@ class GodAI(QWidget):
         These paths deliberately must not raise into the UI, but a bare
         `except: pass` made a failed model listing or history load look exactly
         like "there is nothing here". stderr is captured by the app launcher in
-        /tmp/sentinel_launch.log; when a widget is given, the reason is also
+        /tmp/sentinelai_launch.log; when a widget is given, the reason is also
         attached to it as a tooltip so it is visible without reading a log.
         """
         message = f"{context}: {type(exc).__name__}: {exc}"
@@ -2646,30 +2893,26 @@ class GodAI(QWidget):
             "allow_qwen": self.allow_qwen_checkbox.isChecked(),
         }
 
-    def _resolve_request_id(self, identifier):
-        """Accept a request id, with a safe bridge for one legacy agent key.
+    def provider_key_available(self, provider: str) -> bool:
+        if provider == "ollama":
+            return True
+        client = getattr(self, provider, None)
+        checker = getattr(client, "key_available", None)
+        if callable(checker):
+            try:
+                return bool(checker())
+            except Exception:
+                return False
+        return bool(getattr(client, "api_key", None))
 
-        The bridge keeps older internal callers working during the v2 split. It
-        deliberately refuses an ambiguous agent key instead of guessing when
-        two runs of the same agent are active.
-        """
-        if identifier in self._pending_requests:
-            return identifier
-        matches = [
-            request_id for request_id, context in self._pending_requests.items()
-            if context.get("agent") == identifier
-        ]
-        return matches[0] if len(matches) == 1 else None
-
-    def note_request_usage(self, request_id, usage):
+    def note_request_usage(self, agent, usage):
         """Real token counts from the worker, when it reports them."""
-        request_id = self._resolve_request_id(request_id)
-        context = self._pending_requests.get(request_id)
+        context = self._pending_requests.get(agent)
         if context is not None:
             context["usage"] = usage
 
-    def authorize_request(self, agent, provider, model, prompt, tool=None, label=None):
-        """Budget-check and confirm one request. Return its id or ``None``.
+    def authorize_request(self, agent, provider, model, prompt, tool=None, label=None) -> bool:
+        """Budget-check and confirm one request. False means: do not send it.
 
         `tool` is a registry tool name and is validated as one — pass it only
         when the request really runs a registered tool (the chat panel does).
@@ -2677,57 +2920,77 @@ class GodAI(QWidget):
         is not a registry entry: pass that as `label` instead, so it still shows
         up in the run log and Saved Chats without failing the tool check.
 
-        Context is keyed by the run id rather than the agent, so concurrent runs
-        of the same agent cannot overwrite one another.
+        On success the context record_request() needs is stashed per agent, so a
+        caller only has to pass the response back later.
         """
-        estimated_cost, approx_tokens = self.estimate_chat_cost(
-            provider, model, self.project_prompt_for_estimate(prompt))
+        estimated_cost, approx_tokens = self.estimate_chat_cost(provider, model, prompt)
+
+        permissions = self.current_api_permissions()
+        one_time_consent = False
+        permission_key = f"allow_{provider}"
+        if provider != "ollama" and not permissions.get(permission_key, False):
+            panel = self.panels.get(agent) if hasattr(self, "panels") else None
+            status = getattr(panel, "status_label", None)
+            if not self.provider_key_available(provider):
+                if status is not None:
+                    status.setText(
+                        f"{provider} API key is not configured. Add it in Settings "
+                        "or choose a local model."
+                    )
+                return False
+            if not self.confirm_external_api_request(
+                provider, model, estimated_cost, approx_tokens
+            ):
+                if status is not None:
+                    status.setText("Request cancelled.")
+                return False
+            permissions[permission_key] = True
+            one_time_consent = True
 
         validation = self.validator.validate(
             agent_name=agent,
             tool_name=tool,
             provider=provider,
-            api_permissions=self.current_api_permissions(),
+            api_permissions=permissions,
             session_cost=self.session_cost_total,
             session_budget=self.session_budget_eur,
             daily_cost=self.usage_tracker.get_today_total(),
             daily_budget=self.daily_budget_eur,
             estimated_cost=estimated_cost,
-            **self.project_budget_context(),
         )
         if not validation.allowed:
             QMessageBox.warning(self, "Request Blocked", validation.reason)
-            return None
+            return False
 
-        if not self.confirm_external_api_request(provider, model, estimated_cost, approx_tokens):
-            return None
+        if (not one_time_consent
+                and not self.confirm_external_api_request(
+                    provider, model, estimated_cost, approx_tokens
+                )):
+            return False
 
         descriptor = label or tool or "-"
-        run_id = self.run_logger.start(
-            agent=agent,
-            tool=descriptor,
-            provider=provider,
-            model=model,
-            mode=self.execution_mode_box.currentText() if hasattr(self, "execution_mode_box") else "",
-            prompt_summary=prompt,
-        )
-        request_id = run_id or f"request-{uuid4().hex}"
-        self._pending_requests[request_id] = {
+        self._pending_requests[agent] = {
             "agent": agent,
             "tool": descriptor,
             "provider": provider,
             "model": model,
             "prompt": prompt,
             "usage": None,
-            "run_id": run_id,
-            "project": self.active_project_id,
+            "started_at": time.monotonic(),
+            "run_id": self.run_logger.start(
+                agent=agent,
+                tool=descriptor,
+                provider=provider,
+                model=model,
+                mode=self.execution_mode_box.currentText() if hasattr(self, "execution_mode_box") else "",
+                prompt_summary=prompt,
+            ),
         }
-        return request_id
+        return True
 
-    def record_request(self, request_id, response, messages=None):
+    def record_request(self, agent, response, messages=None):
         """Bill, save and close out a request authorised by authorize_request()."""
-        request_id = self._resolve_request_id(request_id)
-        context = self._pending_requests.pop(request_id, None)
+        context = self._pending_requests.pop(agent, None)
         if context is None:          # never authorised (or already recorded)
             return
 
@@ -2738,10 +3001,12 @@ class GodAI(QWidget):
             prompt_text=context["prompt"],
             response_text=response,
             usage=context["usage"],
-            project=context.get("project"),
         )
 
         self.last_request_cost = entry.get("cost_eur", entry.get("estimated_cost", 0.0))
+        if hasattr(self, "routing_rows") and "Last run" in self.routing_rows:
+            elapsed = max(0.0, time.monotonic() - context.get("started_at", time.monotonic()))
+            self.routing_rows["Last run"].set(f"{elapsed:.1f} s")
         self.last_tool_name = f"{context['agent']}/{context['tool']} - {context['provider']}"
         self.session_cost_total += entry.get("estimated_cost", 0.0)
         self.session_request_count += 1
@@ -2756,7 +3021,6 @@ class GodAI(QWidget):
             command=context["tool"],
             messages=messages + [{"role": "assistant", "content": response}],
             response=response,
-            project=context.get("project"),
         )
 
         if context["run_id"]:
@@ -2769,11 +3033,11 @@ class GodAI(QWidget):
             )
 
         self.load_history_list()
+        self.load_saved_searches()
 
-    def abandon_request(self, request_id, reason="error"):
+    def abandon_request(self, agent, reason="error"):
         """Drop a request that failed, so it is not billed and the log closes."""
-        request_id = self._resolve_request_id(request_id)
-        context = self._pending_requests.pop(request_id, None)
+        context = self._pending_requests.pop(agent, None)
         if context and context["run_id"]:
             self.run_logger.finish(run_id=context["run_id"], status=reason)
 
@@ -2794,6 +3058,8 @@ class GodAI(QWidget):
                 return self.ollama.generate(model=model, prompt=prompt)
 
         if backend == "openai":
+            if model in {"dall-e-3", "chatgpt-image-latest", "gpt-image-1"}:
+                return self.openai.generate_image(prompt)
             if hasattr(self.openai, "stream_chat"):
                 return self.openai.stream_chat(messages=messages, model=model)
             if hasattr(self.openai, "chat"):
@@ -2882,7 +3148,9 @@ class GodAI(QWidget):
 
     def handle_chat_finished(self, response):
         self.stop_chat_timer()
+        self.send_btn.show()
         self.send_btn.setEnabled(True)
+        self.stop_chat_btn.hide()
         self.stop_chat_btn.setEnabled(False)
 
         self.current_messages = self.pending_messages + [{"role": "assistant", "content": response}]
@@ -2895,7 +3163,6 @@ class GodAI(QWidget):
             prompt_text=self.pending_prompt,
             response_text=response,
             usage=self.pending_usage,
-            project=getattr(self, "pending_project", None),
         )
 
         self.last_request_cost = usage_entry.get("cost_eur", usage_entry.get("estimated_cost", 0.0))
@@ -2923,7 +3190,6 @@ class GodAI(QWidget):
             command=self.pending_command,
             messages=self.current_messages,
             response=response,
-            project=getattr(self, "pending_project", None),
         )
 
         self.load_history_list()
@@ -2932,7 +3198,9 @@ class GodAI(QWidget):
     def handle_chat_error(self, error):
         self.stop_chat_timer()
         self.output_box.append(f"\n[Error]\n{error}")
+        self.send_btn.show()
         self.send_btn.setEnabled(True)
+        self.stop_chat_btn.hide()
         self.stop_chat_btn.setEnabled(False)
 
         run_id = getattr(self, "active_run_id", None)
@@ -2950,7 +3218,9 @@ class GodAI(QWidget):
             self.chat_worker.wait(2000)
             self.output_box.append("\n[Stopped] Chat request stopped by user.")
         self.stop_chat_timer()
+        self.send_btn.show()
         self.send_btn.setEnabled(True)
+        self.stop_chat_btn.hide()
         self.stop_chat_btn.setEnabled(False)
 
         run_id = getattr(self, "active_run_id", None)
@@ -2961,12 +3231,8 @@ class GodAI(QWidget):
     def stop_current_task(self):
         """The window's Stop button: cancel whatever is actually running.
 
-        The 2026-08-19 cull left this method calling `self.author_worker`,
-        `music_worker`, `webdesign_worker`, `fiverr_*_worker` and the audiobook
-        process, none of which exist any more — so Stop raised `AttributeError`
-        before it reached a single surviving agent. Every agent vertical is now a
-        panel in `self.panels` that answers for itself (phase 4); only chat, which
-        still lives on the window, is handled directly.
+        Every specialised agent answers for itself through ``self.panels``;
+        only Chat, which still lives directly on the window, is handled here.
         """
         if self.chat_worker is not None and self.chat_worker.isRunning():
             self.stop_chat_worker()
@@ -3055,100 +3321,11 @@ class GodAI(QWidget):
                     level,
                     f"€{remaining:.2f} left of the €{cap:.2f} {key.lower()} cap",
                 )
-            project = self.active_project()
-            project_meter = self.budget_meters["PROJECT"]
-            if project and project.get("budget_eur") is not None:
-                spent = self.usage_tracker.get_project_total_today(project["id"])
-                cap = float(project["budget_eur"])
-                fraction = (spent / cap) if cap > 0 else 0.0
-                level = "red" if fraction >= 0.9 else "yellow" if fraction >= 0.6 else "green"
-                project_meter.set(
-                    fraction, f"€{spent:.2f} / €{cap:.0f}", level,
-                    f"{project['name']}: €{cap - spent:.2f} remaining today",
-                )
-                project_meter.show()
-            else:
-                project_meter.hide()
 
     def start_resource_timer(self):
         self.resource_timer = QTimer(self)
         self.resource_timer.timeout.connect(self.update_resource_label)
         self.resource_timer.start(1000)
-
-    def refresh_project_selector(self) -> None:
-        if not hasattr(self, "project_filter"):
-            return
-        current = self.project_filter.currentData()
-        self.project_filter.blockSignals(True)
-        self.project_filter.clear()
-        self.project_filter.addItem(ALL_PROJECTS_FILTER, "__all__")
-        self.project_filter.addItem(UNFILED_PROJECT_FILTER, "__unfiled__")
-        for project in self.registry.list_projects():
-            self.project_filter.addItem(project["name"], project["id"])
-        index = self.project_filter.findData(current)
-        self.project_filter.setCurrentIndex(index if index >= 0 else 0)
-        self.project_filter.blockSignals(False)
-        selected = self.project_filter.currentData()
-        self.active_project_id = (
-            selected if selected not in {"__all__", "__unfiled__", None} else None
-        )
-
-    def project_changed(self, _index: int = -1) -> None:
-        selected = self.project_filter.currentData() if hasattr(self, "project_filter") else "__all__"
-        self.active_project_id = selected if selected not in {"__all__", "__unfiled__", None} else None
-        project = self.active_project()
-        if project:
-            agent = project.get("default_agent") or "chat"
-            if hasattr(self, "agent_box") and self.agent_box.findText(agent) >= 0:
-                self.select_agent(agent)
-            provider = project.get("default_provider") or ""
-            model = project.get("default_model") or ""
-            panel = self.panels.get(agent)
-            provider_box = panel.provider_box if panel else getattr(self, "provider_box", None)
-            model_box = panel.model_box if panel else getattr(self, "model_box", None)
-            if provider and provider_box and provider_box.findText(provider) >= 0:
-                provider_box.setCurrentText(provider)
-            if model and model_box and model_box.findText(model) >= 0:
-                model_box.setCurrentText(model)
-            self.route_result_label.setText(f"Project: {project['name']}")
-        elif hasattr(self, "route_result_label"):
-            self.route_result_label.setText("Project: none")
-        self.load_history_list()
-        self.update_usage_labels()
-
-    def show_project_context_menu(self, position) -> None:
-        project = self.active_project()
-        if not project:
-            return
-        menu = QMenu(self)
-        save_defaults = menu.addAction("Save current setup as project defaults")
-        if menu.exec(self.project_filter.mapToGlobal(position)) != save_defaults:
-            return
-        agent = getattr(self, "_current_agent", "chat")
-        panel = self.panels.get(agent)
-        provider_box = panel.provider_box if panel else getattr(self, "provider_box", None)
-        model_box = panel.model_box if panel else getattr(self, "model_box", None)
-        project.update({
-            "default_agent": agent,
-            "default_provider": provider_box.currentText() if provider_box else "",
-            "default_model": model_box.currentText() if model_box else "",
-        })
-        self.registry.upsert_project(project)
-        QMessageBox.information(self, "Project defaults saved", project["name"])
-
-    def show_history_context_menu(self, position) -> None:
-        item = self.history_list.itemAt(position)
-        if item is None:
-            return
-        menu = QMenu(self)
-        assign = menu.addMenu("Assign to project")
-        choices = {assign.addAction("Unfiled"): None}
-        for project in self.registry.list_projects():
-            choices[assign.addAction(project["name"])] = project["id"]
-        selected = menu.exec(self.history_list.mapToGlobal(position))
-        if selected in choices:
-            self.history.assign_project(item.data(Qt.UserRole), choices[selected])
-            self.load_history_list()
 
     def chat_title_from_data(self, path: Path, data: Optional[dict] = None) -> str:
         try:
@@ -3172,7 +3349,7 @@ class GodAI(QWidget):
             return path.stem
 
     def load_history_list(self):
-        """Fill Saved Chats using the project, agent and text filters together.
+        """Fill the Saved Chats list, honouring the search box and agent filter.
 
         Every file is read once here and reused for both the filter options and
         the rows, so adding the filter costs no extra disk reads.
@@ -3191,16 +3368,9 @@ class GodAI(QWidget):
             self._refresh_history_agent_filter(loaded)
             wanted = (self.history_agent_filter.currentText()
                       if hasattr(self, "history_agent_filter") else ALL_AGENTS_FILTER)
-            project_wanted = (self.project_filter.currentData()
-                              if hasattr(self, "project_filter") else "__all__")
 
             for file, data in loaded:
                 if wanted != ALL_AGENTS_FILTER and data.get("agent", "chat") != wanted:
-                    continue
-                chat_project = data.get("project")
-                if project_wanted == "__unfiled__" and chat_project:
-                    continue
-                if project_wanted not in {"__all__", "__unfiled__"} and chat_project != project_wanted:
                     continue
                 title = self.chat_title_from_data(file, data)
                 if query and query not in title.lower():
@@ -3210,6 +3380,122 @@ class GodAI(QWidget):
                 self.history_list.addItem(item)
         except Exception as exc:
             self._note_failure("saved chats: load list", exc)
+
+    def saved_search_title_from_data(self, path: Path, data: dict) -> str:
+        """Readable Trace title: custom title, otherwise target and query type."""
+        if data.get("title"):
+            return data["title"]
+        target = ""
+        for message in data.get("messages", []):
+            if message.get("role") == "user":
+                target = re.sub(r"\s+", " ", message.get("content", "")).strip()
+                break
+        target = target or path.stem
+        query_type = data.get("command", "Auto-detect")
+        return f"{target[:42].rstrip()} · {query_type}"
+
+    def load_saved_searches(self):
+        """Show completed Trace runs without mixing them into Saved Chats."""
+        if not hasattr(self, "saved_search_list"):
+            return
+        self.saved_search_list.clear()
+        query = (
+            self.saved_search_search.text().strip().lower()
+            if hasattr(self, "saved_search_search") else ""
+        )
+        try:
+            for path in self.history.list_chats():
+                data = self.history.load_chat(str(path))
+                if data.get("agent") != "osint":
+                    continue
+                title = self.saved_search_title_from_data(path, data)
+                searchable = " ".join((title, data.get("response", ""))).lower()
+                if query and query not in searchable:
+                    continue
+                item = QListWidgetItem(title)
+                item.setData(Qt.UserRole, str(path))
+                self.saved_search_list.addItem(item)
+        except Exception as exc:
+            self._note_failure("saved searches: load list", exc)
+
+    def open_selected_search(self, item):
+        path = item.data(Qt.UserRole) or item.text()
+        try:
+            data = self.history.load_chat(path)
+            self.select_agent("osint")
+            panel = self.panels["osint"]
+
+            target = ""
+            for message in data.get("messages", []):
+                if message.get("role") == "user":
+                    target = message.get("content", "")
+                    break
+            panel.target_input.setText(target)
+
+            query_type = data.get("command", "Auto-detect")
+            if panel.type_box.findText(query_type) >= 0:
+                panel.type_box.setCurrentText(query_type)
+
+            provider = data.get("backend", "")
+            model = data.get("model", "")
+            if panel.provider_box.findText(provider) >= 0:
+                panel.provider_box.setCurrentText(provider)
+                if panel.model_box.findText(model) >= 0:
+                    panel.model_box.setCurrentText(model)
+
+            response = data.get("response", "")
+            panel._clear_output()
+            panel._last_response = response
+            panel._populate_sections(response)
+            panel._reset_activity()
+            panel._append_activity(
+                "Opened a saved Trace search. This is a stored query-planning "
+                "result; no external sources were queried while reopening it."
+            )
+            panel.status_label.setText("Saved search loaded.")
+        except Exception as exc:
+            QMessageBox.warning(self, "Open Failed", f"Could not open saved search:\n{exc}")
+
+    def rename_selected_search(self, item):
+        path = item.data(Qt.UserRole) or item.text()
+        try:
+            data = self.history.load_chat(path)
+            title, accepted = QInputDialog.getText(
+                self, "Rename Search", "Name for this saved search:",
+                text=data.get("title", ""),
+            )
+            if not accepted:
+                return
+            title = title.strip()
+            if title:
+                data["title"] = title
+            else:
+                data.pop("title", None)
+            with open(path, "w", encoding="utf-8") as handle:
+                json.dump(data, handle, indent=2, ensure_ascii=False)
+            self.load_saved_searches()
+        except Exception as exc:
+            self._note_failure("saved searches: rename", exc)
+
+    def delete_selected_search(self):
+        item = self.saved_search_list.currentItem()
+        if not item:
+            QMessageBox.information(self, "No Selection", "Select a saved search first.")
+            return
+        if QMessageBox.question(
+                self, "Delete Search", f"Delete saved search?\n\n{item.text()}"
+        ) != QMessageBox.Yes:
+            return
+        try:
+            Path(item.data(Qt.UserRole)).unlink(missing_ok=True)
+            self.load_saved_searches()
+            self.load_history_list()
+        except Exception as exc:
+            QMessageBox.warning(self, "Delete Failed", str(exc))
+
+    def new_trace_search(self):
+        self.select_agent("osint")
+        self.panels["osint"].clear()
 
     def _refresh_history_agent_filter(self, loaded):
         """Keep the filter's options in step with the chats that exist.
@@ -3267,10 +3553,6 @@ class GodAI(QWidget):
         filepath = item.data(Qt.UserRole) or item.text()
         try:
             data = self.history.load_chat(filepath)
-            project_id = data.get("project")
-            project_index = self.project_filter.findData(project_id or "__unfiled__")
-            if project_index >= 0:
-                self.project_filter.setCurrentIndex(project_index)
             self.show_output_area()
             self.output_box.setPlainText(data.get("response", ""))
 
@@ -3311,7 +3593,6 @@ class GodAI(QWidget):
 
     def new_chat(self):
         self.current_messages = []
-        self.last_raw_osint = ""
         self.input_box.clear()
         self.output_box.clear()
         self.hide_output_area()
@@ -3325,6 +3606,32 @@ class GodAI(QWidget):
         title = self.agent_box.currentText() + "_report"
         filepath = self.report_exporter.export_text_report(title, content)
         QMessageBox.information(self, "Export Complete", f"Report saved to:\n{filepath}")
+
+    @staticmethod
+    def _wire_document_search(search_box, previous_btn, next_btn,
+                              match_label, browser):
+        """Give every documentation reader identical search navigation."""
+        def find_term(backward=False):
+            term = search_box.text().strip()
+            if not term:
+                match_label.setText("")
+                return
+            flags = QTextDocument.FindBackward if backward else QTextDocument.FindFlags()
+            if not browser.find(term, flags):
+                cursor = browser.textCursor()
+                cursor.movePosition(
+                    QTextCursor.End if backward else QTextCursor.Start
+                )
+                browser.setTextCursor(cursor)
+                browser.find(term, flags)
+            total = browser.toPlainText().lower().count(term.lower())
+            match_label.setText(f"{total} match{'es' if total != 1 else ''}")
+
+        search_box.returnPressed.connect(lambda: find_term(False))
+        search_box.textChanged.connect(lambda _text: find_term(False))
+        next_btn.clicked.connect(lambda: find_term(False))
+        previous_btn.clicked.connect(lambda: find_term(True))
+        return find_term
 
     def show_agent_docs(self):
         """Open the documentation dialog for the currently active agent."""
@@ -3434,36 +3741,55 @@ class GodAI(QWidget):
 
         html_content = md_to_html(raw_md)
         full_html = f"""
-        <html><body style="background:#111111;color:#cccccc;font-family:sans-serif;font-size:13px;padding:4px 8px;">
+        <html><body style="background:#111111;color:#d5ddd8;font-family:-apple-system,BlinkMacSystemFont,sans-serif;font-size:15px;line-height:1.55;padding:10px 14px;">
         {html_content}
         </body></html>
         """
 
         # Build dialog
-        agent_titles = {
-            "chat": "Chat", "osint": "Trace", "osint_heavy": "Bloodhound",
-            "wifi": "Beacon", "bug_bounty": "Bug Spray",
-            "manager": "Forge", }
-        title = agent_titles.get(agent_name, agent_name.upper())
+        title = BUILTIN_AGENTS.get(agent_name, {}).get("label", agent_name.upper())
 
         dialog = QDialog(self)
         dialog.setWindowTitle(f"Docs — {title}")
-        dialog.resize(760, 620)
+        dialog.resize(900, 720)
         dialog.setStyleSheet("background-color: #111111;")
 
         layout = QVBoxLayout(dialog)
         layout.setContentsMargins(12, 12, 12, 12)
         layout.setSpacing(8)
 
+        search_row = QHBoxLayout()
+        search_box = QLineEdit()
+        search_box.setPlaceholderText("Search this documentation…")
+        search_box.setClearButtonEnabled(True)
+        search_row.addWidget(search_box, 1)
+
+        previous_btn = QPushButton("Previous")
+        previous_btn.setObjectName("ChipBtn")
+        search_row.addWidget(previous_btn)
+
+        next_btn = QPushButton("Next")
+        next_btn.setObjectName("ChipBtn")
+        search_row.addWidget(next_btn)
+
+        match_label = QLabel("")
+        match_label.setObjectName("DocsMatchLabel")
+        search_row.addWidget(match_label)
+        layout.addLayout(search_row)
+
         browser = QTextBrowser()
         browser.setHtml(full_html)
         browser.setStyleSheet(
-            "QTextBrowser { background: #111111; color: #cccccc; border: none; }"
+            "QTextBrowser { background: #111111; color: #d5ddd8; border: none; font-size: 15px; padding: 10px; }"
             "QScrollBar:vertical { background: #1a1a1a; width: 10px; }"
             "QScrollBar::handle:vertical { background: #333333; border-radius: 5px; }"
         )
         browser.setOpenExternalLinks(True)
         layout.addWidget(browser)
+
+        self._wire_document_search(
+            search_box, previous_btn, next_btn, match_label, browser
+        )
 
         close_btn = QPushButton("Close")
         close_btn.setObjectName("ChipBtn")
@@ -3478,11 +3804,39 @@ class GodAI(QWidget):
         return _show_model_guide(self)
     def show_docs(self, anchor: str = ""):
         dialog = QDialog(self)
-        dialog.setWindowTitle("Documentation")
+        dialog.setWindowTitle("App documentation")
         dialog.resize(950, 700)
         layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(8)
+
+        search_row = QHBoxLayout()
+        search_box = QLineEdit()
+        search_box.setPlaceholderText("Search this documentation…")
+        search_box.setClearButtonEnabled(True)
+        search_row.addWidget(search_box, 1)
+
+        previous_btn = QPushButton("Previous")
+        previous_btn.setObjectName("ChipBtn")
+        search_row.addWidget(previous_btn)
+
+        next_btn = QPushButton("Next")
+        next_btn.setObjectName("ChipBtn")
+        search_row.addWidget(next_btn)
+
+        match_label = QLabel("")
+        match_label.setObjectName("DocsMatchLabel")
+        search_row.addWidget(match_label)
+        layout.addLayout(search_row)
+
         browser = QTextBrowser()
         browser.setOpenLinks(False)
+        browser.setStyleSheet(
+            "QTextBrowser { background: #111111; color: #d5ddd8; border: none; "
+            "font-size: 15px; padding: 10px; }"
+            "QScrollBar:vertical { background: #1a1a1a; width: 10px; }"
+            "QScrollBar::handle:vertical { background: #333333; border-radius: 5px; }"
+        )
 
         if README_FILE.exists():
             text = README_FILE.read_text(encoding="utf-8")
@@ -3502,7 +3856,18 @@ class GodAI(QWidget):
         if anchor:
             QTimer.singleShot(50, lambda: browser.scrollToAnchor(anchor))
 
+        self._wire_document_search(
+            search_box, previous_btn, next_btn, match_label, browser
+        )
         layout.addWidget(browser)
+
+        close_btn = QPushButton("Close")
+        close_btn.setObjectName("ChipBtn")
+        close_btn.clicked.connect(dialog.accept)
+        close_btn.setFixedWidth(100)
+        layout.addWidget(close_btn, 0, Qt.AlignRight)
+
+        search_box.setFocus()
         dialog.exec()
 
     def closeEvent(self, event):

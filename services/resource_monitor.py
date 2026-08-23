@@ -24,28 +24,15 @@ class ResourceMonitor:
             return "yellow"  # caution zone
         return "green"  # comfortable zone
 
-    @staticmethod
-    def _read(reader, fallback):
-        """Return one optional system reading without breaking the desktop UI.
-
-        Some macOS environments deny individual sysctl calls even though the
-        rest of psutil works. Resource figures are helpful telemetry, not a
-        reason to prevent Sentinel from starting.
-        """
-        try:
-            return reader()
-        except (OSError, RuntimeError, NotImplementedError):
-            return fallback
-
     def snapshot(self):
-        empty_memory = SimpleNamespace(percent=0.0, used=0, total=0, available=0)
-        empty_swap = SimpleNamespace(percent=0.0, used=0, total=0)
+        vm = psutil.virtual_memory()  # reads RAM usage
+        try:
+            sm = psutil.swap_memory()  # can fail in restricted/macOS test sessions
+        except OSError:
+            sm = SimpleNamespace(percent=0.0, used=0, total=0)
+        cpu = psutil.cpu_percent(interval=0.2)  # short CPU usage sample
 
-        vm = self._read(psutil.virtual_memory, empty_memory)
-        sm = self._read(psutil.swap_memory, empty_swap)
-        cpu = self._read(lambda: psutil.cpu_percent(interval=0.2), 0.0)
-
-        battery = self._read(psutil.sensors_battery, None)
+        battery = psutil.sensors_battery()  # battery info if available on this machine
         battery_percent = battery.percent if battery else None  # battery percentage or None
         battery_plugged = battery.power_plugged if battery else None  # charging state or None
 

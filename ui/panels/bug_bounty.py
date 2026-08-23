@@ -17,12 +17,11 @@ from PySide6.QtCore import QProcess, Qt
 from PySide6.QtGui import QTextCursor
 from PySide6.QtWidgets import (
     QComboBox, QFileDialog, QGridLayout, QGroupBox, QHBoxLayout, QLabel,
-    QLineEdit, QPushButton, QSplitter, QTextBrowser, QTextEdit,
+    QLineEdit, QPushButton, QSplitter, QTabWidget, QTextBrowser, QTextEdit,
     QVBoxLayout, QWidget,
 )
 
 from ui.panels.base import AgentPanel
-from ui.widgets import SectionView
 
 SEVERITY_COLOURS = {
     "Critical": "#ff3333", "High": "#ff7722", "Medium": "#f0c040",
@@ -41,6 +40,7 @@ class BugBountyPanel(AgentPanel):
         self._last_response = ""
         self._nmap_process: QProcess | None = None
         self._build()
+        self.polish_workspace()
         self.hide()
 
     # ── Construction ────────────────────────────────────────────────────
@@ -50,7 +50,7 @@ class BugBountyPanel(AgentPanel):
         layout.setSpacing(10)
 
         # ── Target / program setup ───────────────────────────────────────
-        setup_group = QGroupBox("Target & Program")
+        setup_group = QGroupBox("Target && Program")
         setup_group.setObjectName("BBSetupBox")
         setup_layout = QGridLayout(setup_group)
         setup_layout.setSpacing(6)
@@ -101,11 +101,13 @@ class BugBountyPanel(AgentPanel):
         self.nmap_stop_btn.setObjectName("DangerAction")
         self.nmap_stop_btn.clicked.connect(self.kill_nmap)
         nmap_cmd_row.addWidget(self.nmap_stop_btn)
+        self.set_busy(self.nmap_run_btn, self.nmap_stop_btn, False)
         nmap_layout.addLayout(nmap_cmd_row)
 
         self.nmap_output = QTextBrowser()
         self.nmap_output.setOpenExternalLinks(False)
-        self.nmap_output.setFixedHeight(130)
+        self.nmap_output.setMinimumHeight(130)
+        self.nmap_output.setMaximumHeight(220)
         self.nmap_output.setPlaceholderText("Nmap output will appear here…")
         nmap_layout.addWidget(self.nmap_output)
         layout.addWidget(nmap_group)
@@ -138,23 +140,40 @@ class BugBountyPanel(AgentPanel):
         self.stop_btn.setObjectName("DangerAction")
         self.stop_btn.clicked.connect(self.stop)
         provider_row.addWidget(self.stop_btn)
+        self.set_busy(self.analyse_btn, self.stop_btn, False)
         layout.addWidget(provider_row_container)
 
-        # ── Results: structured report + sidebar ────────────────────────
+        # ── Results: tabs + sidebar ──────────────────────────────────────
         results_splitter = QSplitter(Qt.Horizontal)
 
-        result_widget = QWidget()
-        result_layout = QVBoxLayout(result_widget)
-        result_layout.setContentsMargins(0, 0, 0, 0)
-        result_layout.setSpacing(8)
-        self.stream_box = QTextBrowser()
-        self.stream_box.setOpenExternalLinks(False)
-        self.stream_box.setVisible(False)
-        result_layout.addWidget(self.stream_box, 1)
-        self.sections = SectionView()
-        result_layout.addWidget(self.sections, 1)
+        self.tabs = QTabWidget()
 
-        results_splitter.addWidget(result_widget)
+        self.report_box = QTextBrowser()
+        self.report_box.setOpenExternalLinks(False)
+        self.tabs.addTab(self.report_box, "Full Report")
+
+        self.vuln_box = QTextBrowser()
+        self.tabs.addTab(self.vuln_box, "Vulnerability")
+
+        self.poc_box = QTextBrowser()
+        self.tabs.addTab(self.poc_box, "PoC Draft")
+
+        self.remediation_box = QTextBrowser()
+        self.tabs.addTab(self.remediation_box, "Remediation")
+
+        self.submission_box = QTextBrowser()
+        self.tabs.addTab(self.submission_box, "Submission")
+
+        for box, message in (
+            (self.report_box, "The complete triage report will appear after analysis."),
+            (self.vuln_box, "Vulnerability details will appear here."),
+            (self.poc_box, "A proof-of-concept draft will appear here."),
+            (self.remediation_box, "Recommended remediation will appear here."),
+            (self.submission_box, "A submission-ready report will appear here."),
+        ):
+            box.setPlaceholderText(message)
+
+        results_splitter.addWidget(self.tabs)
 
         # Sidebar indicators
         indicators_widget = QWidget()
@@ -225,8 +244,7 @@ class BugBountyPanel(AgentPanel):
             self.nmap_cmd_input.setText(cmd_text)
 
         self.nmap_output.setPlainText(f"[Running] {cmd_text}\n")
-        self.nmap_run_btn.setEnabled(False)
-        self.nmap_stop_btn.setEnabled(True)
+        self.set_busy(self.nmap_run_btn, self.nmap_stop_btn, True)
 
         self._nmap_process = QProcess(self)
         self._nmap_process.setProcessChannelMode(QProcess.MergedChannels)
@@ -243,16 +261,14 @@ class BugBountyPanel(AgentPanel):
         self.nmap_output.moveCursor(QTextCursor.End)
 
     def _nmap_finished(self) -> None:
-        self.nmap_run_btn.setEnabled(True)
-        self.nmap_stop_btn.setEnabled(False)
+        self.set_busy(self.nmap_run_btn, self.nmap_stop_btn, False)
         self.nmap_output.moveCursor(QTextCursor.End)
         self.nmap_output.insertPlainText("\n[Done]")
 
     def kill_nmap(self) -> None:
         if self._nmap_process is not None:
             self._nmap_process.kill()
-        self.nmap_run_btn.setEnabled(True)
-        self.nmap_stop_btn.setEnabled(False)
+        self.set_busy(self.nmap_run_btn, self.nmap_stop_btn, False)
 
     # ── Analysis (paid) ─────────────────────────────────────────────────
     def analyse(self) -> None:
@@ -275,25 +291,25 @@ class BugBountyPanel(AgentPanel):
             target, program, scope_type, findings, nmap_output)
 
         self._last_response = ""
-        self.sections.clear()
-        self.sections.setVisible(True)
-        self.stream_box.clear()
-        self.stream_box.setVisible(False)
+        self.report_box.clear()
+        self.vuln_box.clear()
+        self.poc_box.clear()
+        self.remediation_box.clear()
+        self.submission_box.clear()
         self.severity_label.setText("—")
         self.cvss_label.setText("—")
         self.bounty_label.setText("—")
         self.save_btn.setEnabled(False)
         self.status_label.setText("Analysing…")
-        self.analyse_btn.setEnabled(False)
-        self.stop_btn.setEnabled(True)
+        self.set_busy(self.analyse_btn, self.stop_btn, True)
+        self.tabs.setCurrentIndex(0)
 
         prompt = target or "bug_bounty"
         if not self.authorize(prompt):
             # The controls were already disabled above; a blocked request has to
             # put them back or the panel is stuck with a dead Analyse button.
             self.status_label.setText("Blocked before sending.")
-            self.analyse_btn.setEnabled(True)
-            self.stop_btn.setEnabled(False)
+            self.set_busy(self.analyse_btn, self.stop_btn, False)
             return
 
         self.start_worker(
@@ -305,40 +321,32 @@ class BugBountyPanel(AgentPanel):
 
     def _on_token(self, token: str) -> None:
         self._last_response += token
-        self.sections.setVisible(False)
-        self.stream_box.setVisible(True)
-        self.stream_box.setPlainText(self._last_response)
-        self.stream_box.moveCursor(QTextCursor.End)
+        self.report_box.setPlainText(self._last_response)
+        self.report_box.moveCursor(QTextCursor.End)
 
     def _on_finished(self, full_response: str) -> None:
         self.record(full_response)
         self._last_response = full_response
-        self.stream_box.setVisible(False)
-        self.sections.setVisible(True)
-        self._populate_sections(full_response)
+        self._populate_tabs(full_response)
         self._update_indicators(full_response)
         self.status_label.setText("Analysis complete.")
-        self.analyse_btn.setEnabled(True)
-        self.stop_btn.setEnabled(False)
+        self.set_busy(self.analyse_btn, self.stop_btn, False)
         self.save_btn.setEnabled(True)
+        self.tabs.setCurrentIndex(0)
 
     def _on_error(self, error: str) -> None:
         self.abandon()
-        self.sections.setVisible(False)
-        self.stream_box.setVisible(True)
-        self.stream_box.setPlainText(f"[Error] {error}")
+        self.report_box.setPlainText(f"[Error] {error}")
         self.status_label.setText("Error.")
-        self.analyse_btn.setEnabled(True)
-        self.stop_btn.setEnabled(False)
+        self.set_busy(self.analyse_btn, self.stop_btn, False)
 
     def stop(self) -> None:
         self.stop_worker()
         self.status_label.setText("Stopped.")
-        self.analyse_btn.setEnabled(True)
-        self.stop_btn.setEnabled(False)
+        self.set_busy(self.analyse_btn, self.stop_btn, False)
 
     # ── Report ──────────────────────────────────────────────────────────
-    def _populate_sections(self, text: str) -> None:
+    def _populate_tabs(self, text: str) -> None:
         def extract(pattern):
             m = re.search(pattern, text, re.IGNORECASE | re.DOTALL)
             return m.group(1).strip() if m else ""
@@ -348,12 +356,10 @@ class BugBountyPanel(AgentPanel):
         rem = extract(r"(?:##\s*Remediation)(.*?)(?=##|$)")
         sub = extract(r"(?:##\s*SUBMISSION\s*DRAFT|Submission\s*Draft?)(.*?)(?=##|$)")
 
-        self.sections.show_sections([
-            ("Vulnerability Report", vuln or text),
-            ("Proof of Concept", poc, True),
-            ("Remediation", rem),
-            ("Submission Draft", sub),
-        ], raw=text)
+        self.vuln_box.setPlainText(vuln or text)
+        self.poc_box.setPlainText(poc)
+        self.remediation_box.setPlainText(rem)
+        self.submission_box.setPlainText(sub)
 
     def _update_indicators(self, text: str) -> None:
         sev_m = re.search(
@@ -403,10 +409,9 @@ class BugBountyPanel(AgentPanel):
         self.findings_input.clear()
         self.nmap_output.clear()
         self.nmap_cmd_input.clear()
-        self.sections.clear()
-        self.sections.setVisible(True)
-        self.stream_box.clear()
-        self.stream_box.setVisible(False)
+        for box in (self.report_box, self.vuln_box, self.poc_box,
+                    self.remediation_box, self.submission_box):
+            box.clear()
         self.severity_label.setText("—")
         self.severity_label.setStyleSheet(
             "font-size: 20px; font-weight: bold; color: #ff5555;")

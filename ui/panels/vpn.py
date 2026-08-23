@@ -29,6 +29,7 @@ class VpnPanel(AgentPanel):
         self.setObjectName("VPNPanel")
         self._last_response = ""
         self._build()
+        self.polish_workspace()
         self.hide()
 
     # ── Construction ────────────────────────────────────────────────────
@@ -80,6 +81,22 @@ class VpnPanel(AgentPanel):
 
         layout.addWidget(setup_group)
 
+        # Configuration generation is deterministic and offline; keep it apart
+        # from the model-backed troubleshooting advisor below.
+        builder_row = QHBoxLayout()
+        self.builder_note = QLabel("Offline configuration — no model required")
+        self.builder_note.setStyleSheet("color: #7f8d87; font-size: 12px;")
+        builder_row.addWidget(self.builder_note)
+        builder_row.addStretch()
+        self.build_btn = QPushButton("Build Config")
+        self.build_btn.setMinimumWidth(110)
+        self.build_btn.setToolTip(
+            "Render WireGuard configs and a deploy runbook locally — no LLM."
+        )
+        self.build_btn.clicked.connect(self.build_config)
+        builder_row.addWidget(self.build_btn)
+        layout.addLayout(builder_row)
+
         # ── Advisor question ─────────────────────────────────────────────
         self.question_input = QLineEdit()
         self.question_input.setPlaceholderText(
@@ -98,22 +115,12 @@ class VpnPanel(AgentPanel):
         self.run_btn.clicked.connect(self.run)
         provider_row.addWidget(self.run_btn)
 
-        self.build_btn = QPushButton("Build Config")
-        self.build_btn.setToolTip(
-            "Render WireGuard configs + a deploy runbook — offline, no LLM.")
-        self.build_btn.clicked.connect(self.build_config)
-        provider_row.addWidget(self.build_btn)
-
         self.stop_btn = QPushButton("Stop")
         self.stop_btn.setEnabled(False)
         self.stop_btn.setObjectName("DangerAction")
         self.stop_btn.clicked.connect(self.stop)
         provider_row.addWidget(self.stop_btn)
-
-        self.help_btn = QPushButton("Help")
-        self.help_btn.setObjectName("ChipBtn")
-        self.help_btn.clicked.connect(self.host.show_agent_docs)
-        provider_row.addWidget(self.help_btn)
+        self.set_busy(self.run_btn, self.stop_btn, False)
 
         layout.addWidget(provider_row_container)
 
@@ -126,7 +133,14 @@ class VpnPanel(AgentPanel):
 
         self.config_box = QTextBrowser()
         self.config_box.setOpenExternalLinks(False)
-        self.tabs.addTab(self.config_box, "Config & Commands")
+        self.tabs.addTab(self.config_box, "Config && Commands")
+
+        self.advisor_box.setPlaceholderText(
+            "Troubleshooting advice will appear after you select Ask Advisor."
+        )
+        self.config_box.setPlaceholderText(
+            "Generated VPN configuration and commands will appear after Build Config."
+        )
 
         layout.addWidget(self.tabs, 1)
 
@@ -174,8 +188,7 @@ class VpnPanel(AgentPanel):
         self.advisor_box.clear()
         self.tabs.setCurrentWidget(self.advisor_box)
         self.status_label.setText("Consulting advisor…")
-        self.run_btn.setEnabled(False)
-        self.stop_btn.setEnabled(True)
+        self.set_busy(self.run_btn, self.stop_btn, True)
 
         self.start_worker(
             messages, prompt,
@@ -194,22 +207,19 @@ class VpnPanel(AgentPanel):
         self.record(full_response)
         self.advisor_box.setPlainText(full_response)
         self.status_label.setText("Done.")
-        self.run_btn.setEnabled(True)
-        self.stop_btn.setEnabled(False)
+        self.set_busy(self.run_btn, self.stop_btn, False)
 
     def _on_error(self, error: str) -> None:
         self.abandon()
         separator = "─" * 50
         self.advisor_box.setPlainText(f"⚠  ERROR\n{separator}\n{error}\n{separator}")
         self.status_label.setText("Error.")
-        self.run_btn.setEnabled(True)
-        self.stop_btn.setEnabled(False)
+        self.set_busy(self.run_btn, self.stop_btn, False)
 
     def stop(self) -> None:
         self.stop_worker()
         self.status_label.setText("Stopped.")
-        self.run_btn.setEnabled(True)
-        self.stop_btn.setEnabled(False)
+        self.set_busy(self.run_btn, self.stop_btn, False)
 
     # ── The config builder (offline) ────────────────────────────────────
     def build_config(self) -> None:

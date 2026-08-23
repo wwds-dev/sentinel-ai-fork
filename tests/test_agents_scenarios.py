@@ -1,5 +1,5 @@
 """
-Sentinel — Agent Scenario Tests
+Sentinel AI — Agent Scenario Tests
 ===================================
 Type: Functional / Scenario-based Tests  (also called "Use Case Tests")
 
@@ -24,11 +24,8 @@ import pytest
 # Make sure the project root is on the path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from agents.router_agent       import RouterAgent
 from agents.manager_agent      import ManagerAgent
 from agents.chat_agent         import ChatAgent
-from agents.coding_agent       import CodingAgent
-from agents.writing_agent      import WritingAgent
 from agents.osint_agent        import OSINTAgent
 from agents.osint_heavy_agent  import OsintHeavyAgent
 from agents.bug_bounty_agent   import BugBountyAgent
@@ -60,42 +57,7 @@ def _user(msgs):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 1. RouterAgent
-# Scenario: classify six different inputs — all four routes, plus edge cases
-# ─────────────────────────────────────────────────────────────────────────────
-
-class TestRouterAgent:
-    agent = RouterAgent()
-
-    def test_routes_osint_on_email(self):
-        assert self.agent.classify("Look up the email john.doe@example.com") == "osint"
-
-    def test_routes_osint_on_domain_keyword(self):
-        assert self.agent.classify("Run a whois lookup on target domain") == "osint"
-
-    def test_routes_coding_on_python_keyword(self):
-        assert self.agent.classify("I have a bug in my python script") == "coding"
-
-    def test_routes_coding_on_debug_keyword(self):
-        assert self.agent.classify("Help me debug this function") == "coding"
-
-    def test_routes_writing_on_write_keyword(self):
-        assert self.agent.classify("Write a cover letter for a data science role") == "writing"
-
-    def test_routes_writing_on_blog_keyword(self):
-        assert self.agent.classify("Draft a blog post about AI trends") == "writing"
-
-    def test_defaults_to_chat(self):
-        assert self.agent.classify("What is the capital of France?") == "chat"
-
-    def test_case_insensitive_routing(self):
-        # RouterAgent lowercases internally — verify uppercase inputs still route
-        assert self.agent.classify("DEBUG this CODE please") == "coding"
-        assert self.agent.classify("OSINT on this target") == "osint"
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# 2. ManagerAgent
+# 1. ManagerAgent
 # Scenario: build a spec request and parse both clean and fenced JSON responses
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -159,7 +121,7 @@ class TestManagerAgent:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 3. ChatAgent
+# 2. ChatAgent
 # Scenario: pass a multi-line, conversational prompt
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -188,67 +150,7 @@ class TestChatAgent:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 4. CodingAgent
-# Scenario: request to debug a real-looking broken Python snippet
-# ─────────────────────────────────────────────────────────────────────────────
-
-class TestCodingAgent:
-    agent = CodingAgent()
-
-    PROMPT = (
-        "This function throws a KeyError but I can't see why:\n\n"
-        "def get_user(data, uid):\n"
-        "    return data[uid]['name']\n\n"
-        "get_user({'42': {'name': 'Alice'}}, 99)"
-    )
-
-    def test_message_structure(self):
-        msgs = self.agent.build_messages(self.PROMPT)
-        assert _roles(msgs) == ["system", "user"]
-
-    def test_user_content_preserved(self):
-        msgs = self.agent.build_messages(self.PROMPT)
-        assert "KeyError" in _user(msgs)
-        assert "get_user" in _user(msgs)
-
-    def test_system_prompt_mentions_coding(self):
-        msgs = self.agent.build_messages(self.PROMPT)
-        assert "coding" in _system(msgs).lower() or "code" in _system(msgs).lower()
-
-    def test_system_prompt_mentions_debug(self):
-        msgs = self.agent.build_messages(self.PROMPT)
-        assert "debug" in _system(msgs).lower()
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# 5. WritingAgent
-# Scenario: ask to rewrite a rough paragraph for a professional audience
-# ─────────────────────────────────────────────────────────────────────────────
-
-class TestWritingAgent:
-    agent = WritingAgent()
-
-    PROMPT = (
-        "Rewrite this for a professional audience:\n"
-        "'We kinda messed up the deadline cause nobody checked the calendar lol'"
-    )
-
-    def test_message_structure(self):
-        msgs = self.agent.build_messages(self.PROMPT)
-        assert _roles(msgs) == ["system", "user"]
-
-    def test_user_content_preserved(self):
-        msgs = self.agent.build_messages(self.PROMPT)
-        assert "Rewrite" in _user(msgs)
-
-    def test_system_prompt_mentions_writing_goals(self):
-        sys = _system(msgs := self.agent.build_messages(self.PROMPT))
-        writing_keywords = ["clarity", "tone", "readability", "writing"]
-        assert any(k in sys.lower() for k in writing_keywords)
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# 6. OSINTAgent  (light)
+# 3. OSINTAgent  (light)
 # Scenario A: email auto-detect  |  Scenario B: explicit username query type
 # ─────────────────────────────────────────────────────────────────────────────
 

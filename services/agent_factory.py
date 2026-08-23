@@ -1,7 +1,12 @@
 import json
+import math
+import os
 import re
+import tempfile
 from pathlib import Path
 from services.database import get_connection
+from services.agent_catalog import BUILTIN_AGENTS, RETIRED_BUILTIN_AGENTS
+from services.provider_catalog import SUPPORTED_PROVIDERS
 
 
 REQUIRED_SPEC_KEYS = {
@@ -30,31 +35,96 @@ class AgentFactory:
     def __init__(self, base_dir: Path):
         self.base_dir = base_dir
         self.agents_dir = base_dir / "agents"
-        self.config_dir = base_dir / "config"
-        self.registry_path = self.config_dir / "registry.json"
-        self.tool_prompts_path = self.config_dir / "tool_prompts.json"
 
     # ------------------------------------------------------------------
     # Validation
     # ------------------------------------------------------------------
 
     def validate_spec(self, spec: dict) -> tuple[bool, str]:
+        if not isinstance(spec, dict):
+            return False, "Agent specification must be a JSON object."
+
         missing = REQUIRED_SPEC_KEYS - set(spec.keys())
         if missing:
             return False, f"Spec is missing required fields: {', '.join(sorted(missing))}"
 
         name = spec.get("name", "")
-        if not re.fullmatch(r"[a-z][a-z0-9_]*", name):
+        if not isinstance(name, str) or not re.fullmatch(r"[a-z][a-z0-9_]{0,63}", name):
             return False, f"Agent name must be lowercase snake_case, got: {name!r}"
+
+        if name in BUILTIN_AGENTS or name in RETIRED_BUILTIN_AGENTS:
+            return False, f"Agent name '{name}' is reserved by Sentinel."
+
+        label = spec.get("label")
+        if not isinstance(label, str) or not label.strip() or len(label.strip()) > 80:
+            return False, "Agent label must be a non-empty string of at most 80 characters."
+
+        description = spec.get("description")
+        if not isinstance(description, str) or not description.strip() or len(description) > 500:
+            return False, "Agent description must be a non-empty string of at most 500 characters."
+
+        system_prompt = spec.get("system_prompt")
+        if not isinstance(system_prompt, str) or not system_prompt.strip():
+            return False, "Agent system_prompt must be a non-empty string."
+        if len(system_prompt) > 20_000:
+            return False, "Agent system_prompt must be at most 20,000 characters."
+
+        providers = spec.get("allowed_providers")
+        if not isinstance(providers, list) or not providers:
+            return False, "allowed_providers must be a non-empty list."
+        if any(not isinstance(provider, str) for provider in providers):
+            return False, "Every allowed provider must be a string."
+        unknown_providers = sorted(set(providers) - set(SUPPORTED_PROVIDERS))
+        if unknown_providers:
+            return False, f"Unsupported providers: {', '.join(unknown_providers)}"
+        if len(providers) != len(set(providers)):
+            return False, "allowed_providers must not contain duplicates."
+
+        tools = spec.get("allowed_tools")
+        if not isinstance(tools, list) or any(not isinstance(tool, str) or not tool.strip() for tool in tools):
+            return False, "allowed_tools must be a list of non-empty tool names."
+        if len(tools) != len(set(tools)):
+            return False, "allowed_tools must not contain duplicates."
+
+        budget = spec.get("budget_limit_eur")
+        if budget is not None and (
+            isinstance(budget, bool) or not isinstance(budget, (int, float))
+            or not math.isfinite(budget) or budget < 0
+        ):
+            return False, "budget_limit_eur must be null or a non-negative number."
+
+        if not isinstance(spec.get("requires_approval"), bool):
+            return False, "requires_approval must be true or false."
 
         agent_file = self.agents_dir / f"{name}_agent.py"
         if agent_file.exists():
             return False, f"Agent file already exists: {agent_file.name}"
 
         with get_connection() as conn:
-            row = conn.execute("SELECT name FROM agents WHERE name = ?", (name,)).fetchone()
+            row = conn.execute(
+                "SELECT name FROM agents WHERE lower(name) = lower(?) OR lower(label) = lower(?)",
+                (name, label.strip()),
+            ).fetchone()
+            tool_row = conn.execute(
+                "SELECT name FROM tools WHERE lower(name) = lower(?) OR lower(label) = lower(?)",
+                (label.strip(), label.strip()),
+            ).fetchone()
+            if tools:
+                placeholders = ",".join("?" for _ in tools)
+                known_tools = {
+                    item[0] for item in conn.execute(
+                        f"SELECT name FROM tools WHERE name IN ({placeholders})", tuple(tools)
+                    ).fetchall()
+                }
+            else:
+                known_tools = set()
         if row:
             return False, f"Agent '{name}' already exists in registry."
+        if tool_row:
+            return False, f"Tool '{label.strip()}' already exists in registry."
+        unknown_tools = sorted(set(tools) - known_tools)
+        if unknown_tools:
+            return False, f"Unknown tools: {', '.join(unknown_tools)}"
 
         return True, "OK"
 
@@ -77,27 +147,36 @@ class AgentFactory:
         name = spec["name"]
         class_name = "".join(part.capitalize() for part in name.split("_"))
 
+        agent_file = self.agents_dir / f"{name}_agent.py"
+        temp_file = None
+        linked_by_us = False
         try:
-            # 1. Write agent Python file
-            agent_file = self._write_agent_file(name, class_name, spec)
+            # The file and both registry rows are one logical operation. SQLite
+            # rolls its transaction back on error; the generated file is then
+            # removed so callers never see a half-created scaffold.
+            temp_file = self._write_agent_temp_file(name, class_name, spec)
+            with get_connection() as conn:
+                self._update_registry(conn, spec)
+                self._update_tool_registry(conn, spec)
+                # Hard-link creation is exclusive: unlike os.replace it cannot
+                # overwrite a module created between validation and commit.
+                os.link(temp_file, agent_file)
+                linked_by_us = True
+                Path(temp_file).unlink()
+                temp_file = None
+
             report["files_created"].append(str(agent_file.relative_to(self.base_dir)))
+            report["files_created"].append("SQLite agent registry (updated)")
+            report["files_created"].append("SQLite tool registry (updated)")
         except Exception as e:
-            report["errors"].append(f"Failed to write agent file: {e}")
-            return report
-
-        try:
-            # 2. Add to registry.json
-            self._update_registry(spec)
-            report["files_created"].append("config/registry.json (updated)")
-        except Exception as e:
-            report["errors"].append(f"Failed to update registry: {e}")
-
-        try:
-            # 3. Add system prompt to tool_prompts.json
-            self._update_tool_prompts(spec)
-            report["files_created"].append("config/tool_prompts.json (updated)")
-        except Exception as e:
-            report["errors"].append(f"Failed to update tool_prompts: {e}")
+            try:
+                if temp_file is not None:
+                    Path(temp_file).unlink(missing_ok=True)
+                if linked_by_us:
+                    agent_file.unlink(missing_ok=True)
+            except Exception as cleanup_error:
+                report["errors"].append(f"Failed to remove incomplete agent file: {cleanup_error}")
+            report["errors"].append(f"Failed to create agent scaffold: {e}")
 
         report["success"] = len(report["errors"]) == 0
         return report
@@ -106,48 +185,45 @@ class AgentFactory:
     # Private helpers
     # ------------------------------------------------------------------
 
-    def _write_agent_file(self, name: str, class_name: str, spec: dict) -> Path:
+    def _write_agent_temp_file(self, name: str, class_name: str, spec: dict) -> Path:
+        """Render beside the destination so the final replace is atomic."""
+        self.agents_dir.mkdir(parents=True, exist_ok=True)
         code = AGENT_TEMPLATE.format(
             class_name=class_name,
             description=spec.get("description", ""),
             name=name,
             system_prompt=spec.get("system_prompt", "You are a helpful assistant."),
         )
-        path = self.agents_dir / f"{name}_agent.py"
-        path.write_text(code, encoding="utf-8")
-        return path
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=self.agents_dir,
+            prefix=f".{name}_agent.", suffix=".tmp", delete=False,
+        ) as handle:
+            handle.write(code)
+            return Path(handle.name)
 
-    def _update_registry(self, spec: dict) -> None:
+    def _update_registry(self, conn, spec: dict) -> None:
         allowed_tools = spec.get("allowed_tools", ["General Chat"])
-        with get_connection() as conn:
-            conn.execute("""
-                INSERT INTO agents
-                  (name, label, enabled, version, allowed_providers, allowed_tools,
-                   budget_limit_eur, requires_approval, description, log_path, auto_generated)
-                VALUES (?,?,1,'1.0',?,?,?,?,?,'data/logs/runs.jsonl',1)
-            """, (
-                spec["name"],
-                spec.get("label", spec["name"].capitalize()),
-                json.dumps(spec.get("allowed_providers", ["ollama"])),
-                json.dumps(allowed_tools) if allowed_tools is not None else None,
-                spec.get("budget_limit_eur"),
-                1 if spec.get("requires_approval", False) else 0,
-                spec.get("description", ""),
-            ))
-            conn.commit()
+        conn.execute("""
+            INSERT INTO agents
+              (name, label, enabled, version, allowed_providers, allowed_tools,
+               budget_limit_eur, requires_approval, description, log_path, auto_generated)
+            VALUES (?,?,0,'1.0',?,?,?,?,?,'data/logs/runs.jsonl',1)
+        """, (
+            spec["name"],
+            spec["label"].strip(),
+            json.dumps(spec.get("allowed_providers", ["ollama"])),
+            json.dumps(allowed_tools) if allowed_tools is not None else None,
+            spec.get("budget_limit_eur"),
+            1 if spec.get("requires_approval", False) else 0,
+            spec.get("description", ""),
+        ))
 
-    def _update_tool_prompts(self, spec: dict) -> None:
-        label = spec.get("label", spec["name"].capitalize())
+    def _update_tool_registry(self, conn, spec: dict) -> None:
+        label = spec["label"].strip()
         providers = spec.get("allowed_providers", [])
         recommended_provider = providers[0] if providers else "ollama"
 
-        with get_connection() as conn:
-            conn.execute("""
-                INSERT INTO tools (name, label, system_prompt, recommended_provider, recommended_model)
-                VALUES (?,?,?,?,?)
-                ON CONFLICT(name) DO UPDATE SET
-                  system_prompt        = excluded.system_prompt,
-                  recommended_provider = excluded.recommended_provider,
-                  recommended_model    = excluded.recommended_model
-            """, (label, label, spec.get("system_prompt", ""), recommended_provider, ""))
-            conn.commit()
+        conn.execute("""
+            INSERT INTO tools (name, label, enabled, system_prompt, recommended_provider, recommended_model)
+            VALUES (?,?,0,?,?,?)
+        """, (label, label, spec.get("system_prompt", ""), recommended_provider, ""))

@@ -1,12 +1,18 @@
 import json
 import sqlite3
+from datetime import datetime, timezone
 from pathlib import Path
+from uuid import uuid4
 
 from services.runtime_paths import user_data_base
+from services.agent_catalog import BUILTIN_AGENTS, RETIRED_BUILTIN_AGENTS
+from services.provider_catalog import CLOUD_PROVIDERS
+from services.tool_catalog import BUILTIN_TOOLS
 
-# Writable base: project root in dev, ~/Library/Application Support/Sentinel when frozen.
+# Writable base: project root in dev, ~/Library/Application Support/Sentinel Fork when frozen.
 BASE_DIR = user_data_base()
 DB_PATH = BASE_DIR / "data" / "sentinel.db"
+SCHEMA_VERSION = 1
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS agents (
@@ -49,19 +55,6 @@ CREATE TABLE IF NOT EXISTS usage (
     cost_eur      REAL NOT NULL DEFAULT 0.0,
     cost_type     TEXT NOT NULL DEFAULT 'estimated',
     cloud         INTEGER NOT NULL DEFAULT 0
-    ,project       TEXT
-);
-
-CREATE TABLE IF NOT EXISTS projects (
-    id               TEXT PRIMARY KEY,
-    name             TEXT NOT NULL,
-    instructions     TEXT NOT NULL DEFAULT '',
-    default_agent    TEXT NOT NULL DEFAULT 'chat',
-    default_provider TEXT NOT NULL DEFAULT '',
-    default_model    TEXT NOT NULL DEFAULT '',
-    budget_eur       REAL,
-    archived         INTEGER NOT NULL DEFAULT 0,
-    created_at       TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS runs (
@@ -86,53 +79,13 @@ CREATE TABLE IF NOT EXISTS pricing (
     backend          TEXT NOT NULL,
     model            TEXT NOT NULL,
     input_per_1m_usd REAL NOT NULL DEFAULT 0.0,
-    cached_input_per_1m_usd REAL,
     output_per_1m_usd REAL NOT NULL DEFAULT 0.0,
-    price_source      TEXT,
-    verified_at       TEXT,
-    price_region      TEXT,
-    price_tier        TEXT,
-    price_status      TEXT NOT NULL DEFAULT 'unknown',
     PRIMARY KEY (backend, model)
 );
 
 CREATE TABLE IF NOT EXISTS settings (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS manuscript_metrics (
-    id            INTEGER PRIMARY KEY AUTOINCREMENT,
-    fetched_at    TEXT NOT NULL,
-    source        TEXT NOT NULL,
-    period_from   TEXT,
-    period_to     TEXT,
-    total_units   INTEGER NOT NULL DEFAULT 0,
-    total_revenue REAL    NOT NULL DEFAULT 0.0,
-    currency      TEXT    NOT NULL DEFAULT 'USD',
-    raw_json      TEXT    NOT NULL DEFAULT '{}'
-);
-
-CREATE TABLE IF NOT EXISTS manuscript_kdp_ingested (
-    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
-    filename            TEXT NOT NULL UNIQUE,
-    ingested_at         TEXT NOT NULL,
-    total_units         INTEGER NOT NULL DEFAULT 0,
-    total_royalties_usd REAL    NOT NULL DEFAULT 0.0,
-    kenp_pages_read     INTEGER NOT NULL DEFAULT 0,
-    raw_summary_json    TEXT    NOT NULL DEFAULT '{}'
-);
-
-CREATE TABLE IF NOT EXISTS manuscript_todos (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    created_at  TEXT NOT NULL,
-    updated_at  TEXT NOT NULL,
-    title       TEXT NOT NULL,
-    platform    TEXT NOT NULL DEFAULT '',
-    status      TEXT NOT NULL DEFAULT 'pending',
-    priority    TEXT NOT NULL DEFAULT 'normal',
-    due_date    TEXT,
-    notes       TEXT NOT NULL DEFAULT ''
 );
 
 CREATE INDEX IF NOT EXISTS idx_usage_timestamp ON usage(timestamp);
@@ -165,109 +118,160 @@ def save_setting(key: str, value: str) -> None:
 
 
 def init_db() -> None:
+    """Initialize current Sentinel tables without dropping legacy user data.
+
+    Older databases may still contain publishing tables from before the app
+    split. SQLite leaves those tables untouched; new Sentinel installations no
+    longer create them.
+    """
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     is_new = not DB_PATH.exists()
     conn = get_connection()
+    integrity = conn.execute("PRAGMA quick_check").fetchone()[0]
+    if integrity != "ok":
+        conn.close()
+        raise RuntimeError(f"Database integrity check failed: {integrity}")
+    installed_version = conn.execute("PRAGMA user_version").fetchone()[0]
+    if installed_version > SCHEMA_VERSION:
+        conn.close()
+        raise RuntimeError(
+            f"Database schema version {installed_version} is newer than this "
+            f"Sentinel Fork build supports ({SCHEMA_VERSION})."
+        )
+    if not is_new and installed_version < SCHEMA_VERSION:
+        _backup_before_migration(conn, installed_version)
     conn.executescript(SCHEMA)
-    _ensure_schema_columns(conn)
-    conn.commit()
+    _apply_schema_migrations(conn, installed_version)
     if is_new:
         _migrate_from_json(conn)
     _seed_missing_pricing(conn)
-    _sync_cached_pricing(conn)
-    _sync_pricing_metadata(conn)
     _correct_stale_pricing(conn)
     _seed_default_agents(conn)
+    _seed_default_tools(conn)
+    _retire_moved_agents(conn)
     _sync_agent_labels(conn)
+    _sync_usage_cloud_flags(conn)
     conn.close()
 
 
-def _ensure_schema_columns(conn: sqlite3.Connection) -> None:
-    pricing_columns = {
-        row["name"] for row in conn.execute("PRAGMA table_info(pricing)")
+def _backup_before_migration(conn: sqlite3.Connection, installed_version: int) -> Path:
+    """Create a WAL-safe snapshot before changing an existing database."""
+    backup_dir = DB_PATH.parent / "backups"
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    backup_path = backup_dir / (
+        f"sentinel.v{installed_version}.before-v{SCHEMA_VERSION}.{stamp}.{uuid4().hex[:8]}.db"
+    )
+    destination = sqlite3.connect(backup_path)
+    try:
+        conn.backup(destination)
+        result = destination.execute("PRAGMA quick_check").fetchone()[0]
+        if result != "ok":
+            raise RuntimeError(f"Migration backup integrity check failed: {result}")
+    finally:
+        destination.close()
+    return backup_path
+
+
+def _apply_schema_migrations(conn: sqlite3.Connection, installed_version: int) -> None:
+    """Apply ordered, additive migrations and record each completed version."""
+    migrations = {1: _migrate_schema_v1}
+    for version in range(installed_version + 1, SCHEMA_VERSION + 1):
+        migration = migrations[version]
+        with conn:
+            migration(conn)
+            conn.execute(f"PRAGMA user_version = {version}")
+
+
+def _migrate_schema_v1(conn: sqlite3.Connection) -> None:
+    """Bring pre-versioned Sentinel databases up to the maintained schema.
+
+    Columns are additive so older user databases and newer legacy/superset
+    databases both remain valid.  No user rows or legacy domain tables are
+    removed here.
+    """
+    required_columns = {
+        "agents": {
+            "label": "TEXT NOT NULL DEFAULT ''",
+            "enabled": "INTEGER NOT NULL DEFAULT 1",
+            "version": "TEXT NOT NULL DEFAULT '1.0'",
+            "allowed_providers": "TEXT NOT NULL DEFAULT '[]'",
+            "allowed_tools": "TEXT",
+            "budget_limit_eur": "REAL",
+            "requires_approval": "INTEGER NOT NULL DEFAULT 0",
+            "description": "TEXT NOT NULL DEFAULT ''",
+            "log_path": "TEXT NOT NULL DEFAULT 'data/logs/runs.jsonl'",
+            "auto_generated": "INTEGER NOT NULL DEFAULT 0",
+        },
+        "usage": {
+            "agent": "TEXT NOT NULL DEFAULT ''",
+            "backend": "TEXT NOT NULL DEFAULT ''",
+            "model": "TEXT NOT NULL DEFAULT ''",
+            "input_tokens": "INTEGER NOT NULL DEFAULT 0",
+            "output_tokens": "INTEGER NOT NULL DEFAULT 0",
+            "total_tokens": "INTEGER NOT NULL DEFAULT 0",
+            "cost_eur": "REAL NOT NULL DEFAULT 0.0",
+            "cost_type": "TEXT NOT NULL DEFAULT 'estimated'",
+            "cloud": "INTEGER NOT NULL DEFAULT 0",
+        },
+        "tools": {
+            "label": "TEXT NOT NULL DEFAULT ''",
+            "enabled": "INTEGER NOT NULL DEFAULT 1",
+            "version": "TEXT NOT NULL DEFAULT '1.0'",
+            "allowed_providers": "TEXT NOT NULL DEFAULT '[]'",
+            "budget_limit_eur": "REAL",
+            "requires_approval": "INTEGER NOT NULL DEFAULT 0",
+            "description": "TEXT NOT NULL DEFAULT ''",
+            "system_prompt": "TEXT NOT NULL DEFAULT ''",
+            "recommended_provider": "TEXT NOT NULL DEFAULT 'ollama'",
+            "recommended_model": "TEXT NOT NULL DEFAULT ''",
+        },
+        "runs": {
+            "agent": "TEXT NOT NULL DEFAULT ''",
+            "tool": "TEXT NOT NULL DEFAULT ''",
+            "provider": "TEXT NOT NULL DEFAULT ''",
+            "model": "TEXT NOT NULL DEFAULT ''",
+            "mode": "TEXT NOT NULL DEFAULT ''",
+            "prompt_summary": "TEXT NOT NULL DEFAULT ''",
+            "status": "TEXT NOT NULL DEFAULT 'running'",
+            "input_tokens": "INTEGER NOT NULL DEFAULT 0",
+            "output_tokens": "INTEGER NOT NULL DEFAULT 0",
+            "cost_eur": "REAL NOT NULL DEFAULT 0.0",
+            "duration_sec": "REAL NOT NULL DEFAULT 0.0",
+            "error": "TEXT",
+        },
+        "pricing": {
+            "input_per_1m_usd": "REAL NOT NULL DEFAULT 0.0",
+            "output_per_1m_usd": "REAL NOT NULL DEFAULT 0.0",
+        },
     }
-    if "cached_input_per_1m_usd" not in pricing_columns:
-        conn.execute("ALTER TABLE pricing ADD COLUMN cached_input_per_1m_usd REAL")
-    for name, declaration in {
-        "price_source": "TEXT", "verified_at": "TEXT", "price_region": "TEXT",
-        "price_tier": "TEXT", "price_status": "TEXT NOT NULL DEFAULT 'unknown'",
-    }.items():
-        if name not in pricing_columns:
-            conn.execute(f"ALTER TABLE pricing ADD COLUMN {name} {declaration}")
-    usage_columns = {row["name"] for row in conn.execute("PRAGMA table_info(usage)")}
-    if "project" not in usage_columns:
-        conn.execute("ALTER TABLE usage ADD COLUMN project TEXT")
-    conn.commit()
+    for table, columns in required_columns.items():
+        existing = {
+            row["name"] for row in conn.execute(f"PRAGMA table_info({table})")
+        }
+        for name, declaration in columns.items():
+            if name not in existing:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {declaration}")
 
 
-def _sync_cached_pricing(conn: sqlite3.Connection) -> None:
-    """Load cache-read rates and seed their rows without overwriting user prices."""
-    data = _load_json(BASE_DIR / "config" / "pricing.json", {})
-    for backend, models in data.items():
-        if not isinstance(models, dict):
-            continue
-        for model, prices in models.items():
-            if not isinstance(prices, dict):
-                continue
-            cached = prices.get("cached_input_per_1m_usd")
-            if cached is not None:
-                conn.execute(
-                    """INSERT INTO pricing
-                       (backend, model, input_per_1m_usd,
-                        cached_input_per_1m_usd, output_per_1m_usd)
-                       VALUES (?,?,?,?,?)
-                       ON CONFLICT(backend, model) DO UPDATE SET
-                         cached_input_per_1m_usd = excluded.cached_input_per_1m_usd""",
-                    (
-                        backend,
-                        model,
-                        float(prices.get("input_per_1m_usd", 0.0)),
-                        float(cached),
-                        float(prices.get("output_per_1m_usd", 0.0)),
-                    ),
-                )
-    conn.commit()
-
-
-def _sync_pricing_metadata(conn: sqlite3.Connection) -> None:
-    """Refresh catalogue provenance without overwriting user-edited rates."""
-    data = _load_json(BASE_DIR / "config" / "pricing.json", {})
-    fx = data.get("fx", {})
-    catalog = data.get("catalog", {})
-    if isinstance(fx, dict):
-        for key in ("source", "verified_at", "status"):
-            if fx.get(key) is not None:
-                conn.execute("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
-                             (f"eur_per_usd_{key}", str(fx[key])))
-    for backend, models in data.items():
-        if backend in {"eur_per_usd", "fx", "catalog"} or not isinstance(models, dict):
-            continue
-        for model, prices in models.items():
-            if not isinstance(prices, dict):
-                continue
-            conn.execute(
-                """UPDATE pricing SET price_source=?, verified_at=?, price_region=?,
-                   price_tier=?, price_status=? WHERE backend=? AND model=?""",
-                (prices.get("source", catalog.get("source")),
-                 prices.get("verified_at", catalog.get("verified_at")), prices.get("region"),
-                 prices.get("tier", catalog.get("tier")),
-                 prices.get("status", catalog.get("status", "unknown")), backend, model),
-            )
+def _sync_usage_cloud_flags(conn: sqlite3.Connection) -> None:
+    """Repair the derived local/cloud flag for current provider identifiers."""
+    conn.execute("UPDATE usage SET cloud = 0 WHERE backend = 'ollama'")
+    placeholders = ",".join("?" for _ in CLOUD_PROVIDERS)
+    conn.execute(
+        f"UPDATE usage SET cloud = 1 WHERE backend IN ({placeholders})",
+        tuple(sorted(CLOUD_PROVIDERS)),
+    )
     conn.commit()
 
 
 def _sync_agent_labels(conn: sqlite3.Connection) -> None:
     """Ensure built-in agents' DB labels match the current brand names shown in the GUI."""
-    rename_map = {
-        "chat":        "Chat",
-        "osint":       "Trace",
-        "osint_heavy": "Bloodhound",
-        "wifi":        "Beacon",
-        "bug_bounty":  "Bug Spray",
-        "manager":     "Forge",
-    }
-    for name, label in rename_map.items():
-        conn.execute("UPDATE agents SET label = ? WHERE name = ?", (label, name))
+    for name, definition in BUILTIN_AGENTS.items():
+        conn.execute(
+            "UPDATE agents SET label = ? WHERE name = ?",
+            (definition["label"], name),
+        )
     conn.commit()
 
 
@@ -346,67 +350,51 @@ def _seed_missing_pricing(conn: sqlite3.Connection) -> None:
 
 def _seed_default_agents(conn: sqlite3.Connection) -> None:
     """Insert built-in agents that may not exist in the DB yet (new agents added in updates)."""
-    # Quick ROI and Oracle (investment) are deliberately absent: that work moved
-    # to the SONAR app, and their panels and agent modules were removed here.
-    # Re-adding them would resurrect orphaned registry rows on every launch.
-    agents = [
-        {
-            "name": "wifi",
-            "label": "Wi-Fi Adapter",
-            "description": "Wi-Fi diagnostics, network scanning, signal monitoring, and Kali Linux aircrack-ng command generation for authorised wireless testing.",
-            "allowed_providers": json.dumps([]),
-            "allowed_tools": None,
-            "budget_limit_eur": None,
-            "requires_approval": 0,
-            "log_path": "data/logs/runs.jsonl",
-            "auto_generated": 0,
-        },
-        {
-            "name": "osint_heavy",
-            "label": "OSINT Pro",
-            "description": "Deep structured investigation dossier — entity profiling, digital footprint, infrastructure mapping, breach exposure, and curated tool methodology.",
-            "allowed_providers": json.dumps([]),
-            "allowed_tools": None,
-            "budget_limit_eur": None,
-            "requires_approval": 0,
-            "log_path": "data/logs/runs.jsonl",
-            "auto_generated": 0,
-        },
-        {
-            "name": "bug_bounty",
-            "label": "Bug Bounty",
-            "description": "Vulnerability research, code review, nmap recon, Burp Suite analysis, and professional bug bounty report generation for authorized programs.",
-            "allowed_providers": json.dumps([]),
-            "allowed_tools": None,
-            "budget_limit_eur": None,
-            "requires_approval": 0,
-            "log_path": "data/logs/runs.jsonl",
-            "auto_generated": 0,
-        },
-        {
-            "name": "vpn",
-            "label": "VPN Tunnel",
-            "description": "Self-hosted VPN design and troubleshooting — WireGuard + OpenVPN TCP/443 fallback, remote vs native topology, fail-closed kill switch, DNS/IPv6 leak checks, plus an offline WireGuard config and deploy-runbook builder.",
-            "allowed_providers": json.dumps([]),
-            "allowed_tools": None,
-            "budget_limit_eur": None,
-            "requires_approval": 0,
-            "log_path": "data/logs/runs.jsonl",
-            "auto_generated": 0,
-        },
-    ]
-    for a in agents:
+    for name, definition in BUILTIN_AGENTS.items():
         conn.execute("""
             INSERT OR IGNORE INTO agents
               (name, label, enabled, version, allowed_providers, allowed_tools,
                budget_limit_eur, requires_approval, description, log_path, auto_generated)
             VALUES (?,?,1,'1.0',?,?,?,?,?,?,?)
         """, (
-            a["name"], a["label"],
-            a["allowed_providers"], a["allowed_tools"],
-            a["budget_limit_eur"], a["requires_approval"],
-            a["description"], a["log_path"], a["auto_generated"],
+            name, definition["label"], json.dumps([]),
+            json.dumps(definition["allowed_tools"])
+            if definition["allowed_tools"] is not None else None,
+            definition["budget_limit_eur"], 0, definition["description"],
+            "data/logs/runs.jsonl", 0,
         ))
+    conn.commit()
+
+
+def _seed_default_tools(conn: sqlite3.Connection) -> None:
+    """Restore missing built-ins without changing user-controlled policy fields."""
+    for name, definition in BUILTIN_TOOLS.items():
+        conn.execute(
+            """INSERT OR IGNORE INTO tools
+               (name, label, enabled, version, allowed_providers,
+                budget_limit_eur, requires_approval, description, system_prompt,
+                recommended_provider, recommended_model)
+               VALUES (?, ?, 1, '1.0', '[]', NULL, 0, ?, ?, ?, ?)""",
+            (
+                name, name, definition["description"], definition["system"],
+                definition["recommended_provider"], definition["recommended_model"],
+            ),
+        )
+    conn.commit()
+
+
+def _retire_moved_agents(conn: sqlite3.Connection) -> None:
+    """Remove only obsolete built-in registry rows, preserving all history.
+
+    Usage, runs, chats, and domain tables are intentionally untouched. Forge
+    agents (`auto_generated = 1`) are also protected even if a user happened to
+    choose a formerly built-in name.
+    """
+    placeholders = ",".join("?" for _ in RETIRED_BUILTIN_AGENTS)
+    conn.execute(
+        f"DELETE FROM agents WHERE auto_generated = 0 AND name IN ({placeholders})",
+        tuple(sorted(RETIRED_BUILTIN_AGENTS)),
+    )
     conn.commit()
 
 
@@ -439,14 +427,21 @@ def _migrate_registry(conn: sqlite3.Connection) -> None:
     path = BASE_DIR / "config" / "registry.json"
     data = _load_json(path, {"agents": [], "tools": []})
 
+    # Built-ins are seeded exclusively from agent_catalog. Only explicitly
+    # generated legacy entries may be recovered from an old JSON file.
     for a in data.get("agents", []):
+        name = a.get("name", "")
+        if not a.get("auto_generated", False):
+            continue
+        if name in BUILTIN_AGENTS or name in RETIRED_BUILTIN_AGENTS:
+            continue
         conn.execute("""
             INSERT OR IGNORE INTO agents
               (name, label, enabled, version, allowed_providers, allowed_tools,
                budget_limit_eur, requires_approval, description, log_path, auto_generated)
             VALUES (?,?,?,?,?,?,?,?,?,?,?)
         """, (
-            a.get("name", ""),
+            name,
             a.get("label", ""),
             1 if a.get("enabled", True) else 0,
             a.get("version", "1.0"),
@@ -515,16 +510,12 @@ def _migrate_pricing(conn: sqlite3.Connection) -> None:
             if not isinstance(prices, dict):
                 continue
             conn.execute("""
-                INSERT OR REPLACE INTO pricing
-                  (backend, model, input_per_1m_usd, cached_input_per_1m_usd,
-                   output_per_1m_usd)
-                VALUES (?,?,?,?,?)
+                INSERT OR REPLACE INTO pricing (backend, model, input_per_1m_usd, output_per_1m_usd)
+                VALUES (?,?,?,?)
             """, (
                 backend,
                 model,
                 float(prices.get("input_per_1m_usd", 0.0)),
-                (float(prices["cached_input_per_1m_usd"])
-                 if prices.get("cached_input_per_1m_usd") is not None else None),
                 float(prices.get("output_per_1m_usd", 0.0)),
             ))
 

@@ -63,7 +63,8 @@ class ChatWorker(QThread):
                     self.token_signal.emit(token)
 
                 response = "".join(response_parts)
-                usage = getattr(result, "usage", None) or {
+
+                usage = {
                     "cost_type_override": "stream-estimated"
                 }
 

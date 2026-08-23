@@ -16,9 +16,9 @@ import os
 import time
 import requests
 from dotenv import load_dotenv
-from pathlib import Path
+from services.runtime_paths import user_data_base
 
-load_dotenv(Path(__file__).resolve().parents[1] / ".env")
+load_dotenv(user_data_base() / ".env", override=False)
 HIBP_KEY = os.getenv("HIBP_API_KEY", "")
 
 

@@ -1,17 +1,18 @@
 import json  # used for saving history as JSON
 from pathlib import Path  # makes folder paths easier
 from datetime import datetime  # used to generate timestamped filenames
+from uuid import uuid4
+from services.runtime_paths import user_data_base
 
 
 class HistoryStore:
-    def __init__(self, folder: str = "data/chats"):
-        self.folder = Path(folder)  # store the history folder path
+    def __init__(self, folder: str | Path | None = None):
+        self.folder = Path(folder) if folder is not None else user_data_base() / "data" / "chats"
         self.folder.mkdir(parents=True, exist_ok=True)  # create the folder if needed
 
-    def save_chat(self, agent: str, backend: str, model: str, command: str,
-                  messages: list, response: str, project: str | None = None):
-        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")  # make a timestamp
-        filepath = self.folder / f"{timestamp}.json"  # create filename from timestamp
+    def save_chat(self, agent: str, backend: str, model: str, command: str, messages: list, response: str):
+        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S-%f")
+        filepath = self.folder / f"{timestamp}_{uuid4().hex}.json"
 
         payload = {
             "timestamp": timestamp,
@@ -20,12 +21,15 @@ class HistoryStore:
             "model": model,
             "command": command,
             "messages": messages,
-            "response": response,
-            "project": project,
+            "response": response
         }
 
-        with open(filepath, "w", encoding="utf-8") as f:
+        # Exclusive creation prevents an accidental overwrite even if clocks
+        # are frozen or UUID generation is replaced in a test.
+        with open(filepath, "x", encoding="utf-8") as f:
             json.dump(payload, f, indent=2, ensure_ascii=False)  # save nicely formatted JSON
+
+        return filepath
 
     def list_chats(self):
         return sorted(self.folder.glob("*.json"), reverse=True)  # newest first
@@ -33,12 +37,3 @@ class HistoryStore:
     def load_chat(self, filepath: str):
         with open(filepath, "r", encoding="utf-8") as f:
             return json.load(f)  # read a saved chat back into Python
-
-    def assign_project(self, filepath: str, project: str | None) -> None:
-        data = self.load_chat(filepath)
-        if project:
-            data["project"] = project
-        else:
-            data.pop("project", None)
-        with open(filepath, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)

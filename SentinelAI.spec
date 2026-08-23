@@ -2,7 +2,7 @@
 """PyInstaller spec for Sentinel Fork — self-contained macOS .app bundle.
 
 Build:   .venv/bin/pyinstaller --noconfirm SentinelAI.spec
-Output:  dist/Sentinel Fork.app
+Output:  dist.noindex/Sentinel Fork.app (when built through scripts/build_app.sh)
 """
 from PyInstaller.utils.hooks import collect_all, collect_submodules
 
@@ -18,6 +18,12 @@ hiddenimports = [
 # SDKs / libs with data files or plugin discovery that static analysis can miss.
 for pkg in ("google.genai", "tiktoken", "anthropic", "openai", "certifi"):
     d, b, h = collect_all(pkg)
+    if pkg == "google.genai":
+        # The SDK wheel ships its own large pytest suite. It is neither runtime
+        # data nor an application test and must not be bundled or collected by
+        # Sentinel's pytest runs.
+        d = [item for item in d if "google/genai/tests" not in item[0].replace("\\", "/")]
+        h = [name for name in h if ".tests" not in name]
     datas += d
     binaries += b
     hiddenimports += h
@@ -40,8 +46,6 @@ a = Analysis(
     hooksconfig={},
     runtime_hooks=[],
     excludes=[
-        # Not imported by main.py; pulls broken providers.avatar/voice imports.
-        "agents.course_agent",
         # Dev-only weight.
         "pytest", "pip", "setuptools",
     ],
@@ -94,9 +98,8 @@ app = BUNDLE(
         "NSRequiresAquaSystemAppearance": False,   # allow dark mode
         "LSMinimumSystemVersion": "12.0",
         "LSApplicationCategoryType": "public.app-category.developer-tools",
-        # App writes only to ~/Library/Application Support, but it reads the
-        # user's ebook folder etc. — declare a usage string for Documents access.
-        "NSDesktopFolderUsageDescription": "Sentinel Fork reads files and saves outputs you choose.",
-        "NSDocumentsFolderUsageDescription": "Sentinel Fork reads files and saves outputs you choose.",
+        # File dialogs can read selected evidence and save reports.
+        "NSDesktopFolderUsageDescription": "Sentinel Fork reads files you select and saves reports you choose.",
+        "NSDocumentsFolderUsageDescription": "Sentinel Fork reads files you select and saves reports you choose.",
     },
 )

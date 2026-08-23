@@ -32,7 +32,6 @@ from agents.wifi_agent import AIRPORT, build_kali_commands, detect_usb_adapters
 from services.runtime_paths import user_data_base
 from ui.workers import SubprocessWorker
 from ui.panels.base import AgentPanel
-from ui.widgets import SectionView
 
 # Static facts about the adapters the Kali builder knows how to target.
 KALI_ADAPTERS = {
@@ -65,6 +64,7 @@ class WifiPanel(AgentPanel):
         self._detected_adapter: dict = {}
         self.scan_worker: SubprocessWorker | None = None
         self._build()
+        self.polish_workspace()
         self.hide()
 
     # ── Construction ────────────────────────────────────────────────────
@@ -156,11 +156,7 @@ class WifiPanel(AgentPanel):
         self.stop_btn.setObjectName("DangerAction")
         self.stop_btn.clicked.connect(self.stop)
         provider_row.addWidget(self.stop_btn)
-
-        self.help_btn = QPushButton("Help")
-        self.help_btn.setObjectName("ChipBtn")
-        self.help_btn.clicked.connect(self.host.show_agent_docs)
-        provider_row.addWidget(self.help_btn)
+        self.set_busy(self.run_btn, self.stop_btn, False)
 
         layout.addWidget(provider_row_container)
 
@@ -180,26 +176,26 @@ class WifiPanel(AgentPanel):
         self.raw_box.setOpenExternalLinks(False)
         self.tabs.addTab(self.raw_box, "Raw Output")
 
-        analysis_widget = QWidget()
-        analysis_layout = QVBoxLayout(analysis_widget)
-        analysis_layout.setContentsMargins(0, 0, 0, 0)
-        analysis_layout.setSpacing(8)
-        self.stream_box = QTextBrowser()
-        self.stream_box.setVisible(False)
-        analysis_layout.addWidget(self.stream_box, 1)
-        self.sections = SectionView()
-        analysis_layout.addWidget(self.sections, 1)
-        self.tabs.addTab(analysis_widget, "AI Analysis")
+        self.analysis_box = QTextBrowser()
+        self.tabs.addTab(self.analysis_box, "AI Analysis")
 
         self.kali_cmd_box = QTextBrowser()
         self.tabs.addTab(self.kali_cmd_box, "Kali Commands")
+
+        self.raw_box.setPlaceholderText("Wireless scan or interface output will appear here.")
+        self.analysis_box.setPlaceholderText(
+            "Optional AI interpretation will appear here when AI Analysis is enabled."
+        )
+        self.kali_cmd_box.setPlaceholderText(
+            "Generated authorised-testing commands will appear here."
+        )
 
         results_splitter.addWidget(self.tabs)
 
         # ── Sidebar indicators ───────────────────────────────────────────
         indicators_widget = QWidget()
         indicators_layout = QVBoxLayout(indicators_widget)
-        indicators_layout.setContentsMargins(8, 8, 8, 8)
+        indicators_layout.setContentsMargins(6, 6, 6, 6)
         indicators_layout.setSpacing(8)
 
         adapter_group = QGroupBox("Adapter")
@@ -347,8 +343,7 @@ class WifiPanel(AgentPanel):
 
         self._clear_displays()
         self._last_response = ""
-        self.run_btn.setEnabled(False)
-        self.stop_btn.setEnabled(True)
+        self.set_busy(self.run_btn, self.stop_btn, True)
         self.save_btn.setEnabled(False)
         self.status_label.setText(f"Running: {mode}…")
         self.tabs.setCurrentIndex(0)
@@ -364,8 +359,7 @@ class WifiPanel(AgentPanel):
             if not target:
                 QMessageBox.warning(
                     self, "Missing Target", "Enter a target host or IP for Ping Test.")
-                self.run_btn.setEnabled(True)
-                self.stop_btn.setEnabled(False)
+                self.set_busy(self.run_btn, self.stop_btn, False)
                 return
             cmd = ["ping", "-c", "8", target]
         else:
@@ -412,16 +406,14 @@ class WifiPanel(AgentPanel):
             self.status_label.setText("Running AI analysis…")
         else:
             self._last_response = raw
-            self.run_btn.setEnabled(True)
-            self.stop_btn.setEnabled(False)
+            self.set_busy(self.run_btn, self.stop_btn, False)
             self.save_btn.setEnabled(True)
 
     def _start_ai_pass(self, prompt: str) -> None:
         """The paid half. `run`/scan already put the panel in the running state."""
         messages = self.agent().build_messages(prompt)
         if not self.authorize(prompt):
-            self.run_btn.setEnabled(True)
-            self.stop_btn.setEnabled(False)
+            self.set_busy(self.run_btn, self.stop_btn, False)
             return
         self.start_worker(
             messages, prompt,
@@ -434,43 +426,33 @@ class WifiPanel(AgentPanel):
     def _scan_error(self, error: str) -> None:
         self.raw_box.setPlainText(f"[Error]\n{error}")
         self.status_label.setText("Error running scan.")
-        self.run_btn.setEnabled(True)
-        self.stop_btn.setEnabled(False)
+        self.set_busy(self.run_btn, self.stop_btn, False)
 
     def _on_token(self, token: str) -> None:
         self._last_response += token
-        self.sections.setVisible(False)
-        self.stream_box.setVisible(True)
-        self.stream_box.setPlainText(self._last_response)
-        self.stream_box.moveCursor(QTextCursor.End)
+        self.analysis_box.setPlainText(self._last_response)
+        self.analysis_box.moveCursor(QTextCursor.End)
 
     def _on_finished(self, full_response: str) -> None:
         self.record(full_response)
         self._last_response = full_response
-        self.stream_box.setVisible(False)
-        self.sections.setVisible(True)
-        self._populate_sections(full_response)
+        self.analysis_box.setPlainText(full_response)
         self.status_label.setText("Analysis complete.")
-        self.run_btn.setEnabled(True)
-        self.stop_btn.setEnabled(False)
+        self.set_busy(self.run_btn, self.stop_btn, False)
         self.save_btn.setEnabled(True)
 
     def _on_error(self, error: str) -> None:
         self.abandon()
-        self.sections.setVisible(False)
-        self.stream_box.setVisible(True)
-        self.stream_box.setPlainText(f"[Error] {error}")
+        self.analysis_box.setPlainText(f"[Error] {error}")
         self.status_label.setText("Error.")
-        self.run_btn.setEnabled(True)
-        self.stop_btn.setEnabled(False)
+        self.set_busy(self.run_btn, self.stop_btn, False)
 
     def stop(self) -> None:
         if self.scan_worker is not None and self.scan_worker.isRunning():
             self.scan_worker.cancel()
         self.stop_worker()
         self.status_label.setText("Stopped.")
-        self.run_btn.setEnabled(True)
-        self.stop_btn.setEnabled(False)
+        self.set_busy(self.run_btn, self.stop_btn, False)
 
     def is_running(self) -> bool:
         scan = self.scan_worker is not None and self.scan_worker.isRunning()
@@ -504,39 +486,12 @@ class WifiPanel(AgentPanel):
 
     def _clear_displays(self) -> None:
         self.raw_box.clear()
-        self.sections.clear()
-        self.sections.setVisible(True)
-        self.stream_box.clear()
-        self.stream_box.setVisible(False)
+        self.analysis_box.clear()
         self.kali_cmd_box.clear()
         self.signal_bar.setValue(0)
         self.signal_val_label.setText("—")
         self.security_label.setText("—")
         self.save_btn.setEnabled(False)
-
-    def _populate_sections(self, text: str) -> None:
-        sections = self.parse_sections(text)
-        self.sections.show_sections([
-            ("Summary", sections.get("summary", "")),
-            ("Network Findings", sections.get("network", "")),
-            ("Security Observations", sections.get("security", "")),
-            ("Recommendations", sections.get("recommendations", "")),
-        ], raw=text)
-
-    @staticmethod
-    def parse_sections(text: str) -> dict[str, str]:
-        """Split Beacon's required four-part response, with or without ##."""
-        patterns = {
-            "summary": r"(?:^|\n)(?:##\s*)?1\.\s*SUMMARY\s*(.*?)(?=\n(?:##\s*)?2\.|$)",
-            "network": r"(?:^|\n)(?:##\s*)?2\.\s*NETWORK FINDINGS\s*(.*?)(?=\n(?:##\s*)?3\.|$)",
-            "security": r"(?:^|\n)(?:##\s*)?3\.\s*SECURITY OBSERVATIONS\s*(.*?)(?=\n(?:##\s*)?4\.|$)",
-            "recommendations": r"(?:^|\n)(?:##\s*)?4\.\s*RECOMMENDATIONS\s*(.*?)$",
-        }
-        return {
-            key: (match.group(1).strip() if (match := re.search(
-                pattern, text, re.IGNORECASE | re.DOTALL)) else "")
-            for key, pattern in patterns.items()
-        }
 
     def _update_indicators(self, raw: str) -> None:
         rssi_m = re.search(r"agrCtlRSSI:\s*(-\d+)", raw)

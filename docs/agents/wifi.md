@@ -1,6 +1,6 @@
 # BEACON — Wi-Fi reconnaissance & Kali command builder
 
-`key: wifi` · class: `agents/wifi_agent.py → WiFiAgent` · panel: `build_wifi_panel()` · handler: `wifi_run()`
+`key: wifi` · class: `agents/wifi_agent.py → WiFiAgent` · panel: `ui/panels/wifi.py → WifiPanel`
 
 > ⚠️ Only test networks you own or have written authorisation to assess.
 
@@ -16,9 +16,9 @@ Two capabilities in one panel:
 | Interface | Network interface (e.g. `en0`). |
 | Target Host | Used by Ping Test. |
 | Kali sub-form (hidden unless Kali mode) | Operation (`Handshake Capture` / `Deauth Attack` / `WPS Audit` / `PMKID Attack`), Adapter, BSSID, Channel, ESSID. |
-| AI Analysis checkbox | Pipe subprocess output to the LLM for a written assessment. |
+| AI interpretation | Optional collapsed section, off by default. Enable it to send subprocess output to the selected LLM. |
 | Detect Adapters | Scan USB for known adapters. |
-| Run / Stop / Save Output / Help | Execute, cancel, export, docs. |
+| Run / Stop | Execute, or cancel while work is active. Results reveal Save and Clear controls. Use the shared Help button for docs. |
 
 ## Outputs
 Tabs: **Raw Output** (subprocess text), **AI Analysis** (LLM interpretation), **Kali Commands** (generated sequence). Sidebar: detected adapter, chipset, capabilities (monitor/injection), signal bar, security.
@@ -32,8 +32,7 @@ Tabs: **Raw Output** (subprocess text), **AI Analysis** (LLM interpretation), **
 | Location | Role |
 |---|---|
 | `agents/wifi_agent.py` | `KNOWN_ADAPTERS`, `AIRPORT` path, `detect_usb_adapters()`, `build_kali_commands()`, `WiFiAgent`. |
-| `main.py: build_wifi_panel()` | Panel + Kali sub-form toggle. |
-| `main.py: wifi_run()` | Dispatches by Mode (subprocess vs Kali build vs AI). |
+| `ui/panels/wifi.py` | Panel and dispatch by Mode (subprocess vs Kali build vs optional AI). |
 | `main.py: SubprocessWorker` | Runs shell commands off the UI thread. |
 
 ## Extend it

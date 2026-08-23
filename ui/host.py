@@ -1,9 +1,8 @@
 """The interface an agent panel needs from the application.
 
-This is the seam the split rests on. Each agent vertical was measured against
-its own attributes and found to be ~75% self-contained (author 27 external of
-135, osint 23 of 87, music 16 of 51) — and the external references were nearly
-the same set every time. That set is written down here.
+This protocol records the shared application capabilities that independently
+testable agent panels may use: providers, logging, budgets, history, and common
+request controls.
 
 Panels talk to the host through this protocol rather than reaching into `GodAI`,
 which is what lets a panel move to its own module (phase 4) and eventually to a
@@ -53,25 +52,21 @@ class AgentHost(Protocol):
 
     def authorize_request(self, agent: str, provider: str, model: str,
                           prompt: str, tool: str | None = None,
-                          label: str | None = None) -> str | None:
-        """Return a unique request id, or ``None`` when blocked."""
+                          label: str | None = None) -> bool:
+        """False means the request must not be sent."""
         ...
 
-    def record_request(self, request_id: str, response: str,
+    def record_request(self, agent: str, response: str,
                        messages: list | None = None) -> None:
         """Bill, save and close out an authorised request."""
         ...
 
-    def abandon_request(self, request_id: str, reason: str = "error") -> None:
+    def abandon_request(self, agent: str, reason: str = "error") -> None:
         """Drop a failed request so it is not billed."""
         ...
 
-    def note_request_usage(self, request_id: str, usage: dict) -> None:
+    def note_request_usage(self, agent: str, usage: dict) -> None:
         """Real token counts, when the worker reports them."""
-        ...
-
-    def apply_project_context(self, messages: list) -> list:
-        """Inject the active project's instructions into a request once."""
         ...
 
     # ── Shared services ─────────────────────────────────────────────────

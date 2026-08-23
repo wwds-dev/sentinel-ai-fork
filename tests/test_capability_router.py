@@ -1,0 +1,97 @@
+import pytest
+
+from services.model_recommendations import (
+    MODEL_CATALOG, RoutingPreferences, classify_request, pricing_metadata,
+    route_request,
+)
+
+
+ALL = {}
+for profile in MODEL_CATALOG:
+    ALL.setdefault(profile.provider, []).append(profile.model)
+
+
+@pytest.mark.parametrize("prompt,task,capability", [
+    ("Hello, how are you?", "general", "text"),
+    ("Refactor this Python function", "coding", "coding"),
+    ("Use deep reasoning and evaluate trade-offs step by step", "reasoning", "reasoning"),
+    ("Generate an image of a lighthouse", "image_generation", "image_generation"),
+    ("Analyze this attached image", "vision", "vision"),
+])
+def test_task_classification_and_compatible_primary(prompt, task, capability):
+    decision = route_request(prompt, available_models=ALL)
+    assert decision.task == task
+    profile = next(p for p in MODEL_CATALOG if (p.provider, p.model) == (decision.provider, decision.model))
+    assert getattr(profile.capabilities, capability)
+
+
+def test_general_chat_never_uses_image_only_model():
+    decision = route_request("Hello, help me plan my day", available_models=ALL)
+    assert decision.model != "dall-e-3"
+    assert next(p for p in MODEL_CATALOG if p.model == decision.model).capabilities.text
+
+
+def test_long_context_filters_models_that_are_too_small():
+    decision = route_request("Summarize this long document", context_tokens=500_000, available_models=ALL)
+    profile = next(p for p in MODEL_CATALOG if p.model == decision.model)
+    assert decision.task == "long_context"
+    assert profile.capabilities.context_window >= 500_000
+
+
+def test_cost_and_speed_preferences_choose_cheap_fast_routes():
+    cost = route_request("Give me a simple quick answer", preferences=RoutingPreferences(priority="cost"), available_models=ALL)
+    speed = route_request("Give me a simple quick answer", preferences=RoutingPreferences(priority="speed"), available_models=ALL)
+    cost_profile = next(p for p in MODEL_CATALOG if p.model == cost.model)
+    speed_profile = next(p for p in MODEL_CATALOG if p.model == speed.model)
+    assert cost_profile.capabilities.cost == 1
+    assert speed_profile.capabilities.latency == 1
+
+
+def test_local_private_request_never_leaves_machine():
+    decision = route_request("Analyze these private notes", preferences=RoutingPreferences(local_only=True, priority="privacy"), available_models=ALL)
+    assert decision.provider == "ollama"
+    assert decision.mode == "Local only"
+
+
+def test_manual_override_is_preserved_when_compatible():
+    decision = route_request("Write a short note", manual_provider="openai", manual_model="gpt-4o-mini", available_models=ALL)
+    assert decision.manual
+    assert (decision.provider, decision.model) == ("openai", "gpt-4o-mini")
+
+
+def test_incompatible_manual_override_falls_back():
+    decision = route_request("General chat", manual_provider="openai", manual_model="dall-e-3", available_models=ALL)
+    assert not decision.manual
+    assert decision.model != "dall-e-3"
+    assert "incompatible" in decision.reason
+
+
+def test_unavailable_primary_has_deterministic_fallback():
+    available = {"openai": ["gpt-4o-mini"], "deepseek": ["deepseek-v4-flash"]}
+    one = route_request("Refactor this code", enabled_providers=available, available_models=available)
+    two = route_request("Refactor this code", enabled_providers=available, available_models=available)
+    assert one == two
+    assert one.fallbacks
+
+
+def test_no_eligible_route_is_a_clear_error():
+    with pytest.raises(RuntimeError, match="No available model"):
+        route_request("Generate an image", enabled_providers={"ollama"}, available_models=ALL)
+
+
+def test_local_model_is_explicitly_free_and_local():
+    pricing = pricing_metadata("ollama", "deepseek-r1:8b")
+    assert pricing.status == "free_local"
+    assert pricing.compact == "FREE · LOCAL"
+
+
+def test_cloud_model_is_paid_and_shows_known_rates():
+    pricing = pricing_metadata("openai", "gpt-4.1-mini")
+    assert pricing.status == "paid"
+    assert pricing.compact == "PAID · $0.4/$1.6 per 1M in/out"
+
+
+def test_unknown_provider_pricing_is_not_guessed():
+    pricing = pricing_metadata("customer-hosted-gateway", "private-model")
+    assert pricing.status == "unknown"
+    assert pricing.compact == "UNKNOWN"

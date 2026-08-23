@@ -1,5 +1,5 @@
 """
-vpn_agent.py — VPN / tunnel security advisor for Sentinel.
+vpn_agent.py — VPN / tunnel security advisor for Sentinel Fork.
 
 Brings the domain knowledge of the standalone VPN Agent app (a VPN you own end
 to end: WireGuard + an OpenVPN TCP/443 fallback, a fail-closed kill switch, DNS
@@ -16,7 +16,7 @@ Two halves, mirroring the other tooling agents (see wifi_agent):
   fill them, so nothing here ever prints real private key material.
 """
 
-SYSTEM_PROMPT = """You are a VPN & Tunnel Security Architect embedded in Sentinel — a macOS security command centre. You design and troubleshoot self-hosted VPNs that the operator owns end to end: no commercial provider sits in the path, every key is generated locally, and the operator holds the certificate authority.
+SYSTEM_PROMPT = """You are a VPN & Tunnel Security Architect embedded in Sentinel Fork — a macOS security command centre. You design and troubleshoot self-hosted VPNs that the operator owns end to end: no commercial provider sits in the path, every key is generated locally, and the operator holds the certificate authority.
 
 ─────────────────────────────────────────────
 GROUND TRUTH YOU REASON FROM

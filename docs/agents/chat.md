@@ -11,8 +11,8 @@ The default agent. Plain text in, plain text out, with full multi-turn conversat
 | Tool | System prompt frame prepended to every message. |
 | Command | Optional pre-built prompt scaffold from `config/commands.json`. |
 | Provider / Model | Which LLM runs the request. |
-| Mode + API checkboxes | Local-only / hybrid / cloud, and per-provider permission. |
-| Prompt box | Your message. Send, or Stop to cancel. |
+| Model settings (gear) | Optional execution-mode, provider/model, and API-permission overrides. The recommended route is used by default. |
+| Prompt box | Your message. Run, or Stop to cancel while a request is active. |
 
 ## Outputs
 Streaming text into the **Output** box (auto-hidden until there's content). Each turn is appended to `current_messages`, so follow-ups keep context. Conversations auto-save to `data/chats/` and appear in **Saved Chats**.
@@ -35,4 +35,4 @@ Streaming text into the **Output** box (auto-hidden until there's content). Each
 - **Attachments / RAG**: `send_prompt()` is the hook — enrich the user message before it reaches `ChatWorker`.
 
 ## Requirements
-Any provider. Ollama is free/local; cloud providers need an API key (app `.env`).
+Any compatible text/reasoning provider. Ollama is free/local; cloud providers need an API key (app `.env`). Image-only and speech-only models are excluded from text-task recommendations.

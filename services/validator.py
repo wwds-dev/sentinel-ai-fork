@@ -1,5 +1,4 @@
 from dataclasses import dataclass
-from decimal import Decimal
 from services.registry import Registry
 
 
@@ -18,11 +17,6 @@ class Validator:
     def __init__(self, registry: Registry):
         self.registry = registry
 
-    @staticmethod
-    def _money(value) -> Decimal:
-        """Convert display/API numbers without importing their float error."""
-        return Decimal(str(value))
-
     def validate(
         self,
         agent_name: str,
@@ -34,15 +28,12 @@ class Validator:
         daily_cost: float,
         daily_budget: float,
         estimated_cost: float,
-        project_name: str = "",
-        project_cost: float = 0.0,
-        project_budget: float | None = None,
     ) -> ValidationResult:
         # 1. Agent enabled?
         if not self.registry.is_agent_enabled(agent_name):
             return ValidationResult(False, f"Agent '{agent_name}' is disabled in the registry.")
 
-        # 2. Tool enabled? (skip for audiobook which has no tool)
+        # 2. Tool enabled? Agent panels without a registry tool pass no name.
         if tool_name and not self.registry.is_tool_enabled(tool_name):
             return ValidationResult(False, f"Tool '{tool_name}' is disabled in the registry.")
 
@@ -79,27 +70,27 @@ class Validator:
         # 7. Per-agent budget (daily)
         agent_budget = self.registry.get_agent_budget(agent_name)
         if agent_budget is not None and provider != "ollama":
-            if self._money(estimated_cost) > self._money(agent_budget):
+            if estimated_cost > agent_budget:
                 return ValidationResult(
                     False,
-                    f"Agent '{agent_name}' has a budget cap of €{agent_budget:.2f}/day. "
+                    f"Agent '{agent_name}' has a budget cap of €{agent_budget:.2f} per paid request. "
                     f"This request is estimated at €{estimated_cost:.4f}."
                 )
 
-        # 8. Active project daily budget
-        if project_budget is not None and provider != "ollama":
-            project_remaining = self._money(project_budget) - self._money(project_cost)
-            if self._money(estimated_cost) > project_remaining:
+        # 8. Per-tool budget. Local requests remain free and bypass cost caps.
+        tool_budget = self.registry.get_tool_budget(tool_name) if tool_name else None
+        if tool_budget is not None and provider != "ollama":
+            if estimated_cost > tool_budget:
                 return ValidationResult(
                     False,
-                    f"Project '{project_name}' budget exceeded. Remaining: "
-                    f"€{project_remaining:.4f}, request: ~€{estimated_cost:.4f}."
+                    f"Tool '{tool_name}' has a budget cap of €{tool_budget:.2f} per paid request. "
+                    f"This request is estimated at €{estimated_cost:.4f}."
                 )
 
         # 9. Session budget
         if provider != "ollama":
-            session_remaining = self._money(session_budget) - self._money(session_cost)
-            if self._money(estimated_cost) > session_remaining:
+            session_remaining = session_budget - session_cost
+            if estimated_cost > session_remaining:
                 return ValidationResult(
                     False,
                     f"Session budget exceeded. "
@@ -108,8 +99,8 @@ class Validator:
 
         # 10. Daily budget
         if provider != "ollama":
-            daily_remaining = self._money(daily_budget) - self._money(daily_cost)
-            if self._money(estimated_cost) > daily_remaining:
+            daily_remaining = daily_budget - daily_cost
+            if estimated_cost > daily_remaining:
                 return ValidationResult(
                     False,
                     f"Daily budget exceeded. "
@@ -121,6 +112,12 @@ class Validator:
             return ValidationResult(
                 False,
                 f"Agent '{agent_name}' requires manual approval before running."
+            )
+
+        if tool_name and self.registry.tool_requires_approval(tool_name):
+            return ValidationResult(
+                False,
+                f"Tool '{tool_name}' requires manual approval before running."
             )
 
         return ValidationResult(True, "OK")

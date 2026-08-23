@@ -7,21 +7,21 @@
   "Writing": {
     "system": "You are a professional writing assistant. Improve clarity, tone, structure, grammar, and usefulness while preserving the user's intent.",
     "recommended_provider": "openai",
-    "recommended_model": "gpt-4o-mini"
+    "recommended_model": "gpt-4.1-mini"
   },
   "Coding": {
     "system": "You are a senior software engineering assistant. Help debug, refactor, explain errors, and produce clean, working code.",
     "recommended_provider": "deepseek",
-    "recommended_model": "deepseek-chat"
+    "recommended_model": "deepseek-v4-pro"
   },
   "Summarize": {
     "system": "You summarize clearly and concisely. Preserve important facts, names, dates, numbers, decisions, and action items.",
     "recommended_provider": "gemini",
-    "recommended_model": "gemini-1.5-flash"
+    "recommended_model": "gemini-2.5-flash"
   },
   "Rewrite": {
     "system": "You rewrite text clearly, professionally, and naturally while preserving the original meaning.",
     "recommended_provider": "openai",
-    "recommended_model": "gpt-4o-mini"
+    "recommended_model": "gpt-4.1-mini"
   }
 }

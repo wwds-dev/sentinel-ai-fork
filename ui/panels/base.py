@@ -17,22 +17,37 @@ so the two paths cannot drift.
 
 from __future__ import annotations
 
-from PySide6.QtWidgets import QComboBox, QLabel, QWidget
-
-from ui.widgets import FlowLayout
-from ui.workers import ChatWorker
-
-# The provider list every panel offered, written once. Order is the order shown.
-PROVIDERS = (
-    "ollama", "openai", "deepseek", "kimi", "gemini", "anthropic", "qwen",
+from PySide6.QtWidgets import (
+    QComboBox, QGridLayout, QGroupBox, QLabel, QPushButton, QSizePolicy,
+    QTabWidget, QTextBrowser, QTextEdit, QVBoxLayout, QWidget,
 )
 
+from ui.widgets import FlowLayout, ProgressiveSection, WorkspaceState
+from ui.workers import ChatWorker
+from services.provider_catalog import SUPPORTED_PROVIDERS
+
+# The provider list every panel offered, written once. Order is the order shown.
+PROVIDERS = SUPPORTED_PROVIDERS
+
 # Model combos are wide enough for a dated API model id ("claude-sonnet-4-6-20260112").
-MODEL_BOX_WIDTH = 200
+PROVIDER_BOX_WIDTH = 120
+MODEL_BOX_WIDTH = 220
+
+
+def configure_model_controls(provider_box: QComboBox, model_box: QComboBox) -> None:
+    """Give every agent view readable names and responsive sizing."""
+    provider_box.setMinimumWidth(PROVIDER_BOX_WIDTH)
+    model_box.setMinimumWidth(MODEL_BOX_WIDTH)
+    provider_box.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+    model_box.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+    provider_box.setMinimumContentsLength(11)
+    model_box.setMinimumContentsLength(24)
+    provider_box.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+    model_box.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
 
 def flow_row(parent: QWidget | None = None,
-             spacing: int = 6) -> tuple[QWidget, FlowLayout]:
+             spacing: int = 6, min_height: int = 44) -> tuple[QWidget, FlowLayout]:
     """A control row that wraps instead of pinning a minimum width on the pane.
 
     Returns the container and the layout to fill; the caller must keep the
@@ -42,6 +57,8 @@ def flow_row(parent: QWidget | None = None,
     settles that at construction.
     """
     container = QWidget(parent)
+    container.setMinimumHeight(min_height)
+    container.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
     return container, FlowLayout(container, spacing=spacing)
 
 
@@ -75,6 +92,7 @@ def build_provider_row(
 
     model_box = QComboBox()
     model_box.setMinimumWidth(model_width)
+    configure_model_controls(provider_box, model_box)
     if labels:
         layout.addWidget(QLabel("Model:"))
     layout.addWidget(model_box)
@@ -118,12 +136,11 @@ class AgentPanel(QWidget):
         self.provider_box: QComboBox | None = None
         self.model_box: QComboBox | None = None
         self.worker = None
-        self._active_request_id: str | None = None
 
     # ── Construction helpers ────────────────────────────────────────────
-    def flow_row(self, spacing: int = 6) -> tuple[QWidget, FlowLayout]:
+    def flow_row(self, spacing: int = 6, min_height: int = 44) -> tuple[QWidget, FlowLayout]:
         """A wrapping control row owned by this panel."""
-        return flow_row(self, spacing)
+        return flow_row(self, spacing, min_height)
 
     def build_provider_row(self, layout, **kwargs) -> tuple[QComboBox, QComboBox]:
         kwargs.setdefault("default", self.default_provider)
@@ -131,6 +148,93 @@ class AgentPanel(QWidget):
             self.host, layout, self.agent_key, **kwargs
         )
         return self.provider_box, self.model_box
+
+    def build_model_override(self, *, expanded: bool = False,
+                             empty_placeholder: bool = False) -> ProgressiveSection:
+        """Recommended model by default; full provider controls on demand."""
+        section = ProgressiveSection(
+            "Model override", "Recommended model selected", expanded=expanded,
+            parent=self,
+        )
+        row_widget, row = self.flow_row(min_height=82)
+        self.build_provider_row(
+            row, empty_placeholder=empty_placeholder,
+        )
+        section.addWidget(row_widget)
+
+        def update_summary(*_args):
+            provider = self.provider_box.currentText() if self.provider_box else ""
+            model = self.model_box.currentText() if self.model_box else ""
+            section.setSummary(f"Using {provider} · {model}".strip(" ·"))
+
+        self.provider_box.currentTextChanged.connect(update_summary)
+        self.model_box.currentTextChanged.connect(update_summary)
+        update_summary()
+        self.model_override = section
+        return section
+
+    def build_state_label(self) -> WorkspaceState:
+        self.workspace_state = WorkspaceState(self)
+        return self.workspace_state
+
+    def set_workspace_state(self, state: str, message: str) -> None:
+        if hasattr(self, "workspace_state"):
+            self.workspace_state.setState(state, message)
+
+    def register_results(self, widget: QWidget) -> QWidget:
+        """Register the stable results region for an agent workspace.
+
+        The region deliberately remains visible when empty. A persistent output
+        destination makes the input → action → result flow legible and prevents
+        large screens from turning the workspace into scattered controls.
+        """
+        self.results_widget = widget
+        widget.setProperty("workspaceResultSurface", True)
+        widget.show()
+        return widget
+
+    def show_results(self) -> None:
+        if hasattr(self, "results_widget"):
+            self.results_widget.show()
+
+    def hide_results(self) -> None:
+        """Return to the empty-results state without collapsing the workspace."""
+        if hasattr(self, "results_widget"):
+            self.results_widget.show()
+
+    @staticmethod
+    def set_busy(primary: QPushButton, stop: QPushButton, busy: bool) -> None:
+        """One action per state: Run while idle, Stop while running."""
+        primary.setVisible(not busy)
+        primary.setEnabled(not busy)
+        stop.setVisible(busy)
+        stop.setEnabled(busy)
+
+    def polish_workspace(self) -> None:
+        """Apply the shared specialist-workspace visual hierarchy."""
+        self.setProperty("agentWorkspace", True)
+        for group in self.findChildren(QGroupBox):
+            if group.parentWidget() is self:
+                group.setProperty("workspaceCard", True)
+                # A setup card should keep its content height. Without this,
+                # QVBoxLayout gives an empty workspace's spare height to the
+                # card and turns three fields into a page-sized blank panel.
+                group.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
+                if isinstance(group.layout(), QGridLayout):
+                    group.layout().setHorizontalSpacing(10)
+                    group.layout().setVerticalSpacing(8)
+        for tabs in self.findChildren(QTabWidget):
+            tabs.setProperty("workspaceResults", True)
+        outputs = self.findChildren(QTextBrowser) + self.findChildren(QTextEdit)
+        for output in dict.fromkeys(outputs):
+            if output.isReadOnly():
+                output.setProperty("workspaceOutput", True)
+        for button in self.findChildren(QPushButton):
+            if button.objectName() == "PrimaryAction":
+                button.setProperty("workspacePrimary", True)
+        for widget in [self] + self.findChildren(QWidget):
+            widget.style().unpolish(widget)
+            widget.style().polish(widget)
 
     # ── Current selection ───────────────────────────────────────────────
     @property
@@ -155,25 +259,27 @@ class AgentPanel(QWidget):
     def authorize(self, prompt: str, *, tool: str | None = None,
                   label: str | None = None) -> bool:
         """False means the request was blocked and must not be sent."""
-        self._active_request_id = self.host.authorize_request(
+        prepare_route = getattr(self.host, "prepare_agent_route", None)
+        if prepare_route is not None:
+            route_result = prepare_route(
+                self.agent_key, prompt, self.provider_box, self.model_box,
+                tool=tool or label or "",
+            )
+            if route_result is False:
+                return False
+        return self.host.authorize_request(
             self.agent_key, self.provider, self.model, prompt,
             tool=tool, label=label,
         )
-        return self._active_request_id is not None
 
     def record(self, response: str, messages: list | None = None) -> None:
-        request_id, self._active_request_id = self._active_request_id, None
-        if request_id is not None:
-            self.host.record_request(request_id, response, messages)
+        self.host.record_request(self.agent_key, response, messages)
 
     def abandon(self, reason: str = "error") -> None:
-        request_id, self._active_request_id = self._active_request_id, None
-        if request_id is not None:
-            self.host.abandon_request(request_id, reason)
+        self.host.abandon_request(self.agent_key, reason)
 
     def note_usage(self, usage: dict) -> None:
-        if self._active_request_id is not None:
-            self.host.note_request_usage(self._active_request_id, usage)
+        self.host.note_request_usage(self.agent_key, usage)
 
     # ── Running one request ─────────────────────────────────────────────
     #: Swapped by panels that drive a tool instead of a chat request, and by
@@ -189,7 +295,6 @@ class AgentPanel(QWidget):
         a billed amount, and a panel that forgot to connect it under-reported
         its own spending in silence.
         """
-        messages = self.host.apply_project_context(messages)
         worker = self.worker_class(self.host.run_backend, self.provider,
                                    self.model, messages, prompt)
         if on_token is not None:

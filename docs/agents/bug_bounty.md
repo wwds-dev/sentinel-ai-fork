@@ -1,6 +1,6 @@
 # BUG SPRAY — Bug bounty triage & reporting
 
-`key: bug_bounty` · class: `agents/bug_bounty_agent.py → BugBountyAgent` · panel: `build_bug_bounty_panel()` · handler: `bb_analyse()`
+`key: bug_bounty` · class: `agents/bug_bounty_agent.py → BugBountyAgent` · panel: `ui/panels/bug_bounty.py → BugBountyPanel`
 
 > ⚠️ Only analyse assets explicitly in-scope for an authorised program.
 
@@ -14,9 +14,9 @@ Turns raw findings into a professional vulnerability report and a paste-ready Ha
 | Program | Bug bounty program name. |
 | Scope type | Web / Mobile / API / Network, etc. |
 | Findings box | Paste HTTP responses, Burp output, source snippets, recon notes. |
-| Nmap command box + Run Nmap / Kill | Execute an nmap scan locally; output feeds the analysis. |
-| Provider / Model | Strong reasoning model recommended for accurate CWE/CVSS. |
-| Analyse / Stop / Save Report / Clear | Run, cancel, export, reset. |
+| Optional reconnaissance | Collapsed Nmap controls; local scan output feeds the analysis. |
+| Model override | Optional provider/model change; a strong security-reasoning model is selected by default. |
+| Analyse / Stop | Run, or cancel while a request is active. Save and Clear appear with results. |
 
 ## Outputs
 Tabs: **Full Report** (Vulnerability Title, Severity+CVSS, Target, Description, PoC, Impact, Remediation, References), **Vulnerability**, **PoC Draft**, **Remediation**, **Submission Draft** (platform-ready). Sidebar indicators (severity/lean) parsed from the report.
@@ -28,9 +28,7 @@ Tabs: **Full Report** (Vulnerability Title, Severity+CVSS, Target, Description, 
 | Location | Role |
 |---|---|
 | `agents/bug_bounty_agent.py` | `BugBountyAgent` — report + submission spec. |
-| `main.py: build_bug_bounty_panel()` | Panel, nmap box, tabs, indicators. |
-| `main.py: bb_run_nmap()/_bb_nmap_read()/_bb_nmap_finished()/bb_kill_nmap()` | Nmap subprocess lifecycle. |
-| `main.py: bb_analyse()/_bb_on_finished()/_bb_populate_tabs()/_bb_update_indicators()` | LLM analysis + parsing. |
+| `ui/panels/bug_bounty.py` | Panel, optional Nmap lifecycle, three consolidated result tabs, analysis, and indicators. |
 | `main.py: bb_save()/bb_clear()` | Export / reset. |
 
 ## Extend it

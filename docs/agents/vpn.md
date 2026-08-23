@@ -1,6 +1,6 @@
 # TUNNEL — self-hosted VPN design & config builder
 
-`key: vpn` · class: `agents/vpn_agent.py → VpnAgent` · panel: `build_vpn_panel()` · handlers: `vpn_run()` (advisor) · `vpn_build_config()` (builder)
+`key: vpn` · class: `agents/vpn_agent.py → VpnAgent` · panel: `ui/panels/vpn.py → VpnPanel`
 
 > Defensive, self-hosted infrastructure only — a VPN you own end to end, on hosts you are authorised to run.
 
@@ -30,7 +30,8 @@ Native mode is an encrypted way **into** your network (NAS, printer, router), no
 | LAN subnet | Native mode split-tunnel `AllowedIPs`. |
 | Egress iface | Server NIC for the NAT `MASQUERADE` rule (default `eth0`). |
 | Question | Free-text for the Advisor. |
-| Ask Advisor / Build Config / Stop / Help | LLM answer · offline render · cancel · docs. |
+| I want to… | Choose troubleshooting advice or offline configuration generation; only the relevant controls remain visible. |
+| Ask Advisor / Build Config / Stop | LLM answer · offline render · cancel while active. Use the shared Help button for docs. |
 
 ## Outputs
 Tabs: **Advisor** (LLM answer) and **Config & Commands** (rendered configs + runbook). The deployment setup is passed to the advisor as context, so a question inherits the mode/protocol/host you picked.
@@ -43,7 +44,7 @@ Tabs: **Advisor** (LLM answer) and **Config & Commands** (rendered configs + run
 | Location | Role |
 |---|---|
 | `agents/vpn_agent.py` | `SYSTEM_PROMPT`, `build_configs()` + helpers, `VpnAgent`. |
-| `main.py: build_vpn_panel()` | Panel, tabs, provider row. |
+| `ui/panels/vpn.py` | Workflow chooser, panel, results, and request lifecycle. |
 | `main.py: vpn_run()` | Advisor request (`ChatWorker`). |
 | `main.py: vpn_build_config()` | Offline config/runbook render. |
 | `services/database.py: _seed_default_agents()` | Registers the `vpn` agent row. |

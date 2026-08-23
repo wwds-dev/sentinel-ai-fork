@@ -1,6 +1,6 @@
 # TRACE — Light OSINT
 
-`key: osint` · class: `agents/osint_agent.py → OSINTAgent` · panel: `build_osint_panel()` · handler: `osint_analyse()`
+`key: osint` · class: `agents/osint_agent.py → OSINTAgent` · panel: `ui/panels/osint.py → OsintPanel`
 
 ## What it does
 A fast, lightweight open-source-intelligence assistant. Given a target (name, username, email, domain, org) plus optional context, it structures a research query, suggests public sources and search operators, and summarises what to look for. It is a **reasoning/planning layer** — it does not perform live lookups itself.
@@ -9,11 +9,11 @@ A fast, lightweight open-source-intelligence assistant. Given a target (name, us
 | Control | Purpose |
 |---|---|
 | Query / target box | The subject to research and any known context. |
-| Provider / Model | LLM for the analysis (Anthropic/OpenAI give the cleanest structure). |
-| Analyse / Stop | Run or cancel. |
+| Model override | Optional provider/model change; the task recommendation is selected by default. |
+| Structure Query / Stop | Run, or cancel while a request is active. |
 
 ## Outputs
-Streamed structured text into the OSINT tabs/output area. Raw response is retained (`last_raw_osint`) so it can be reused.
+The empty result area stays hidden until a request starts. Results are then shown as readable structured sections, with the raw response available on demand.
 
 ## How it works
 `OSINTAgent.build_messages()` wraps the target in a system prompt tuned for defensive, legal OSINT. Runs through the shared `ChatWorker`.
@@ -22,7 +22,7 @@ Streamed structured text into the OSINT tabs/output area. Raw response is retain
 | Location | Role |
 |---|---|
 | `agents/osint_agent.py` | `OSINTAgent` — system prompt + message builder. |
-| `main.py: build_osint_panel()` | Builds the panel. |
+| `ui/panels/osint.py` | Panel, workflow state, result presentation, and request lifecycle. |
 | `main.py: osint_analyse()` / `osint_stop()` | Fire/cancel the request. |
 | `providers/username_lookup.py`, `email_lookup.py`, `domain_lookup.py` | Real lookup helpers (WHOIS/DNS) available for wiring in. |
 

@@ -10,6 +10,7 @@ class OpenAIClientWrapper:
         "gpt-4o",
         "gpt-4.1-mini",
         "gpt-4.1",
+        "dall-e-3",
     ]
 
     def __init__(self):
@@ -40,7 +41,7 @@ class OpenAIClientWrapper:
             result = self.client.models.list()
             models = sorted(
                 m.id for m in result.data
-                if any(x in m.id.lower() for x in ("gpt", "o1", "o3", "o4"))
+                if any(x in m.id.lower() for x in ("gpt", "o1", "o3", "o4", "dall-e", "image"))
             )
             return models if models else self.KNOWN_MODELS
         except Exception:

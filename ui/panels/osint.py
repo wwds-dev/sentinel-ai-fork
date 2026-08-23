@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
 
 from ui.widgets import SectionView
 from ui.panels.base import AgentPanel
+from services.deepseek_client import is_insufficient_balance_error
 
 
 class OsintPanel(AgentPanel):
@@ -33,7 +34,10 @@ class OsintPanel(AgentPanel):
         super().__init__(host, parent)
         self.setObjectName("OSINTPanel")
         self._last_response = ""
+        self._activity_entries: list[str] = []
+        self._received_first_token = False
         self._build()
+        self.polish_workspace()
         self.hide()
 
     # ── Construction ────────────────────────────────────────────────────
@@ -77,9 +81,23 @@ class OsintPanel(AgentPanel):
         self.stop_btn.setObjectName("DangerAction")
         self.stop_btn.clicked.connect(self.stop)
         provider_row.addWidget(self.stop_btn)
+        self.set_busy(self.analyse_btn, self.stop_btn, False)
 
         setup_layout.addWidget(provider_row_container, 2, 0, 1, 4)
         layout.addWidget(setup_group)
+
+        # ── Persistent activity trail ───────────────────────────────────
+        activity_group = QGroupBox("Activity")
+        activity_group.setObjectName("OSINTActivityBox")
+        activity_layout = QVBoxLayout(activity_group)
+        self.activity_box = QTextBrowser()
+        self.activity_box.setObjectName("OSINTActivityLog")
+        self.activity_box.setOpenExternalLinks(False)
+        self.activity_box.setMinimumHeight(116)
+        self.activity_box.setMaximumHeight(180)
+        activity_layout.addWidget(self.activity_box)
+        layout.addWidget(activity_group)
+        self._reset_activity()
 
         # ── Output ───────────────────────────────────────────────────────
         # The answer is already parsed into four sections; render it as those
@@ -96,6 +114,7 @@ class OsintPanel(AgentPanel):
         # ── Bottom bar ───────────────────────────────────────────────────
         bottom_row = QHBoxLayout()
         self.status_label = QLabel("Idle")
+        self.status_label.setWordWrap(True)
         self.status_label.setStyleSheet("font-size: 12px; color: #888;")
         bottom_row.addWidget(self.status_label)
         bottom_row.addStretch()
@@ -123,9 +142,31 @@ class OsintPanel(AgentPanel):
 
         self._clear_output()
         self._last_response = ""
-        self.status_label.setText("Structuring query…")
-        self.analyse_btn.setEnabled(False)
-        self.stop_btn.setEnabled(True)
+        self._received_first_token = False
+        self._reset_activity()
+        self._append_activity(f"Target accepted: {target} ({query_type}).")
+        if self.provider == "ollama":
+            self._append_activity(
+                f"Running locally with Ollama · {self.model}; the target stays on this Mac."
+            )
+        else:
+            self._append_activity(
+                f"Using {self.provider} · {self.model} after the provider permission check."
+            )
+        self._append_activity(
+            "Scope confirmed: planning queries only. No websites or public databases "
+            "are contacted by Trace in this mode."
+        )
+        self._append_activity(
+            "Building target components, search variations, Google dorks, and a "
+            "recommended public-source checklist…"
+        )
+        notice = getattr(self, "_route_notice", "")
+        self.status_label.setText(
+            f"{notice} Structuring query…" if notice else "Structuring query…"
+        )
+        self._route_notice = ""
+        self.set_busy(self.analyse_btn, self.stop_btn, True)
 
         self.start_worker(
             messages, target,
@@ -138,6 +179,9 @@ class OsintPanel(AgentPanel):
         # While tokens arrive there are no sections to show yet, so the raw
         # stream is the view; the cards replace it once the answer is whole.
         self._last_response += token
+        if not self._received_first_token:
+            self._received_first_token = True
+            self._append_activity("Model response received; assembling the four result sections…")
         self.sections.setVisible(False)
         self.stream_box.setVisible(True)
         self.stream_box.setPlainText(self._last_response)
@@ -149,34 +193,93 @@ class OsintPanel(AgentPanel):
         self.stream_box.setVisible(False)
         self.sections.setVisible(True)
         self._populate_sections(full_response)
+        self._append_activity(
+            "Completed. External sources queried: none. The displayed sources are "
+            "recommendations for the user to check, not verified findings."
+        )
         self.status_label.setText("Done.")
-        self.analyse_btn.setEnabled(True)
-        self.stop_btn.setEnabled(False)
+        self.set_busy(self.analyse_btn, self.stop_btn, False)
 
     def _on_error(self, error: str) -> None:
         self.abandon()
+        balance_error = is_insufficient_balance_error(error)
+        if balance_error:
+            error = self._prepare_balance_recovery()
+        self._append_activity(f"Run ended before completion: {error}")
         separator = "─" * 50
         self.stream_box.setVisible(True)
         self.sections.setVisible(False)
         self.stream_box.setPlainText(
             f"⚠  ERROR\n{separator}\n{error}\n{separator}"
         )
-        self.status_label.setText("Error.")
-        self.analyse_btn.setEnabled(True)
-        self.stop_btn.setEnabled(False)
+        if balance_error:
+            self.status_label.setText(
+                "Ready to retry locally."
+                if self.provider == "ollama" else "Action needed."
+            )
+        else:
+            self.status_label.setText("Error.")
+        self.set_busy(self.analyse_btn, self.stop_btn, False)
+
+    def _prepare_balance_recovery(self) -> str:
+        """Select, but never automatically run, a local retry after a 402."""
+        previous_provider = self.provider
+        self.provider_box.setCurrentText("ollama")
+        local_model = self.model
+        unavailable = not local_model or local_model.startswith("(")
+        if unavailable:
+            self.provider_box.setCurrentText(previous_provider)
+            return (
+                "The DeepSeek cloud account has no API credit, so this request "
+                "could not finish. "
+                "No local model is currently available. Add DeepSeek credit or "
+                "choose another provider. Trace will ask before sending the target "
+                "to a different cloud service."
+            )
+        self._prefer_local_retry_once = True
+        return (
+            "The DeepSeek cloud account has no API credit, so this request could "
+            "not finish. Local DeepSeek through Ollama is free. "
+            f"Trace selected the local model {local_model} for a safe retry, but "
+            "did not resend the target. Click Structure Query to retry on this Mac. "
+            "To use another cloud provider, choose it yourself; Trace will ask "
+            "before sending the target."
+        )
 
     def stop(self) -> None:
         self.stop_worker()
+        self._append_activity("Stopped by the user. No further processing was performed.")
         self.status_label.setText("Stopped.")
-        self.analyse_btn.setEnabled(True)
-        self.stop_btn.setEnabled(False)
+        self.set_busy(self.analyse_btn, self.stop_btn, False)
 
     # ── Output ──────────────────────────────────────────────────────────
     def clear(self) -> None:
         self._clear_output()
         self.target_input.clear()
+        self._reset_activity()
         self.status_label.setText("Idle")
         self._last_response = ""
+
+    def _reset_activity(self) -> None:
+        self._activity_entries = [
+            "Ready. Trace will show each processing stage here and will explicitly "
+            "state whether any external source was queried."
+        ]
+        self._render_activity()
+
+    def _append_activity(self, message: str) -> None:
+        self._activity_entries.append(message)
+        self._render_activity()
+
+    def _render_activity(self) -> None:
+        if not hasattr(self, "activity_box"):
+            return
+        lines = [
+            f"{'✓' if index < len(self._activity_entries) - 1 else '•'} {message}"
+            for index, message in enumerate(self._activity_entries)
+        ]
+        self.activity_box.setPlainText("\n".join(lines))
+        self.activity_box.moveCursor(QTextCursor.End)
 
     def _clear_output(self) -> None:
         self.sections.clear()

@@ -6,6 +6,8 @@ and the
 order the tooltips are applied in are preserved exactly.
 """
 
+from services.agent_catalog import BUILTIN_AGENTS
+
 
 def seed_tooltips(app):
     """Apply explanatory tooltips to every important control in every
@@ -18,7 +20,7 @@ def seed_tooltips(app):
         "model_box":               "Specific model under the chosen provider. Larger models cost more but produce stronger output.",
         "refresh_models_btn":      "Re-fetch the model list from the selected provider.",
         "model_guide_btn":         "Open the in-app Model Guide with current models, pricing, and recommendations.",
-        "docs_btn":                "Open the full Sentinel documentation.",
+        "docs_btn":                "Open the full Sentinel Fork documentation.",
         "agent_docs_btn":          "Open the documentation for the currently active agent.",
         "execution_mode_box":      "Local-only: only Ollama. Hybrid: pick best of local/cloud. Cloud-only: only paid providers.",
         "allow_openai_checkbox":   "Allow this request to use the OpenAI API (paid).",
@@ -41,31 +43,19 @@ def seed_tooltips(app):
     })
 
     # ── Left panel ───────────────────────────────────────────────────
-    # Reuse agent_subtitles dict — set each agent button's tooltip to its description
-    subtitles_for_buttons = {
-        "chat":        "General-purpose conversation. Pick a tool, pick a model, talk.",
-        "osint":       "Light OSINT — structured research queries.",
-        "osint_heavy": "Deep OSINT investigation with five-section dossier.",
-        "wifi":        "Wireless recon, signal analysis, Kali command generation.",
-        "bug_bounty":  "Vulnerability triage + HackerOne-ready submission drafts.",
-        "nfl_bet":     "NFL prop bet analysis with EV and projection modelling.",
-        "fiverr":      "Logo gigs — DALL·E prompts, gig descriptions, delivery messages.",
-        "health":      "Nutrition, fitness, mental wellness guidance.",
-        "author":      "Long-form fiction drafting and book writing.",
-        "music":       "Spotify artist setup, distribution, income roadmap.",
-        "webdesign":   "Modern HTML / CSS / JavaScript generation.",
-        "audiobook":   "Convert ebooks (PDF / EPUB / TXT / MOBI) into MP3 audiobooks.",
-        "manager":     "Describe a new agent in plain language — Forge writes the code.",
-    }
     if hasattr(app, "agent_buttons"):
-        for name, tip in subtitles_for_buttons.items():
+        for name, metadata in BUILTIN_AGENTS.items():
             btn = app.agent_buttons.get(name)
             if btn is not None:
-                btn.setToolTip(tip)
+                btn.setToolTip(metadata["tooltip"])
     app._set_tooltips({
         "history_search":   "Filter saved chats by typing here.",
         "history_list":     "Click a saved chat to re-open it.",
         "delete_chat_btn":  "Delete the currently selected saved chat.",
+        "saved_search_search": "Filter saved Trace searches by target or result text.",
+        "saved_search_list": "Click a saved search to restore its target and results.",
+        "delete_search_btn": "Delete the currently selected saved Trace search.",
+        "new_search_btn": "Clear Trace and begin a new search.",
         "new_chat_btn":     "Start a fresh conversation (clears the current context).",
     })
 
@@ -98,70 +88,6 @@ def seed_tooltips(app):
     # ── Per-agent panel tooltips ─────────────────────────────────────
 
 
-    # NFL Props (Playmaker)
-    app._set_tooltips({
-        "nfl_bet_player_input":   "Player or team the prop is on.",
-        "nfl_bet_prop_type_box":  "Which prop you're evaluating (Passing Yards, Receptions, etc.).",
-        "nfl_bet_line_input":     "The sportsbook line (e.g. 252.5).",
-        "nfl_bet_odds_input":     "American odds for the side you're considering (e.g. -110).",
-        "nfl_bet_context_input":  "Game context: opponent, week, weather, injuries.",
-        "nfl_bet_data_input":     "Paste raw stats / game logs / matchup data. The agent works from what you provide — it has no live data feed.",
-        "nfl_bet_analyse_btn":    "Run the prop bet analysis.",
-        "nfl_bet_stop_btn":       "Cancel the analysis.",
-        "nfl_model_player_input": "Player for season-long projection modelling.",
-        "nfl_model_stat_box":     "Stat category to project.",
-        "nfl_model_line_input":   "Optional prop line to evaluate against the projection.",
-        "nfl_model_log_input":    "Paste the player's season game log (numbers per game).",
-        "nfl_model_context_input":"Upcoming game context: opponent, week, weather, injuries.",
-        "nfl_model_build_btn":    "Compute season stats and project the next game.",
-        "nfl_model_stop_btn":     "Cancel the projection.",
-    })
-
-    # Health (Vitality)
-    app._set_tooltips({
-        "health_category_box":   "Health domain — nutrition, fitness, mental, weight management, etc.",
-        "health_goal_box":       "Primary goal for this consultation.",
-        "health_activity_box":   "Current activity level — affects calorie / training recommendations.",
-        "health_age_input":      "Optional — your age, helps tailor advice.",
-        "health_query_input":    "Describe your question, goal, or concern in detail.",
-        "health_provider_box":   "Provider for the analysis call.",
-        "health_model_box":      "Specific model.",
-        "health_analyse_btn":    "Generate the four-section wellness plan.",
-        "health_stop_btn":       "Cancel the request.",
-        "health_help_btn":       "Open the Vitality documentation section.",
-        "health_save_btn":       "Save the response to a .txt file.",
-        "health_clear_btn":      "Clear the form and tabs.",
-        "health_conf_label":     "Model's stated confidence in its recommendations.",
-    })
-
-    # Music (Maestro)
-    app._set_tooltips({
-        "music_provider_box":  "Provider for the analysis call.",
-        "music_model_box":     "Specific model. Claude works best for long structured plans.",
-        "music_analyse_btn":   "Generate the full five-section release plan.",
-        "music_stop_btn":      "Cancel the request.",
-        "music_help_btn":      "Open the Maestro documentation section.",
-        "music_save_btn":      "Save the full plan as a .txt file.",
-    })
-
-    # Author (Manuscript)
-    app._set_tooltips({
-        "author_write_btn":    "Generate the requested writing (outline / characters / scene / world).",
-        "author_continue_btn": "Continue from the last draft.",
-        "author_save_btn":     "Save the current draft to disk.",
-        "author_clear_btn":    "Clear the draft area and reset the form.",
-    })
-
-    # Web Design (Site Builder)
-    app._set_tooltips({
-        "webdesign_brief_input":  "Describe the page / component / layout you want generated.",
-        "webdesign_provider_box": "Provider for the generation call.",
-        "webdesign_model_box":    "Specific model.",
-        "webdesign_generate_btn": "Generate the HTML / CSS / JS code.",
-        "webdesign_stop_btn":     "Cancel the generation.",
-        "webdesign_save_btn":     "Save the generated code as a .html file.",
-    })
-
     # Wi-Fi (Beacon)
     app._set_tooltips({
         "wifi.mode_box":          "What to run — Interface Info, Scan Networks, Signal Monitor, Ping Test, or Kali Command Builder.",
@@ -172,18 +98,6 @@ def seed_tooltips(app):
         "wifi.help_btn":          "Open the Beacon documentation section.",
         "wifi.detect_btn":        "Scan USB for known compatible Wi-Fi adapters (TL-WN722N, AWUS036ACH, etc.).",
         "wifi.save_btn":          "Save the raw output to a file.",
-    })
-
-    # Fiverr (Atelier)
-    app._set_tooltips({
-        "fiverr_provider_box":     "Provider for text generation (delivery / gig description / prompts).",
-        "fiverr_model_box":        "Specific model for text.",
-        "fiverr_generate_btn":     "Build a DALL·E logo prompt from the brief, then generate the logos.",
-        "fiverr_delivery_btn":     "Write a Fiverr delivery message based on the brief.",
-        "fiverr_gig_btn":          "Write a full Fiverr gig description.",
-        "fiverr_stop_btn":         "Cancel the running generation.",
-        "fiverr_save_images_btn":  "Save all generated logo images to disk.",
-        "fiverr_clear_btn":        "Clear the brief and outputs.",
     })
 
     # OSINT (Trace) — moved to ui/panels/osint.py, so the names are dotted.
@@ -223,20 +137,6 @@ def seed_tooltips(app):
         "bug_bounty.stop_btn":           "Cancel the analysis.",
         "bug_bounty.save_btn":           "Save the full report to a .txt file.",
         "bug_bounty.clear_btn":          "Clear inputs and outputs.",
-    })
-
-    # Audiobook (Narrator)
-    app._set_tooltips({
-        "audiobook_book_list":      "Books found in the configured input folder. Click one to select.",
-        "audiobook_refresh_btn":    "Rescan the input folder for new books.",
-        "audiobook_start_btn":      "Start converting the selected book to MP3 via OpenAI TTS.",
-        "audiobook_input_path":     "Folder where input ebooks live.",
-        "audiobook_output_path":    "Folder where generated MP3 files are saved.",
-        "audiobook_voice_box":      "OpenAI TTS voice to use.",
-        "audiobook_chunk_input":    "Tokens per TTS chunk. Higher = fewer API calls; lower = safer for limits.",
-        "tool_progress":            "Conversion progress.",
-        "audiobook_status_label":   "Current conversion status.",
-        "stop_btn":                 "Stop the running conversion.",
     })
 
     # Manager (Forge)

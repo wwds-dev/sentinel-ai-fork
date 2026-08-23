@@ -1,23 +1,24 @@
 # FORGE — Agent factory
 
-`key: manager` · class: `agents/manager_agent.py → ManagerAgent` · factory: `services/agent_factory.py → AgentFactory` · panel: `build_manager_panel()` · handlers: `manager_analyze_idea()`, `manager_approve_spec()`
+`key: manager` · class: `agents/manager_agent.py → ManagerAgent` · factory: `services/agent_factory.py → AgentFactory` · panel: `ui/panels/manager.py → ManagerPanel`
 
-> **Dev-only when packaged.** Forge writes new `agents/*.py` files and registers them — a frozen `.app` cannot import newly written code. Run from source (`python main.py`) to create agents, then rebuild the app to ship them.
+> **Scaffold only.** Forge writes a Python draft and inactive registry entries. Sentinel does not dynamically load it or add it to the sidebar. Review, test, and deliberately integrate the code before shipping it.
 
 ## What it does
-A meta-agent that turns a plain-language idea into a real new agent: it asks an LLM for a structured JSON spec, you review it, and on approval the Agent Factory writes the Python agent file and inserts the DB rows — no manual coding for a basic agent.
+A meta-agent that turns a plain-language idea into a reviewable agent scaffold: it asks an LLM for a structured JSON spec, you review it, and on approval the Agent Factory writes the Python draft and inserts inactive DB rows.
 
 ## Inputs (panel controls)
 | Control | Purpose |
 |---|---|
 | Idea box | Describe the agent: purpose, inputs, output sections, providers. |
-| Provider / Model | Model that drafts the spec (strong model → better spec). |
+| Model override | Optional provider/model change; a strong code-capable model is selected by default. |
+| Analyze Idea | Draft a reviewable specification. Approve and Reject are revealed only after a valid draft exists. |
 | Analyze Idea | Generate the JSON spec. |
 | Clear | Reset. |
 | Approve & Create / Reject | Commit or discard the reviewed spec. |
 
 ## Outputs
-A reviewable **JSON spec** (name, label, description, allowed_providers, allowed_tools, budget, requires_approval, system_prompt) in the spec box, plus a **Creation Log**. On approval: a new `agents/<name>_agent.py`, an `agents` table row, and a `tools` row. Restart to see it in the sidebar.
+A reviewable **JSON spec** (name, label, description, allowed_providers, allowed_tools, budget, requires_approval, system_prompt). The Creation Log is collapsed by default. On approval: a new `agents/<name>_agent.py`, an `agents` table row, and a `tools` row. It remains outside the built-in roster and sidebar until a developer integrates it.
 
 ## How it works
 `ManagerAgent` prompts the LLM to emit the JSON spec; `manager_analyze_idea()` parses/validates it into `pending_spec`; `manager_approve_spec()` hands it to `AgentFactory`, which writes the class file (with `build_messages()`) and the DB entries.
@@ -33,7 +34,7 @@ A reviewable **JSON spec** (name, label, description, allowed_providers, allowed
 ## Extend it
 - **Custom GUI generation**: today Forge creates standard-panel agents; extend `AgentFactory` to scaffold a `build_<name>_panel()` too.
 - **Validation**: tighten spec checks (provider names, prompt length) before approval.
-- **Hot-reload**: in dev, import the new module without a restart.
+- **Dynamic loading**: a future, separately designed loader could import reviewed modules and expose an appropriate UI safely.
 
 ## Requirements
-Provider key. Must run from source to create agents (see the dev-only note above).
+Provider key. Run from source when creating scaffolds, then review and test the generated code.

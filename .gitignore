@@ -29,5 +29,11 @@ screenshots/
 
 # Build artifacts
 dist/
+dist.noindex/
 build/
 *.iconset
+
+# Local conversations and usage history
+data/chats/*.json
+data/logs/*.jsonl
+data/usage_log.json

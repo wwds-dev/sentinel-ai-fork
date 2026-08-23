@@ -1,19 +1,9 @@
-# Sentinel
+# Sentinel Fork documentation
 
-Sentinel is a local-first AI command center for running agents, tools, local models, and API-based AI providers from one desktop interface.
+Sentinel is a local-first desktop command centre with seven built-in agents: Chat, Trace, Bloodhound, Beacon, Bug Spray, Tunnel, and Forge.
 
-## Core goals
+Writing and Coding are tools inside Chat. Creative publishing, audiobook, health, investing, and sports-betting workflows are outside the current Sentinel product.
 
-- Use local AI models through Ollama where possible.
-- Use OpenAI, DeepSeek, and Gemini APIs only when explicitly allowed.
-- Track estimated and exact API usage costs.
-- Provide task-specific agents such as Chat, Coding, Writing, OSINT, and Audiobook conversion.
-- Keep long-running tasks visible with progress, logs, stop buttons, and cost awareness.
+See the project-root [`README.md`](../README.md) for setup, usage, architecture, safety boundaries, and testing. Individual current-agent guides are in [`docs/agents/`](agents/).
 
-## Main areas
-
-- Agent panel: select major workflows.
-- Provider/model controls: choose Ollama, OpenAI, DeepSeek, or Gemini.
-- Cost controls: estimate, track, and limit API spending.
-- Docs: internal usage and setup guide.
-- Model Guide: guidance for choosing the right provider/model.
+Files describing the earlier workspace split are retained as historical engineering records and should not be read as current product instructions.

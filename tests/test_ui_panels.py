@@ -92,8 +92,10 @@ class TestPanelProviderRows:
             provider_box.setCurrentText(other)
             expected = win.models_for_provider(other)
             actual = [model_box.itemText(i) for i in range(model_box.count())]
-            placeholders = ([], ["(unavailable)"], ["(no local models)"])
-            assert actual == expected or (not expected and actual in placeholders)
+            assert actual == expected or (
+                not expected
+                and actual in ([], ["(unavailable)"], ["(no local models)"])
+            )
         finally:
             provider_box.setCurrentText(before)
 
@@ -122,6 +124,16 @@ class TestRecommendationsStillReachThePanels:
     """
 
     @pytest.mark.parametrize("agent", PANEL_AGENTS)
+    def test_routing_tile_shows_catalog_cost_for_every_agent(self, win, agent):
+        import main
+        from services.model_recommendations import pricing_metadata
+
+        win.select_agent(agent)
+        rec = main.AGENT_RECOMMENDATIONS[agent]
+        expected = pricing_metadata(rec["provider"], rec["model"]).compact
+        assert win.routing_rows["Cost"].value.text() == expected
+
+    @pytest.mark.parametrize("agent", PANEL_AGENTS)
     def test_panel_starts_on_its_recommended_provider_and_model(
             self, win, agent):
         import main
@@ -145,6 +157,88 @@ class TestRecommendationsStillReachThePanels:
         idx = win._find_model_index(model_box, main.AGENT_RECOMMENDATIONS[agent]["model"])
         assert idx >= 0
         assert model_box.itemData(idx, Qt.ForegroundRole) is not None
+
+    def test_trace_falls_back_inline_when_deepseek_permission_is_off(
+            self, win, monkeypatch):
+        from types import SimpleNamespace
+
+        trace = win.panels["osint"]
+        monkeypatch.setattr(
+            win, "models_for_provider", lambda provider, *args: [f"{provider}-test"]
+        )
+        trace.provider_box.setCurrentText("deepseek")
+        win.allow_deepseek_checkbox.setChecked(False)
+        win.auto_recommend_checkbox.setChecked(False)
+        monkeypatch.setattr(win, "provider_key_available", lambda provider: False)
+        local_model = "ollama-test"
+        decision = SimpleNamespace(
+            provider="ollama", model=local_model, mode="Local only",
+            reason="Use local fallback.", fallbacks=[],
+        )
+        monkeypatch.setattr(win, "route_for_request", lambda *a, **k: decision)
+
+        win.prepare_agent_route(
+            "osint", "@sapio1337", trace.provider_box, trace.model_box,
+            tool="Auto-detect",
+        )
+
+        assert trace.provider_box.currentText() == "ollama"
+        assert trace.model_box.currentText() == local_model
+        assert "deepseek permission is off" in trace._route_notice
+        assert "using ollama" in trace._route_notice
+
+    def test_trace_shows_inline_guidance_when_no_fallback_exists(
+            self, win, monkeypatch):
+        trace = win.panels["osint"]
+        monkeypatch.setattr(
+            win, "models_for_provider", lambda provider, *args: [f"{provider}-test"]
+        )
+        trace.provider_box.setCurrentText("deepseek")
+        win.allow_deepseek_checkbox.setChecked(False)
+        win.auto_recommend_checkbox.setChecked(False)
+        monkeypatch.setattr(win, "provider_key_available", lambda provider: False)
+        trace.target_input.setText("@sapio1337")
+        monkeypatch.setattr(
+            win, "route_for_request",
+            lambda *a, **k: (_ for _ in ()).throw(RuntimeError("No fallback available")),
+        )
+        authorised = []
+        monkeypatch.setattr(
+            win, "authorize_request", lambda *a, **k: authorised.append(True) or True
+        )
+
+        trace.analyse()
+
+        assert authorised == []
+        assert "deepseek permission is off" in trace.status_label.text()
+        assert "Inspector" in trace.status_label.text()
+        assert trace.analyse_btn.isEnabled()
+
+    def test_trace_local_balance_retry_bypasses_auto_routing_once(
+            self, win, monkeypatch):
+        trace = win.panels["osint"]
+        previous_provider = trace.provider
+        previous_auto = win.auto_recommend_checkbox.isChecked()
+        try:
+            trace.provider_box.setCurrentText("ollama")
+            trace._prefer_local_retry_once = True
+            win.auto_recommend_checkbox.setChecked(True)
+            rerouted = []
+            monkeypatch.setattr(
+                win, "route_for_request", lambda *a, **k: rerouted.append(True)
+            )
+
+            result = win.prepare_agent_route(
+                "osint", "@sapio1337", trace.provider_box, trace.model_box,
+                tool="Auto-detect",
+            )
+
+            assert result is None
+            assert rerouted == []
+            assert trace._prefer_local_retry_once is False
+        finally:
+            trace.provider_box.setCurrentText(previous_provider)
+            win.auto_recommend_checkbox.setChecked(previous_auto)
 
 
 class TestModelLoaderRegistry:
@@ -233,6 +327,189 @@ class TestAgentHostProtocol:
         assert isinstance(win, AgentHost)
 
 
+class TestWorkspaceLayoutRegressions:
+    """Pin the shell failures that made the live GUI look empty or cramped."""
+
+    def test_chat_keeps_empty_output_compact_then_reveals_real_results(self, win):
+        win.select_agent("chat")
+        win.output_box.clear()
+        win.update_agent_ui("chat")
+        assert win.output_label.isHidden()
+        assert win.output_box.isHidden()
+        assert "results" in win.output_box.placeholderText().lower()
+
+        win.output_box.setPlainText("Completed result")
+        win.update_agent_ui("chat")
+        assert not win.output_label.isHidden()
+        assert not win.output_box.isHidden()
+
+        win.output_label.click()
+        assert win.output_box.isHidden()
+        assert "Previous turn" in win.output_label.text()
+
+        win.output_box.clear()
+        win.output_label.setChecked(True)
+        win.update_agent_ui("chat")
+
+    def test_run_bar_cannot_absorb_the_workspace_height(self, win):
+        from PySide6.QtWidgets import QSizePolicy
+        run_bar = win.findChild(QObject, "RunBar")
+        assert run_bar is not None
+        assert run_bar.sizePolicy().verticalPolicy() == QSizePolicy.Fixed
+
+    def test_inspector_toggle_and_preference_stay_in_sync(self, win):
+        original = win.inspector_visible
+        try:
+            win.toggle_inspector(True)
+            assert not win.right_panel.isHidden()
+            assert win.inspector_btn.isChecked()
+            assert win.inspector_visible
+            win.toggle_inspector(False)
+            assert win.right_panel.isHidden()
+            assert not win.inspector_btn.isChecked()
+            assert not win.inspector_visible
+        finally:
+            win.toggle_inspector(original)
+
+    def test_minimum_width_keeps_the_requested_three_column_shell(
+            self, win, qapp):
+        original_size = win.size()
+        original = win.inspector_visible
+        try:
+            win.toggle_inspector(True)
+            win.show()
+            win.resize(1200, 700)
+            qapp.processEvents()
+            assert not win.left_panel.isHidden()
+            assert not win.right_panel.isHidden()
+        finally:
+            win.resize(original_size)
+            win.toggle_inspector(original)
+
+    def test_chat_run_bar_and_prompt_form_one_compact_stack(self, win):
+        win.select_agent("chat")
+        run_bar = win.findChild(QObject, "RunBar")
+        assert run_bar is not None
+        gap = win.input_box.geometry().top() - run_bar.geometry().bottom()
+        assert gap <= 12
+        assert win.input_box.height() == 74
+
+    @pytest.mark.parametrize("panel_name", ["wifi_panel", "vpn_panel"])
+    def test_specialists_do_not_duplicate_the_global_help_button(
+            self, win, panel_name):
+        from PySide6.QtWidgets import QPushButton
+        panel = getattr(win, panel_name)
+        assert not [b for b in panel.findChildren(QPushButton) if b.text() == "Help"]
+
+    @pytest.mark.parametrize("panel_name,primary,stop", [
+        ("osint_panel", "analyse_btn", "stop_btn"),
+        ("osint_heavy_panel", "investigate_btn", "stop_btn"),
+        ("wifi_panel", "run_btn", "stop_btn"),
+        ("bug_bounty_panel", "analyse_btn", "stop_btn"),
+        ("bug_bounty_panel", "nmap_run_btn", "nmap_stop_btn"),
+        ("vpn_panel", "run_btn", "stop_btn"),
+    ])
+    def test_idle_workspaces_show_the_primary_action_not_stop(
+            self, win, panel_name, primary, stop):
+        panel = getattr(win, panel_name)
+        assert not getattr(panel, primary).isHidden()
+        assert getattr(panel, stop).isHidden()
+
+    def test_saved_chats_only_occupy_the_chat_workflow(self, win):
+        win.saved_chats_toggle.setChecked(False)
+        win._toggle_saved_chats(False)
+        win.saved_searches_toggle.setChecked(False)
+        win._toggle_saved_searches(False)
+
+        win.select_agent("osint")
+        assert win.saved_chats_panel.isHidden()
+        assert not win.saved_searches_toggle.isHidden()
+        assert win.saved_searches_panel.isHidden()
+        win.saved_searches_toggle.click()
+        assert not win.saved_searches_panel.isHidden()
+
+        win.select_agent("chat")
+        assert not win.saved_chats_toggle.isHidden()
+        assert win.saved_chats_panel.isHidden()
+        assert win.saved_searches_panel.isHidden()
+        win.saved_chats_toggle.click()
+        assert not win.saved_chats_panel.isHidden()
+
+        win.select_agent("vpn")
+        assert win.saved_chats_panel.isHidden()
+        assert win.saved_searches_panel.isHidden()
+
+        win.saved_chats_toggle.setChecked(False)
+        win._toggle_saved_chats(False)
+        win.saved_searches_toggle.setChecked(False)
+        win._toggle_saved_searches(False)
+
+    def test_saved_trace_search_can_be_filtered_and_reopened(
+            self, win, monkeypatch, tmp_path):
+        path = tmp_path / "trace.json"
+        data = {
+            "agent": "osint",
+            "backend": "deepseek",
+            "model": "deepseek-v4-flash",
+            "command": "Username",
+            "messages": [{"role": "user", "content": "@sapio1337"}],
+            "response": (
+                "## QUERY STRUCTURE\nusername variants\n"
+                "## GOOGLE DORKS\n\"@sapio1337\"\n"
+                "## PUBLIC SOURCES\nGitHub\n"
+                "## SUMMARY & NEXT STEPS\nReview manually"
+            ),
+        }
+        monkeypatch.setattr(win.history, "list_chats", lambda: [path])
+        monkeypatch.setattr(win.history, "load_chat", lambda _path: data)
+
+        win.saved_search_search.setText("sapio")
+        win.load_saved_searches()
+        assert win.saved_search_list.count() == 1
+        assert "@sapio1337" in win.saved_search_list.item(0).text()
+
+        win.open_selected_search(win.saved_search_list.item(0))
+        trace = win.panels["osint"]
+        assert trace.target_input.text() == "@sapio1337"
+        assert trace.type_box.currentText() == "Username"
+        assert "username variants" in trace.sections._raw
+        assert trace.status_label.text() == "Saved search loaded."
+        assert "no external sources were queried" in trace.activity_box.toPlainText()
+
+    def test_chat_width_is_bounded_only_when_the_workspace_is_ultrawide(self, win):
+        win.center_widget.resize(2200, 1000)
+        win.select_agent("chat")
+        wide_inset = win.center_layout.contentsMargins().left()
+        assert wide_inset == 480
+
+        win.center_widget.resize(1000, 700)
+        win._update_workspace_margins()
+        assert win.center_layout.contentsMargins().left() == 18
+
+        win.center_widget.resize(2200, 1000)
+        win.select_agent("osint")
+        assert win.center_layout.contentsMargins().left() == 18
+
+    def test_shared_document_search_counts_and_clears_matches(self, win):
+        from PySide6.QtWidgets import QLabel, QLineEdit, QPushButton, QTextBrowser
+
+        search = QLineEdit()
+        previous = QPushButton()
+        next_button = QPushButton()
+        count = QLabel()
+        browser = QTextBrowser()
+        browser.setPlainText("Model selection\nAnother model\nNo match here")
+
+        win._wire_document_search(
+            search, previous, next_button, count, browser
+        )
+        search.setText("model")
+        assert count.text() == "2 matches"
+
+        search.clear()
+        assert count.text() == ""
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # 2. AgentPanel, with no GodAI anywhere
 # ─────────────────────────────────────────────────────────────────────────────
@@ -260,7 +537,6 @@ class FakeHost:
         self.calls = []
         self.agent_instances = {"demo": object()}
         self.authorized = True
-        self._request_n = 0
         self.agent_factory = FakeAgentFactory()
 
     def load_models_into(self, provider_box, model_box, context,
@@ -275,10 +551,7 @@ class FakeHost:
     def authorize_request(self, agent, provider, model, prompt,
                           tool=None, label=None):
         self.calls.append(("authorize", agent, provider, model, prompt, tool, label))
-        if not self.authorized:
-            return None
-        self._request_n += 1
-        return f"request-{self._request_n}"
+        return self.authorized
 
     def record_request(self, agent, response, messages=None):
         self.calls.append(("record", agent, response, messages))
@@ -288,9 +561,6 @@ class FakeHost:
 
     def note_request_usage(self, agent, usage):
         self.calls.append(("usage", agent, usage))
-
-    def apply_project_context(self, messages):
-        return [dict(message) for message in messages]
 
     def run_backend(self, backend, model, messages, prompt):
         self.calls.append(("run", backend, model, messages, prompt))
@@ -402,17 +672,14 @@ class TestAgentPanel:
         panel.host.authorized = False
         assert panel.authorize("prompt text") is False
 
-    def test_record_abandon_and_usage_all_carry_the_request_id(self, panel):
-        panel.authorize("first")
+    def test_record_abandon_and_usage_all_carry_the_agent_key(self, panel):
         panel.record("response", [{"role": "user"}])
-        panel.authorize("second")
         panel.abandon("stopped")
-        panel.authorize("third")
         panel.note_usage({"input_tokens": 5})
         assert panel.host.calls[-3:] == [
-            ("abandon", "request-2", "stopped"),
-            ("authorize", "demo", "deepseek", "deepseek-m1", "third", None, None),
-            ("usage", "request-3", {"input_tokens": 5}),
+            ("record", "demo", "response", [{"role": "user"}]),
+            ("abandon", "demo", "stopped"),
+            ("usage", "demo", {"input_tokens": 5}),
         ]
 
     def test_run_backend_uses_the_current_selection(self, panel):
@@ -453,10 +720,9 @@ class TestAgentPanelRuns:
 
     def test_usage_is_reported_without_the_caller_wiring_it(self, panel):
         # The signal every panel had to remember to connect, and one didn't.
-        panel.authorize("hello")
         worker = panel.start_worker([], "hello")
         worker.usage_signal.emit({"input_tokens": 7})
-        assert ("usage", "request-1", {"input_tokens": 7}) in panel.host.calls
+        assert ("usage", "demo", {"input_tokens": 7}) in panel.host.calls
 
     def test_optional_callbacks_are_connected_when_given(self, panel):
         seen = []
@@ -558,6 +824,14 @@ class TestTracePanel:
         assert trace.analyse_btn.isEnabled() is False
         assert trace.stop_btn.isEnabled() is True
 
+    def test_activity_tracker_explains_local_scope_while_running(self, trace):
+        trace.provider_box.setCurrentText("ollama")
+        trace.analyse()
+        activity = trace.activity_box.toPlainText()
+        assert "target stays on this Mac" in activity
+        assert "No websites or public databases are contacted" in activity
+        assert "Google dorks" in activity
+
     def test_tokens_stream_into_the_raw_box(self, trace):
         trace.analyse()
         trace.worker.token_signal.emit("## QUERY ")
@@ -572,27 +846,55 @@ class TestTracePanel:
             "## QUERY STRUCTURE\nS\n## GOOGLE DORKS\nd\n"
             "## PUBLIC SOURCES\np\n## SUMMARY\nx"
         )
-        assert ("record", "request-1",
+        assert ("record", "osint",
                 "## QUERY STRUCTURE\nS\n## GOOGLE DORKS\nd\n"
                 "## PUBLIC SOURCES\np\n## SUMMARY\nx", None) in trace.host.calls
         assert trace.sections.isVisibleTo(trace) is True
         assert trace.stream_box.isVisibleTo(trace) is False
         assert trace.status_label.text() == "Done."
         assert trace.analyse_btn.isEnabled() is True
+        activity = trace.activity_box.toPlainText()
+        assert "External sources queried: none" in activity
+        assert "not verified findings" in activity
+
+    def test_activity_tracker_stays_visible_after_results_return(self, trace):
+        trace.analyse()
+        trace.worker.token_signal.emit("## QUERY STRUCTURE")
+        trace.worker.finished_signal.emit("## SUMMARY\nDone")
+        assert trace.activity_box.isVisibleTo(trace) is True
+        assert "Model response received" in trace.activity_box.toPlainText()
+        assert "Completed" in trace.activity_box.toPlainText()
 
     def test_an_error_abandons_the_request_so_it_is_not_billed(self, trace):
         trace.analyse()
         trace.worker.error_signal.emit("provider down")
-        assert ("abandon", "request-1", "error") in trace.host.calls
+        assert ("abandon", "osint", "error") in trace.host.calls
         assert "provider down" in trace.stream_box.toPlainText()
         assert trace.status_label.text() == "Error."
         assert trace.analyse_btn.isEnabled() is True
         assert trace.stop_btn.isEnabled() is False
 
+    def test_deepseek_balance_error_prepares_local_retry_without_resending(self, trace):
+        trace.provider_box.setCurrentText("deepseek")
+        trace.analyse()
+        run_calls_before = [call for call in trace.host.calls if call[0] == "run"]
+
+        trace.worker.error_signal.emit(
+            "The DeepSeek cloud API could not run this request because the cloud "
+            "account has no API credit. Local DeepSeek models in Ollama remain free to use."
+        )
+
+        assert trace.provider == "ollama"
+        assert trace.model == "ollama-m1"
+        assert trace.status_label.text() == "Ready to retry locally."
+        assert "did not resend the target" in trace.stream_box.toPlainText()
+        assert "choose it yourself" in trace.stream_box.toPlainText()
+        assert [call for call in trace.host.calls if call[0] == "run"] == run_calls_before
+
     def test_usage_reaches_the_host_without_the_panel_wiring_it(self, trace):
         trace.analyse()
         trace.worker.usage_signal.emit({"input_tokens": 11})
-        assert ("usage", "request-1", {"input_tokens": 11}) in trace.host.calls
+        assert ("usage", "osint", {"input_tokens": 11}) in trace.host.calls
 
     def test_stop_cancels_and_restores_the_controls(self, trace):
         trace.analyse()
@@ -657,6 +959,9 @@ class TestWindowStopButton:
         monkeypatch.setattr(OsintPanel, "worker_class", FakeWorker)
         monkeypatch.setattr(win, "authorize_request", lambda *a, **k: True)
         panel = win.panels["osint"]
+        permission = getattr(win, f"allow_{panel.provider}_checkbox", None)
+        if permission is not None:
+            permission.setChecked(True)
         panel.target_input.setText("acme.com")
         panel.analyse()
         worker = panel.worker
@@ -744,7 +1049,7 @@ class TestForgePanel:
         forge.host.authorized = False
         forge.analyze_idea()
         assert forge.analyze_btn.isEnabled() is True
-        assert "Analyzing" not in forge.spec_display._raw
+        assert "Analyzing..." not in forge.spec_display.toPlainText()
 
     def test_a_parsed_spec_enables_approval(self, forge):
         forge.analyze_idea()
@@ -760,12 +1065,12 @@ class TestForgePanel:
         forge.worker.finished_signal.emit("sorry, I could not do that")
         assert forge.pending_spec is None
         assert forge.approve_btn.isEnabled() is False
-        assert "sorry, I could not do that" in forge.spec_display._raw
+        assert "sorry, I could not do that" in forge.spec_display.toPlainText()
 
     def test_an_error_abandons_the_request(self, forge):
         forge.analyze_idea()
         forge.worker.error_signal.emit("provider down")
-        assert ("abandon", "request-1", "error") in forge.host.calls
+        assert ("abandon", "manager", "error") in forge.host.calls
         assert forge.analyze_btn.isEnabled() is True
         assert "[Error]" in forge.log.toPlainText()
 
@@ -798,7 +1103,7 @@ class TestForgePanel:
         forge.worker.finished_signal.emit(SPEC)
         forge.reject_spec()
         assert forge.pending_spec is None
-        assert forge.spec_display._raw == ""
+        assert forge.spec_display.toPlainText() == ""
         assert forge.approve_btn.isEnabled() is False
 
     def test_stop_cancels_and_re_enables_analyse(self, forge):
@@ -816,7 +1121,7 @@ class TestForgePanel:
         forge.worker.finished_signal.emit(SPEC)
         forge.clear()
         assert forge.idea_input.toPlainText() == ""
-        assert forge.spec_display._raw == ""
+        assert forge.spec_display.toPlainText() == ""
         assert forge.pending_spec is None
 
 
@@ -861,7 +1166,7 @@ class TestBugSprayPanel:
     def test_it_builds_hidden_with_saving_disabled(self, spray):
         assert spray.isHidden() is True
         assert spray.save_btn.isEnabled() is False
-        assert spray.sections is not None
+        assert spray.tabs.count() == 5
 
     def test_nothing_to_analyse_says_so_without_spending(self, spray):
         spray.target_input.clear()
@@ -892,23 +1197,18 @@ class TestBugSprayPanel:
              "API / REST", "401 on /admin", ""),
         ]
 
-    def test_tokens_stream_into_the_report_view(self, spray):
+    def test_tokens_stream_into_the_report_tab(self, spray):
         spray.analyse()
         spray.worker.token_signal.emit("## VULN")
         spray.worker.token_signal.emit("ERABILITY")
-        assert spray.stream_box.toPlainText() == "## VULNERABILITY"
+        assert spray.report_box.toPlainText() == "## VULNERABILITY"
 
-    def test_a_finished_report_fills_the_sections(self, spray):
-        from PySide6.QtWidgets import QLabel
+    def test_a_finished_report_fills_the_tabs(self, spray):
         spray.analyse()
         spray.worker.finished_signal.emit(REPORT)
-        bodies = [
-            label.text() for label in spray.sections.findChildren(QLabel)
-            if label.objectName() in ("SectionBody", "SectionMono")
-        ]
-        assert any("patch it" in body for body in bodies)
-        assert any("draft text" in body for body in bodies)
-        assert any("curl" in body for body in bodies)
+        assert spray.remediation_box.toPlainText() == "patch it"
+        assert spray.submission_box.toPlainText() == "draft text"
+        assert spray.poc_box.toPlainText().startswith("curl")
         assert spray.save_btn.isEnabled() is True
         assert spray.status_label.text() == "Analysis complete."
 
@@ -927,16 +1227,16 @@ class TestBugSprayPanel:
         assert spray.bounty_label.text() == "—"
 
     def test_an_unsectioned_answer_still_shows_something(self, spray):
-        # The section view falls back to the whole answer when the model ignores
-        # the heading format.
+        # The vulnerability tab falls back to the whole answer rather than
+        # showing an empty box when the model ignores the heading format.
         spray.analyse()
         spray.worker.finished_signal.emit("just prose, no headings")
-        assert spray.sections._raw == "just prose, no headings"
+        assert spray.vuln_box.toPlainText() == "just prose, no headings"
 
     def test_an_error_abandons_the_request(self, spray):
         spray.analyse()
         spray.worker.error_signal.emit("provider down")
-        assert ("abandon", "request-1", "error") in spray.host.calls
+        assert ("abandon", "bug_bounty", "error") in spray.host.calls
         assert spray.status_label.text() == "Error."
         assert spray.analyse_btn.isEnabled() is True
 
@@ -954,7 +1254,7 @@ class TestBugSprayPanel:
         spray.worker.finished_signal.emit(REPORT)
         spray.clear()
         assert spray.target_input.text() == ""
-        assert spray.sections._raw == ""
+        assert spray.report_box.toPlainText() == ""
         assert spray.severity_label.text() == "—"
         assert spray.save_btn.isEnabled() is False
 
@@ -1014,10 +1314,9 @@ def hound(qapp, monkeypatch):
 
 class TestBloodhoundPanel:
 
-    def test_it_builds_hidden_with_structured_results(self, hound):
+    def test_it_builds_hidden_with_seven_tabs(self, hound):
         assert hound.isHidden() is True
-        assert hound.sections is not None
-        assert hound.image_tab is not None
+        assert hound.tabs.count() == 7
         assert hound.save_btn.isEnabled() is False
 
     def test_an_empty_target_never_reaches_the_guard(self, hound):
@@ -1046,17 +1345,13 @@ class TestBloodhoundPanel:
         hound.investigate()
         assert hound.depth_label.text() == "Quick Scan"
 
-    def test_a_finished_dossier_fills_structured_cards(self, hound):
-        from PySide6.QtWidgets import QLabel, QWidget
+    def test_a_finished_dossier_fills_every_tab(self, hound):
         hound.investigate()
         hound.worker.finished_signal.emit(DOSSIER)
-        card_text = "\n".join(
-            card.findChild(QLabel).text()
-            for card in hound.sections.findChildren(QWidget)
-            if card.objectName() == "SectionCard" and card.findChild(QLabel)
-        )
-        assert "Overview" in card_text
-        assert hound.sections._raw == DOSSIER
+        assert hound.overview_box.toPlainText() == "who they are"
+        assert hound.footprint_box.toPlainText() == "accounts"
+        assert hound.method_box.toPlainText() == "how it was found"
+        assert hound.dossier_box.toPlainText() == DOSSIER
         assert hound.save_btn.isEnabled() is True
 
     def test_a_finished_dossier_fills_the_indicators(self, hound):
@@ -1070,7 +1365,7 @@ class TestBloodhoundPanel:
     def test_an_error_abandons_the_request(self, hound):
         hound.investigate()
         hound.worker.error_signal.emit("provider down")
-        assert ("abandon", "request-1", "error") in hound.host.calls
+        assert ("abandon", "osint_heavy", "error") in hound.host.calls
         assert hound.status_label.text() == "Error."
 
     def test_stop_restores_the_controls(self, hound):
@@ -1079,12 +1374,12 @@ class TestBloodhoundPanel:
         assert hound.investigate_btn.isEnabled() is True
         assert hound.status_label.text() == "Stopped."
 
-    def test_clear_resets_the_brief_the_results_and_the_image(self, hound):
+    def test_clear_resets_the_brief_the_tabs_and_the_image(self, hound):
         hound.investigate()
         hound.worker.finished_signal.emit(DOSSIER)
         hound.clear()
         assert hound.target_input.text() == ""
-        assert hound.sections._raw == ""
+        assert hound.overview_box.toPlainText() == ""
         assert hound.threat_bar.value() == 0
         assert hound.image_label.text() == "No image selected"
 
@@ -1109,6 +1404,7 @@ class TestBloodhoundPanel:
         assert hound.image_label.text() == "target.jpg"
         assert "Image OSINT" in hound.image_tab.toPlainText()
         assert "No EXIF data found" in hound.image_tab.toPlainText()
+        assert hound.tabs.currentIndex() == hound.tabs.indexOf(hound.image_tab)
 
 
 class TestBloodhoundParsing:
@@ -1209,14 +1505,14 @@ class TestTunnelPanel:
     def test_an_answer_is_recorded_and_shown(self, tunnel):
         tunnel.run()
         tunnel.worker.finished_signal.emit("Use OpenVPN on 443.")
-        assert ("record", "request-1", "Use OpenVPN on 443.", None) in tunnel.host.calls
+        assert ("record", "vpn", "Use OpenVPN on 443.", None) in tunnel.host.calls
         assert tunnel.advisor_box.toPlainText() == "Use OpenVPN on 443."
         assert tunnel.status_label.text() == "Done."
 
     def test_an_error_abandons_the_request(self, tunnel):
         tunnel.run()
         tunnel.worker.error_signal.emit("no route")
-        assert ("abandon", "request-1", "error") in tunnel.host.calls
+        assert ("abandon", "vpn", "error") in tunnel.host.calls
         assert "ERROR" in tunnel.advisor_box.toPlainText()
 
     def test_build_config_is_offline_and_costs_nothing(self, tunnel):
@@ -1299,15 +1595,6 @@ class TestBeaconPanel:
         assert beacon.signal_bar.value() == 90
         assert [c for c in beacon.host.calls if c[0] == "authorize"]
         assert beacon.mode_box.currentText() in beacon.host.agent_instances["wifi"].prompts[-1]
-
-    def test_ai_answer_becomes_structured_sections(self, beacon):
-        beacon._active_request_id = "request-1"
-        beacon._on_finished(
-            "1. SUMMARY\nconnected\n2. NETWORK FINDINGS\nchannel 6\n"
-            "3. SECURITY OBSERVATIONS\nWPA2\n4. RECOMMENDATIONS\nuse WPA3"
-        )
-        assert "channel 6" in beacon.sections._raw
-        assert beacon.sections.isHidden() is False
 
     def test_a_scan_without_ai_just_shows_the_raw_output(self, beacon):
         beacon.mode_box.setCurrentText("Scan Networks")

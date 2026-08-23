@@ -1,5 +1,5 @@
 """
-Sentinel — Request Guard Tests
+Sentinel AI — Request Guard Tests
 ==================================
 Type: Unit + integration tests for the money logic.
 
@@ -41,8 +41,9 @@ class FakeRegistry:
         self.tool_allows_provider_ = True
         self.allows_tool = True
         self.budget = None
+        self.tool_budget = None
         self.requires_approval = False
-        self.projects = {}
+        self.tool_approval = False
         for k, v in overrides.items():
             setattr(self, k, v)
 
@@ -52,8 +53,9 @@ class FakeRegistry:
     def tool_allows_provider(self, tool, prov):     return self.tool_allows_provider_
     def agent_allows_tool(self, agent, tool):       return self.allows_tool
     def get_agent_budget(self, agent):              return self.budget
+    def get_tool_budget(self, tool):                return self.tool_budget
     def agent_requires_approval(self, agent):       return self.requires_approval
-    def get_project(self, project_id):              return self.projects.get(project_id)
+    def tool_requires_approval(self, tool):         return self.tool_approval
 
 
 ALL_ALLOWED = {
@@ -96,11 +98,13 @@ class TestValidatorEdgeCases:
         result = validate(provider="somenewprovider", api_permissions={})
         assert result.allowed is False
 
-    def test_budget_boundary_uses_exact_decimal_money(self):
-        # Currency values arrive as floats from UI controls and persisted JSON,
-        # but the gate converts through their decimal strings before comparing.
+    def test_budget_boundary_fails_safe_under_float_error(self):
+        # 1.00 - 0.90 == 0.09999999999999998 in binary floating point, so a
+        # request estimated at exactly 0.10 is refused rather than allowed.
+        # Pinned deliberately: erring towards blocking never overspends. A
+        # future switch to Decimal should make this flip, and this test say so.
         result = validate(session_cost=0.90, session_budget=1.00, estimated_cost=0.10)
-        assert result.allowed is True
+        assert result.allowed is False
 
     def test_already_over_session_budget_blocks_further_spend(self):
         # Remaining budget is negative here, not merely insufficient.
@@ -123,17 +127,11 @@ class FakeUsageTracker:
     def get_today_total(self):
         return self.today_total
 
-    def get_project_total_today(self, project):
-        return 0.0
-
-    def log_request(self, agent, backend, model, prompt_text, response_text,
-                    usage=None, project=None):
+    def log_request(self, agent, backend, model, prompt_text, response_text, usage=None):
         entry = {
             "agent": agent, "backend": backend, "model": model,
-            "prompt_text": prompt_text, "response_text": response_text,
             "cost_eur": 0.02, "estimated_cost": 0.02,
             "input_tokens": 10, "output_tokens": 20, "usage": usage,
-            "project": project,
         }
         self.logged.append(entry)
         return entry
@@ -143,12 +141,10 @@ class FakeHistory:
     def __init__(self):
         self.saved = []
 
-    def save_chat(self, agent, backend, model, command, messages, response,
-                  project=None):
+    def save_chat(self, agent, backend, model, command, messages, response):
         self.saved.append({
             "agent": agent, "backend": backend, "model": model,
             "command": command, "messages": messages, "response": response,
-            "project": project,
         })
 
 
@@ -210,48 +206,68 @@ def win(_window):
     _window.session_cost_total = 0.0
     _window.session_request_count = 0
     _window._pending_requests = {}
-    _window.active_project_id = None
     return _window
 
 
 class TestAuthorizeRequest:
 
-    def test_project_instructions_are_injected_once(self, win):
-        win.registry = FakeRegistry(projects={
-            "novel": {"id": "novel", "name": "Novel", "instructions": "Keep the cast consistent."}
-        })
-        win.validator = Validator(win.registry)
-        win.active_project_id = "novel"
-        original = [{"role": "system", "content": "You are an editor."},
-                    {"role": "user", "content": "Continue."}]
-        once = win.apply_project_context(original)
-        twice = win.apply_project_context(once)
-        assert twice[0]["content"].count("Keep the cast consistent.") == 1
-        assert original[0]["content"] == "You are an editor."
+    def test_configured_provider_can_be_allowed_once_with_one_confirmation(
+            self, win, monkeypatch):
+        from PySide6.QtWidgets import QMessageBox
+
+        win.current_api_permissions = lambda: {"allow_deepseek": False}
+        monkeypatch.setattr(win, "provider_key_available", lambda provider: True)
+        confirmations = []
+        monkeypatch.setattr(
+            QMessageBox, "question",
+            lambda *a, **k: confirmations.append(a) or QMessageBox.Yes,
+        )
+
+        assert win.authorize_request(
+            "alpha_agent", "deepseek", "deepseek-v4-flash", "hello"
+        ) is True
+        assert len(confirmations) == 1
+        assert len(win.run_logger.started) == 1
+
+    def test_missing_key_blocks_before_consent_or_run(self, win, monkeypatch):
+        from PySide6.QtWidgets import QMessageBox
+
+        win.current_api_permissions = lambda: {"allow_deepseek": False}
+        monkeypatch.setattr(win, "provider_key_available", lambda provider: False)
+        monkeypatch.setattr(
+            QMessageBox, "question",
+            lambda *a, **k: (_ for _ in ()).throw(
+                AssertionError("missing keys must not prompt for consent")
+            ),
+        )
+
+        assert win.authorize_request(
+            "alpha_agent", "deepseek", "deepseek-v4-flash", "hello"
+        ) is False
+        assert win.run_logger.started == []
 
     def test_authorised_request_returns_true_and_opens_a_run(self, win):
-        assert win.authorize_request("author", "openai", "gpt-4o", "hello")
+        assert win.authorize_request("alpha_agent", "openai", "gpt-4o", "hello") is True
         assert len(win.run_logger.started) == 1
 
     def test_authorised_request_stashes_context_for_recording(self, win):
-        win.authorize_request("author", "openai", "gpt-4o", "hello")
-        assert len(win._pending_requests) == 1
-        assert next(iter(win._pending_requests.values()))["agent"] == "author"
+        win.authorize_request("alpha_agent", "openai", "gpt-4o", "hello")
+        assert "alpha_agent" in win._pending_requests
 
     def test_blocked_request_returns_false(self, win):
         win.validator = Validator(FakeRegistry(agent_enabled=False))
-        assert win.authorize_request("author", "openai", "gpt-4o", "hi") is None
+        assert win.authorize_request("alpha_agent", "openai", "gpt-4o", "hi") is False
 
     def test_blocked_request_opens_no_run_and_stashes_nothing(self, win):
         win.validator = Validator(FakeRegistry(agent_enabled=False))
-        win.authorize_request("author", "openai", "gpt-4o", "hi")
+        win.authorize_request("alpha_agent", "openai", "gpt-4o", "hi")
         assert win.run_logger.started == []
         assert win._pending_requests == {}
 
     def test_declining_the_confirmation_blocks_the_request(self, win, monkeypatch):
         from PySide6.QtWidgets import QMessageBox
         monkeypatch.setattr(QMessageBox, "question", lambda *a, **k: QMessageBox.No)
-        assert win.authorize_request("author", "openai", "gpt-4o", "hi") is None
+        assert win.authorize_request("alpha_agent", "openai", "gpt-4o", "hi") is False
         assert win._pending_requests == {}
 
     def test_label_is_used_as_descriptor_when_no_tool(self, win):
@@ -261,7 +277,7 @@ class TestAuthorizeRequest:
         assert win.run_logger.started[0]["tool"] == "Deep Scan"
 
     def test_descriptor_falls_back_to_dash_when_neither_given(self, win):
-        win.authorize_request("author", "openai", "gpt-4o", "hi")
+        win.authorize_request("alpha_agent", "openai", "gpt-4o", "hi")
         assert win.run_logger.started[0]["tool"] == "-"
 
     def test_ollama_is_authorised_without_a_confirmation_dialog(self, win, monkeypatch):
@@ -271,129 +287,130 @@ class TestAuthorizeRequest:
             raise AssertionError("local model must not prompt for API confirmation")
 
         monkeypatch.setattr(QMessageBox, "question", explode)
-        assert win.authorize_request("author", "ollama", "llama3", "hi")
+        assert win.authorize_request("alpha_agent", "ollama", "llama3", "hi") is True
 
 
 class TestRecordRequest:
 
     def test_records_bills_and_saves(self, win):
-        win.authorize_request("author", "openai", "gpt-4o", "prompt text")
-        win.record_request("author", "the response")
+        win.authorize_request("alpha_agent", "openai", "gpt-4o", "prompt text")
+        win.record_request("alpha_agent", "the response")
         assert len(win.usage_tracker.logged) == 1
         assert len(win.history.saved) == 1
 
     def test_adds_cost_to_the_session_total(self, win):
-        win.authorize_request("author", "openai", "gpt-4o", "prompt")
-        win.record_request("author", "response")
+        win.authorize_request("alpha_agent", "openai", "gpt-4o", "prompt")
+        win.record_request("alpha_agent", "response")
         assert win.session_cost_total == pytest.approx(0.02)
         assert win.session_request_count == 1
 
     def test_saves_the_chat_under_its_own_agent_name(self, win):
         # The bug this guard fixed: every saved chat was filed as "chat:".
-        win.authorize_request("author", "openai", "gpt-4o", "prompt")
-        win.record_request("author", "response")
-        assert win.history.saved[0]["agent"] == "author"
+        win.authorize_request("alpha_agent", "openai", "gpt-4o", "prompt")
+        win.record_request("alpha_agent", "response")
+        assert win.history.saved[0]["agent"] == "alpha_agent"
 
     def test_saved_chat_ends_with_the_assistant_response(self, win):
-        win.authorize_request("author", "openai", "gpt-4o", "prompt")
-        win.record_request("author", "the response")
+        win.authorize_request("alpha_agent", "openai", "gpt-4o", "prompt")
+        win.record_request("alpha_agent", "the response")
         last = win.history.saved[0]["messages"][-1]
         assert last == {"role": "assistant", "content": "the response"}
 
     def test_supplied_messages_are_preserved(self, win):
         msgs = [{"role": "system", "content": "sys"}, {"role": "user", "content": "u"}]
-        win.authorize_request("author", "openai", "gpt-4o", "prompt")
-        win.record_request("author", "resp", messages=msgs)
+        win.authorize_request("alpha_agent", "openai", "gpt-4o", "prompt")
+        win.record_request("alpha_agent", "resp", messages=msgs)
         saved = win.history.saved[0]["messages"]
         assert saved[:2] == msgs
 
     def test_closes_the_run_as_success(self, win):
-        win.authorize_request("author", "openai", "gpt-4o", "prompt")
-        win.record_request("author", "response")
+        win.authorize_request("alpha_agent", "openai", "gpt-4o", "prompt")
+        win.record_request("alpha_agent", "response")
         assert win.run_logger.finished[0]["status"] == "success"
 
     def test_clears_the_pending_context(self, win):
-        win.authorize_request("author", "openai", "gpt-4o", "prompt")
-        win.record_request("author", "response")
+        win.authorize_request("alpha_agent", "openai", "gpt-4o", "prompt")
+        win.record_request("alpha_agent", "response")
         assert win._pending_requests == {}
 
     def test_recording_without_authorising_bills_nothing(self, win):
         # A stray callback must never invent a charge.
-        win.record_request("author", "response")
+        win.record_request("alpha_agent", "response")
         assert win.usage_tracker.logged == []
         assert win.history.saved == []
         assert win.session_cost_total == 0.0
 
     def test_double_record_bills_only_once(self, win):
-        win.authorize_request("author", "openai", "gpt-4o", "prompt")
-        win.record_request("author", "response")
-        win.record_request("author", "response again")
+        win.authorize_request("alpha_agent", "openai", "gpt-4o", "prompt")
+        win.record_request("alpha_agent", "response")
+        win.record_request("alpha_agent", "response again")
         assert len(win.usage_tracker.logged) == 1
         assert win.session_cost_total == pytest.approx(0.02)
 
     def test_real_usage_from_the_worker_is_passed_through_to_billing(self, win):
-        win.authorize_request("author", "openai", "gpt-4o", "prompt")
-        win.note_request_usage("author", {"input_tokens": 111, "output_tokens": 222})
-        win.record_request("author", "response")
+        win.authorize_request("alpha_agent", "openai", "gpt-4o", "prompt")
+        win.note_request_usage("alpha_agent", {"input_tokens": 111, "output_tokens": 222})
+        win.record_request("alpha_agent", "response")
         assert win.usage_tracker.logged[0]["usage"] == {"input_tokens": 111, "output_tokens": 222}
 
     def test_usage_noted_without_authorisation_is_ignored(self, win):
-        win.note_request_usage("author", {"input_tokens": 1})
+        win.note_request_usage("alpha_agent", {"input_tokens": 1})
         assert win._pending_requests == {}
 
 
 class TestAbandonRequest:
 
     def test_abandoned_request_is_not_billed(self, win):
-        win.authorize_request("author", "openai", "gpt-4o", "prompt")
-        win.abandon_request("author")
+        win.authorize_request("alpha_agent", "openai", "gpt-4o", "prompt")
+        win.abandon_request("alpha_agent")
         assert win.usage_tracker.logged == []
         assert win.session_cost_total == 0.0
 
     def test_abandoned_request_is_not_saved_to_history(self, win):
-        win.authorize_request("author", "openai", "gpt-4o", "prompt")
-        win.abandon_request("author")
+        win.authorize_request("alpha_agent", "openai", "gpt-4o", "prompt")
+        win.abandon_request("alpha_agent")
         assert win.history.saved == []
 
     def test_abandon_closes_the_run_with_its_reason(self, win):
-        win.authorize_request("author", "openai", "gpt-4o", "prompt")
-        win.abandon_request("author", reason="cancelled")
+        win.authorize_request("alpha_agent", "openai", "gpt-4o", "prompt")
+        win.abandon_request("alpha_agent", reason="cancelled")
         assert win.run_logger.finished[0]["status"] == "cancelled"
 
     def test_abandon_clears_the_pending_context(self, win):
-        win.authorize_request("author", "openai", "gpt-4o", "prompt")
-        win.abandon_request("author")
+        win.authorize_request("alpha_agent", "openai", "gpt-4o", "prompt")
+        win.abandon_request("alpha_agent")
         assert win._pending_requests == {}
 
     def test_abandon_without_authorisation_is_a_no_op(self, win):
-        win.abandon_request("author")
+        win.abandon_request("alpha_agent")
         assert win.run_logger.finished == []
 
     def test_recording_after_abandoning_bills_nothing(self, win):
-        win.authorize_request("author", "openai", "gpt-4o", "prompt")
-        win.abandon_request("author")
-        win.record_request("author", "late response")
+        win.authorize_request("alpha_agent", "openai", "gpt-4o", "prompt")
+        win.abandon_request("alpha_agent")
+        win.record_request("alpha_agent", "late response")
         assert win.usage_tracker.logged == []
 
 
 class TestConcurrentAgents:
-    """Pending requests are isolated by request id, including the same agent."""
+    """_pending_requests is keyed by agent name — TODO.md flags this as a known
+    limit. These pin the behaviour that is actually relied on today."""
 
     def test_two_different_agents_do_not_interfere(self, win):
-        author_id = win.authorize_request("author", "openai", "gpt-4o", "a-prompt")
-        manuscript_id = win.authorize_request("manuscript", "openai", "gpt-4o", "m-prompt")
-        win.record_request(author_id, "a-response")
-        assert manuscript_id in win._pending_requests
-        assert win.history.saved[0]["agent"] == "author"
-        win.record_request(manuscript_id, "m-response")
-        assert {s["agent"] for s in win.history.saved} == {"author", "manuscript"}
+        win.authorize_request("alpha_agent", "openai", "gpt-4o", "a-prompt")
+        win.authorize_request("beta_agent", "openai", "gpt-4o", "m-prompt")
+        win.record_request("alpha_agent", "a-response")
+        assert "beta_agent" in win._pending_requests
+        assert win.history.saved[0]["agent"] == "alpha_agent"
+        win.record_request("beta_agent", "m-response")
+        assert {s["agent"] for s in win.history.saved} == {"alpha_agent", "beta_agent"}
 
-    def test_same_agent_runs_keep_their_own_context(self, win):
-        first_id = win.authorize_request("author", "openai", "gpt-4o", "first")
-        second_id = win.authorize_request("author", "openai", "gpt-4o", "second")
-        win.record_request(first_id, "first response")
-        win.record_request(second_id, "second response")
-        assert [entry["prompt_text"] for entry in win.usage_tracker.logged] == [
-            "first", "second",
-        ]
+    def test_same_agent_twice_overwrites_the_first_context(self, win):
+        # Documented limitation: panels disable their run button so this is not
+        # reachable today. If that ever changes, this test should start failing.
+        win.authorize_request("alpha_agent", "openai", "gpt-4o", "first")
+        win.authorize_request("alpha_agent", "openai", "gpt-4o", "second")
+        win.record_request("alpha_agent", "response")
+        assert len(win.usage_tracker.logged) == 1
+        assert win.usage_tracker.logged[0]["agent"] == "alpha_agent"
         assert win._pending_requests == {}

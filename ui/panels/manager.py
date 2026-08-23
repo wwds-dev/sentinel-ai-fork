@@ -22,7 +22,6 @@ from PySide6.QtWidgets import (
 
 from agents.manager_agent import ManagerAgent
 from ui.panels.base import AgentPanel
-from ui.widgets import SectionView
 
 
 class ManagerPanel(AgentPanel):
@@ -37,6 +36,7 @@ class ManagerPanel(AgentPanel):
         self.manager_agent = ManagerAgent()
         self.pending_spec: dict | None = None
         self._build()
+        self.polish_workspace()
         self.hide()
 
     # ── Construction ────────────────────────────────────────────────────
@@ -81,13 +81,16 @@ class ManagerPanel(AgentPanel):
         spec_group.setObjectName("ManagerSpecBox")
         spec_layout = QVBoxLayout(spec_group)
 
-        self.spec_display = SectionView()
+        self.spec_display = QTextEdit()
+        self.spec_display.setReadOnly(True)
         self.spec_display.setMinimumHeight(180)
+        self.spec_display.setPlaceholderText("Spec will appear here after analysis...")
+        self.spec_display.setStyleSheet("font-family: monospace; font-size: 12px;")
         spec_layout.addWidget(self.spec_display)
 
         approve_row = QHBoxLayout()
 
-        self.approve_btn = QPushButton("Approve & Create Agent")
+        self.approve_btn = QPushButton("Approve && Create Agent")
         self.approve_btn.setEnabled(False)
         self.approve_btn.setMinimumWidth(200)
         self.approve_btn.setObjectName("PrimaryAction")
@@ -111,6 +114,7 @@ class ManagerPanel(AgentPanel):
         self.log = QTextEdit()
         self.log.setReadOnly(True)
         self.log.setMinimumHeight(100)
+        self.log.setPlaceholderText("Agent creation and validation events will appear here.")
         self.log.setStyleSheet("font-family: monospace; font-size: 12px;")
         log_layout.addWidget(self.log)
         layout.addWidget(log_group)
@@ -128,7 +132,7 @@ class ManagerPanel(AgentPanel):
 
         messages = self.manager_agent.build_messages(idea)
 
-        self.spec_display.show_sections([("Status", "Analyzing…")])
+        self.spec_display.setPlainText("Analyzing...")
         self.analyze_btn.setEnabled(False)
         self.approve_btn.setEnabled(False)
         self.reject_btn.setEnabled(False)
@@ -138,9 +142,7 @@ class ManagerPanel(AgentPanel):
             # Analyze was disabled above; a blocked request has to put it back
             # or the panel is stuck with a dead button and "Analyzing..." on
             # screen for a request that was never sent.
-            self.spec_display.show_sections([
-                ("Blocked", "The request was not sent.")
-            ])
+            self.spec_display.setPlainText("[Blocked] The request was not sent.")
             self.analyze_btn.setEnabled(True)
             return
 
@@ -155,33 +157,14 @@ class ManagerPanel(AgentPanel):
         self.analyze_btn.setEnabled(True)
         spec = self.manager_agent.parse_spec(response)
         if spec is None:
-            self.spec_display.show_sections([
-                ("Parse Error", "Could not parse a valid JSON spec from the response."),
-            ], raw=response)
+            self.spec_display.setPlainText(
+                "[Error] Could not parse a valid JSON spec from the response.\n\n"
+                "Raw response:\n" + response
+            )
             return
 
         self.pending_spec = spec
-        identity = "\n".join(filter(None, [
-            f"Name: {spec.get('name', '')}",
-            f"Label: {spec.get('label', '')}",
-            f"Description: {spec.get('description', '')}",
-        ]))
-        permissions = (
-            "Providers: " + ", ".join(spec.get("allowed_providers", [])) + "\n"
-            "Tools: " + ", ".join(spec.get("allowed_tools", []))
-        )
-        controls = (
-            f"Budget limit: {spec.get('budget_limit_eur', 'none')}\n"
-            f"Requires approval: {bool(spec.get('requires_approval', False))}"
-        )
-        raw = json.dumps(spec, indent=2)
-        self.spec_display.show_sections([
-            ("Identity", identity),
-            ("Permissions", permissions),
-            ("Controls", controls),
-            ("System Prompt", spec.get("system_prompt", ""), True),
-            ("Reasoning", spec.get("reasoning", "")),
-        ], raw=raw)
+        self.spec_display.setPlainText(json.dumps(spec, indent=2))
         self.approve_btn.setEnabled(True)
         self.reject_btn.setEnabled(True)
         self.log.append("[Ready] Spec generated. Review and approve or reject.")
@@ -189,7 +172,7 @@ class ManagerPanel(AgentPanel):
     def _on_error(self, error: str) -> None:
         self.abandon()
         self.analyze_btn.setEnabled(True)
-        self.spec_display.show_sections([("Error", error)])
+        self.spec_display.setPlainText(f"[Error]\n{error}")
         self.log.append(f"[Error] {error}")
 
     def stop(self) -> None:
@@ -249,7 +232,7 @@ class ManagerPanel(AgentPanel):
 
     def reject_spec(self) -> None:
         self.pending_spec = None
-        self.spec_display.clear()
+        self.spec_display.setPlainText("")
         self.approve_btn.setEnabled(False)
         self.reject_btn.setEnabled(False)
         self.log.append("[Rejected] Spec cleared. You can describe a new idea.")

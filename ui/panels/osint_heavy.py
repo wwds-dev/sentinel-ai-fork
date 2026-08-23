@@ -17,13 +17,12 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QTextCursor
 from PySide6.QtWidgets import (
     QComboBox, QFileDialog, QGridLayout, QGroupBox, QHBoxLayout, QLabel,
-    QLineEdit, QMessageBox, QProgressBar, QPushButton, QSplitter,
+    QLineEdit, QMessageBox, QProgressBar, QPushButton, QSplitter, QTabWidget,
     QTextBrowser, QTextEdit, QVBoxLayout, QWidget,
 )
 
 from services.runtime_paths import user_data_base
 from ui.panels.base import AgentPanel
-from ui.widgets import SectionView
 
 
 # ── EXIF, as plain functions ────────────────────────────────────────────────
@@ -117,6 +116,7 @@ class OsintHeavyPanel(AgentPanel):
         self._last_response = ""
         self._image_path = ""
         self._build()
+        self.polish_workspace()
         self.hide()
 
     # ── Construction ────────────────────────────────────────────────────
@@ -158,7 +158,8 @@ class OsintHeavyPanel(AgentPanel):
             "What are you trying to establish? e.g. verify identity, map infrastructure, "
             "check breach exposure, assess threat level…"
         )
-        self.objective_input.setFixedHeight(60)
+        self.objective_input.setMinimumHeight(70)
+        self.objective_input.setMaximumHeight(120)
         brief_layout.addWidget(self.objective_input, 2, 1, 1, 3)
 
         provider_row_container, provider_row = self.flow_row()
@@ -175,34 +176,38 @@ class OsintHeavyPanel(AgentPanel):
         self.stop_btn.setObjectName("DangerAction")
         self.stop_btn.clicked.connect(self.stop)
         provider_row.addWidget(self.stop_btn)
+        self.set_busy(self.investigate_btn, self.stop_btn, False)
 
         brief_layout.addWidget(provider_row_container, 3, 0, 1, 4)
         layout.addWidget(brief_group)
 
         # ── Target Image (optional) ──────────────────────────────────────
         image_group = QGroupBox(
-            "Target Image  —  optional, enables EXIF analysis & face search links")
+            "Target Image  —  optional, enables EXIF analysis && face search links")
         image_group.setObjectName("OSINTHeavyImageBox")
         image_outer = QVBoxLayout(image_group)
         image_outer.setSpacing(4)
-        image_outer.setContentsMargins(8, 4, 8, 4)
+        image_outer.setContentsMargins(6, 4, 6, 4)
         image_top_row = QHBoxLayout()
         self.image_label = QLabel("No image selected")
         self.image_label.setStyleSheet("color: #666; font-style: italic;")
         self.image_label.setMinimumWidth(200)
         image_top_row.addWidget(self.image_label, 1)
         self.browse_btn = QPushButton("Browse…")
-        self.browse_btn.setMaximumWidth(90)
+        self.browse_btn.setMinimumWidth(100)
+        self.browse_btn.setMaximumWidth(120)
         self.browse_btn.clicked.connect(self.browse_image)
         image_top_row.addWidget(self.browse_btn)
         self.clear_image_btn = QPushButton("Clear Image")
-        self.clear_image_btn.setMaximumWidth(90)
+        self.clear_image_btn.setMinimumWidth(110)
+        self.clear_image_btn.setMaximumWidth(130)
         self.clear_image_btn.clicked.connect(self.clear_image)
         image_top_row.addWidget(self.clear_image_btn)
         image_outer.addLayout(image_top_row)
         self.exif_display = QTextEdit()
         self.exif_display.setReadOnly(True)
-        self.exif_display.setFixedHeight(52)
+        self.exif_display.setMinimumHeight(56)
+        self.exif_display.setMaximumHeight(90)
         self.exif_display.setPlaceholderText(
             "EXIF metadata will appear here after selecting an image…"
         )
@@ -212,31 +217,51 @@ class OsintHeavyPanel(AgentPanel):
         image_outer.addWidget(self.exif_display)
         layout.addWidget(image_group)
 
-        # ── Results splitter: structured dossier left, indicators right ──
+        # ── Results splitter: tabs left, indicators right ────────────────
         results_splitter = QSplitter(Qt.Horizontal)
 
-        results_widget = QWidget()
-        results_layout = QVBoxLayout(results_widget)
-        results_layout.setContentsMargins(0, 0, 0, 0)
-        results_layout.setSpacing(8)
+        self.tabs = QTabWidget()
 
-        self.stream_box = QTextBrowser()
-        self.stream_box.setOpenExternalLinks(False)
-        self.stream_box.setVisible(False)
-        results_layout.addWidget(self.stream_box, 1)
+        self.overview_box = QTextBrowser()
+        self.overview_box.setOpenExternalLinks(True)
+        self.tabs.addTab(self.overview_box, "Overview")
 
-        self.sections = SectionView()
-        results_layout.addWidget(self.sections, 1)
+        self.footprint_box = QTextBrowser()
+        self.footprint_box.setOpenExternalLinks(True)
+        self.tabs.addTab(self.footprint_box, "Digital Footprint")
 
-        image_results = QGroupBox("Image OSINT")
-        image_results_layout = QVBoxLayout(image_results)
+        self.infra_box = QTextBrowser()
+        self.infra_box.setOpenExternalLinks(True)
+        self.tabs.addTab(self.infra_box, "Infra / Social")
+
+        self.risk_box = QTextBrowser()
+        self.risk_box.setOpenExternalLinks(True)
+        self.tabs.addTab(self.risk_box, "Risk && Red Flags")
+
+        self.method_box = QTextBrowser()
+        self.method_box.setOpenExternalLinks(True)
+        self.tabs.addTab(self.method_box, "Methodology")
+
+        self.dossier_box = QTextBrowser()
+        self.dossier_box.setOpenExternalLinks(True)
+        self.tabs.addTab(self.dossier_box, "Full Dossier")
+
         self.image_tab = QTextBrowser()
         self.image_tab.setOpenExternalLinks(True)
-        self.image_tab.setMaximumHeight(180)
-        image_results_layout.addWidget(self.image_tab)
-        results_layout.addWidget(image_results)
+        self.tabs.addTab(self.image_tab, "Image OSINT")
 
-        results_splitter.addWidget(results_widget)
+        for box, message in (
+            (self.overview_box, "Investigation overview will appear after you select Investigate."),
+            (self.footprint_box, "Digital-footprint findings will appear here."),
+            (self.infra_box, "Infrastructure and social pivots will appear here."),
+            (self.risk_box, "Risk indicators and red flags will appear here."),
+            (self.method_box, "Sources and methodology will appear here."),
+            (self.dossier_box, "The complete dossier will appear here."),
+            (self.image_tab, "Image OSINT findings will appear after an image is analysed."),
+        ):
+            box.setPlaceholderText(message)
+
+        results_splitter.addWidget(self.tabs)
 
         # ── Indicators sidebar ───────────────────────────────────────────
         indicators_widget = QWidget()
@@ -336,16 +361,14 @@ class OsintHeavyPanel(AgentPanel):
         self._last_response = ""
         self.depth_label.setText(scope)
         self.status_label.setText("Investigating…")
-        self.investigate_btn.setEnabled(False)
-        self.stop_btn.setEnabled(True)
+        self.set_busy(self.investigate_btn, self.stop_btn, True)
         self.save_btn.setEnabled(False)
 
         if not self.authorize(target):
             # Investigate was disabled above; put it back or a refused request
             # leaves the panel dead.
             self.status_label.setText("Blocked before sending.")
-            self.investigate_btn.setEnabled(True)
-            self.stop_btn.setEnabled(False)
+            self.set_busy(self.investigate_btn, self.stop_btn, False)
             return
 
         self.start_worker(
@@ -357,37 +380,29 @@ class OsintHeavyPanel(AgentPanel):
 
     def _on_token(self, token: str) -> None:
         self._last_response += token
-        self.sections.setVisible(False)
-        self.stream_box.setVisible(True)
-        self.stream_box.setPlainText(self._last_response)
-        self.stream_box.moveCursor(QTextCursor.End)
+        self.dossier_box.setPlainText(self._last_response)
+        self.dossier_box.moveCursor(QTextCursor.End)
 
     def _on_finished(self, full_response: str) -> None:
         self.record(full_response)
         self._last_response = full_response
-        self.stream_box.setVisible(False)
-        self.sections.setVisible(True)
-        self._populate_sections(full_response)
+        self._populate_tabs(full_response)
         self._update_indicators(full_response)
         self.status_label.setText("Investigation complete.")
-        self.investigate_btn.setEnabled(True)
-        self.stop_btn.setEnabled(False)
+        self.set_busy(self.investigate_btn, self.stop_btn, False)
         self.save_btn.setEnabled(True)
+        self.tabs.setCurrentIndex(0)
 
     def _on_error(self, error: str) -> None:
         self.abandon()
-        self.sections.setVisible(False)
-        self.stream_box.setVisible(True)
-        self.stream_box.setPlainText(f"[Error] {error}")
+        self.dossier_box.setPlainText(f"[Error] {error}")
         self.status_label.setText("Error.")
-        self.investigate_btn.setEnabled(True)
-        self.stop_btn.setEnabled(False)
+        self.set_busy(self.investigate_btn, self.stop_btn, False)
 
     def stop(self) -> None:
         self.stop_worker()
         self.status_label.setText("Stopped.")
-        self.investigate_btn.setEnabled(True)
-        self.stop_btn.setEnabled(False)
+        self.set_busy(self.investigate_btn, self.stop_btn, False)
 
     # ── The dossier ─────────────────────────────────────────────────────
     def save(self) -> None:
@@ -415,11 +430,10 @@ class OsintHeavyPanel(AgentPanel):
         self.clear_image()
 
     def _clear_displays(self) -> None:
-        self.sections.clear()
-        self.sections.setVisible(True)
-        self.stream_box.clear()
-        self.stream_box.setVisible(False)
-        self.image_tab.clear()
+        for box in (self.overview_box, self.footprint_box, self.infra_box,
+                    self.risk_box, self.method_box, self.dossier_box,
+                    self.image_tab):
+            box.clear()
         self.threat_bar.setValue(0)
         self.threat_label.setText("—")
         self.conf_label.setText("—")
@@ -427,15 +441,14 @@ class OsintHeavyPanel(AgentPanel):
         self.depth_label.setText("—")
         self.save_btn.setEnabled(False)
 
-    def _populate_sections(self, text: str) -> None:
+    def _populate_tabs(self, text: str) -> None:
         sections = self.parse_sections(text)
-        self.sections.show_sections([
-            ("Overview", sections.get("overview", "")),
-            ("Digital Footprint", sections.get("footprint", "")),
-            ("Infrastructure & Social", sections.get("infra", "")),
-            ("Risk & Red Flags", sections.get("risk", "")),
-            ("Methodology", sections.get("methodology", "")),
-        ], raw=text)
+        self.overview_box.setPlainText(sections.get("overview", ""))
+        self.footprint_box.setPlainText(sections.get("footprint", ""))
+        self.infra_box.setPlainText(sections.get("infra", ""))
+        self.risk_box.setPlainText(sections.get("risk", ""))
+        self.method_box.setPlainText(sections.get("methodology", ""))
+        self.dossier_box.setPlainText(text)
 
     @staticmethod
     def parse_sections(text: str) -> dict:
@@ -545,3 +558,4 @@ class OsintHeavyPanel(AgentPanel):
             "</body></html>"
         )
         self.image_tab.setHtml(html)
+        self.tabs.setCurrentIndex(self.tabs.indexOf(self.image_tab))

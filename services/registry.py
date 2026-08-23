@@ -1,6 +1,4 @@
 import json
-import re
-from datetime import datetime
 from services.database import get_connection
 
 
@@ -24,64 +22,6 @@ def _row_to_tool(row) -> dict:
 
 
 class Registry:
-    def list_projects(self, include_archived: bool = False) -> list[dict]:
-        where = "" if include_archived else "WHERE archived = 0"
-        with get_connection() as conn:
-            rows = conn.execute(
-                f"SELECT * FROM projects {where} ORDER BY name COLLATE NOCASE"
-            ).fetchall()
-        return [dict(row) for row in rows]
-
-    def get_project(self, project_id: str | None) -> dict | None:
-        if not project_id:
-            return None
-        with get_connection() as conn:
-            row = conn.execute(
-                "SELECT * FROM projects WHERE id = ?", (project_id,)
-            ).fetchone()
-        return dict(row) if row else None
-
-    def upsert_project(self, project: dict) -> dict:
-        name = str(project.get("name") or "Untitled project").strip()
-        project_id = str(project.get("id") or "").strip()
-        if not project_id:
-            project_id = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-") or "project"
-            base = project_id
-            n = 2
-            while self.get_project(project_id):
-                project_id, n = f"{base}-{n}", n + 1
-        with get_connection() as conn:
-            conn.execute(
-                """INSERT INTO projects
-                   (id, name, instructions, default_agent, default_provider,
-                    default_model, budget_eur, archived, created_at)
-                   VALUES (?,?,?,?,?,?,?,?,?)
-                   ON CONFLICT(id) DO UPDATE SET
-                     name=excluded.name, instructions=excluded.instructions,
-                     default_agent=excluded.default_agent,
-                     default_provider=excluded.default_provider,
-                     default_model=excluded.default_model,
-                     budget_eur=excluded.budget_eur, archived=excluded.archived""",
-                (
-                    project_id, name, str(project.get("instructions") or ""),
-                    str(project.get("default_agent") or "chat"),
-                    str(project.get("default_provider") or ""),
-                    str(project.get("default_model") or ""),
-                    project.get("budget_eur"), 1 if project.get("archived") else 0,
-                    str(project.get("created_at") or datetime.now().isoformat(timespec="seconds")),
-                ),
-            )
-            conn.commit()
-        return self.get_project(project_id)
-
-    def archive_project(self, project_id: str, archived: bool = True) -> None:
-        with get_connection() as conn:
-            conn.execute(
-                "UPDATE projects SET archived = ? WHERE id = ?",
-                (1 if archived else 0, project_id),
-            )
-            conn.commit()
-
     def get_agent(self, name: str) -> dict | None:
         with get_connection() as conn:
             row = conn.execute(
@@ -144,6 +84,17 @@ class Registry:
         limit = a.get("budget_limit_eur")
         return float(limit) if limit is not None else None
 
+    def get_tool_budget(self, tool_name: str) -> float | None:
+        tool = self.get_tool(tool_name)
+        if not tool:
+            return None
+        limit = tool.get("budget_limit_eur")
+        return float(limit) if limit is not None else None
+
     def agent_requires_approval(self, agent_name: str) -> bool:
         a = self.get_agent(agent_name)
         return bool(a and a.get("requires_approval", False))
+
+    def tool_requires_approval(self, tool_name: str) -> bool:
+        tool = self.get_tool(tool_name)
+        return bool(tool and tool.get("requires_approval", False))

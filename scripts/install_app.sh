@@ -54,7 +54,7 @@ if (do shell script "[ -x " & quoted form of pythonBin & " ] && [ -f " & quoted 
     display alert "Sentinel Fork cannot start" message "The project is not where the app expects it:" & return & return & "${PROJECT_ROOT}" & return & return & "Re-run scripts/install_app.sh from the project." as critical
     return
 end if
-do shell script "cd " & quoted form of "${PROJECT_ROOT}" & " && " & quoted form of pythonBin & " " & quoted form of mainPy & " > /tmp/sentinel_fork_launch.log 2>&1; exit 0"
+do shell script "cd " & quoted form of "${PROJECT_ROOT}" & " && " & quoted form of pythonBin & " " & quoted form of mainPy & " > /tmp/sentinel-fork-launch.log 2>&1; exit 0"
 APPLESCRIPT
 
 osacompile -o "$APP_DIR" "$STAGE/launch.applescript"

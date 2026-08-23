@@ -9,7 +9,8 @@ controls past their own minimums until the labels are chopped.
 from PySide6.QtCore import Qt, QRect, QPoint, QSize, QTimer
 from PySide6.QtGui import QColor, QPainter
 from PySide6.QtWidgets import (QFrame, QHBoxLayout, QLabel, QLayout,
-                               QPushButton, QScrollArea, QVBoxLayout, QWidget)
+                               QPushButton, QScrollArea, QSizePolicy,
+                               QVBoxLayout, QWidget)
 
 
 class FlowLayout(QLayout):
@@ -163,11 +164,102 @@ class CollapsibleSection(QWidget):
         self.header_btn.setChecked(self._expanded)
 
 
+class ProgressiveSection(QWidget):
+    """One quiet disclosure for optional or advanced workflow controls.
+
+    Unlike the navigation accordion above, this is content: its summary stays
+    visible, while details consume space only when the user asks for them.
+    """
+
+    def __init__(self, title: str, summary: str = "", *, expanded: bool = False,
+                 parent=None):
+        super().__init__(parent)
+        self.setObjectName("ProgressiveSection")
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
+        self.setProperty("expanded", expanded)
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+
+        self.header = QPushButton()
+        self.header.setObjectName("ProgressiveHeader")
+        self.header.setCheckable(True)
+        self.header.setChecked(expanded)
+        self.header.clicked.connect(self.setExpanded)
+        outer.addWidget(self.header)
+
+        self.body = QWidget()
+        self.body.setObjectName("ProgressiveBody")
+        self.body_layout = QVBoxLayout(self.body)
+        self.body_layout.setContentsMargins(10, 7, 10, 10)
+        self.body_layout.setSpacing(8)
+        outer.addWidget(self.body)
+
+        self._title = title
+        self._summary = summary
+        self.setExpanded(expanded)
+
+    def addWidget(self, widget, stretch=0):
+        self.body_layout.addWidget(widget, stretch)
+
+    def addLayout(self, layout):
+        self.body_layout.addLayout(layout)
+
+    def setSummary(self, summary: str) -> None:
+        self._summary = summary
+        self._refresh_header()
+
+    def setExpanded(self, expanded: bool) -> None:
+        expanded = bool(expanded)
+        self.header.setChecked(expanded)
+        self.body.setVisible(expanded)
+        self.setProperty("expanded", expanded)
+        self._refresh_header()
+        self.style().unpolish(self)
+        self.style().polish(self)
+
+    def isExpanded(self) -> bool:
+        return self.header.isChecked()
+
+    def _refresh_header(self) -> None:
+        arrow = "▾" if self.header.isChecked() else "▸"
+        suffix = f"   {self._summary}" if self._summary else ""
+        self.header.setText(f"{arrow}  {self._title}{suffix}")
+
+
+class WorkspaceState(QWidget):
+    """Compact inline feedback used instead of modal dialogs and blank panes."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("WorkspaceState")
+        row = QHBoxLayout(self)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(8)
+        self.dot = QLabel("•")
+        self.dot.setObjectName("WorkspaceStateDot")
+        self.message = QLabel("")
+        self.message.setObjectName("WorkspaceStateText")
+        self.message.setWordWrap(True)
+        row.addWidget(self.dot)
+        row.addWidget(self.message, 1)
+        self.setState("idle", "")
+
+    def setState(self, state: str, message: str) -> None:
+        self.setProperty("state", state)
+        self.message.setText(message)
+        self.setVisible(bool(message))
+        for widget in (self, self.dot, self.message):
+            widget.style().unpolish(widget)
+            widget.style().polish(widget)
+
+
 class Bar(QWidget):
     """A thin proportion bar. Painted rather than styled.
 
-    A QProgressBar would inherit the global sheet, which styles it for the
-    audiobook progress readout — a different job with a different look.
+    A QProgressBar would inherit the global sheet, whose heavier treatment is
+    intended for task progress rather than a compact status-rail proportion.
     """
 
     TRACK = QColor("#242424")
@@ -176,7 +268,7 @@ class Bar(QWidget):
         super().__init__(parent)
         self._fraction = 0.0
         self._colour = QColor("#3cff88")
-        self.setFixedHeight(6)
+        self.setFixedHeight(4)
         self.setMinimumWidth(40)
 
     def set(self, fraction: float, colour: str) -> None:
@@ -214,13 +306,16 @@ class Meter(QWidget):
 
     def __init__(self, caption: str, tip: str = "", parent=None):
         super().__init__(parent)
-        row = QHBoxLayout(self)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(4)
+
+        row = QHBoxLayout()
         row.setContentsMargins(0, 0, 0, 0)
         row.setSpacing(8)
 
         self.caption = QLabel(caption)
         self.caption.setObjectName("MeterCaption")
-        self.caption.setFixedWidth(58)
         self.bar = Bar()
         self.value = QLabel("—")
         self.value.setObjectName("MeterValue")
@@ -228,8 +323,10 @@ class Meter(QWidget):
         self.value.setMinimumWidth(58)
 
         row.addWidget(self.caption)
-        row.addWidget(self.bar, 1)
+        row.addStretch()
         row.addWidget(self.value)
+        outer.addLayout(row)
+        outer.addWidget(self.bar)
         if tip:
             self.setToolTip(tip)
 
@@ -258,8 +355,8 @@ class SectionCard(QFrame):
         super().__init__(parent)
         self.setObjectName("SectionCard")
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(20, 18, 20, 18)
-        lay.setSpacing(10)
+        lay.setContentsMargins(14, 12, 14, 12)
+        lay.setSpacing(8)
 
         head = QHBoxLayout()
         head.setSpacing(8)
