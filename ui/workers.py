@@ -11,6 +11,78 @@ import time
 from PySide6.QtCore import QThread, Signal
 
 
+class DomainLookupWorker(QThread):
+    """Run consented domain/IP public-source checks off the UI thread."""
+
+    progress_signal = Signal(str, str)
+    finished_signal = Signal(dict)
+    error_signal = Signal(str)
+
+    def __init__(self, target: str):
+        super().__init__()
+        self.target = target
+        self._cancel_requested = False
+
+    def cancel(self):
+        self._cancel_requested = True
+
+    def run(self):
+        try:
+            from providers.domain_lookup import lookup
+
+            result = lookup(
+                self.target,
+                on_progress=lambda source, status: self.progress_signal.emit(
+                    source, status
+                ),
+                should_stop=lambda: self._cancel_requested,
+            )
+            self.finished_signal.emit(result)
+        except Exception as error:
+            self.error_signal.emit(str(error))
+
+
+class IdentityLookupWorker(QThread):
+    """Run a consented username or email lookup with selected sources."""
+
+    progress_signal = Signal(str, str)
+    finished_signal = Signal(dict)
+    error_signal = Signal(str)
+
+    def __init__(self, target: str, query_type: str, sources=()):
+        super().__init__()
+        self.target = target
+        self.query_type = query_type
+        self.sources = tuple(sources)
+        self._cancel_requested = False
+
+    def cancel(self):
+        self._cancel_requested = True
+
+    def run(self):
+        try:
+            progress = lambda source, status: self.progress_signal.emit(source, status)
+            stopped = lambda: self._cancel_requested
+            if self.query_type == "Username":
+                from providers.username_lookup import lookup
+                result = lookup(
+                    self.target, on_progress=progress, should_stop=stopped
+                )
+            elif self.query_type == "Email":
+                from providers.email_lookup import lookup
+                result = lookup(
+                    self.target,
+                    selected_sources=self.sources,
+                    on_progress=progress,
+                    should_stop=stopped,
+                )
+            else:
+                raise ValueError(f"Unsupported identity lookup type: {self.query_type}")
+            self.finished_signal.emit(result)
+        except Exception as error:
+            self.error_signal.emit(str(error))
+
+
 class ChatWorker(QThread):
     token_signal = Signal(str)
     status_signal = Signal(str)

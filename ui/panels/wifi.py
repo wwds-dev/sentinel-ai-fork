@@ -32,6 +32,7 @@ from agents.wifi_agent import AIRPORT, build_kali_commands, detect_usb_adapters
 from services.runtime_paths import user_data_base
 from ui.workers import SubprocessWorker
 from ui.panels.base import AgentPanel
+from ui.widgets import MenuComboBox
 
 # Static facts about the adapters the Kali builder knows how to target.
 KALI_ADAPTERS = {
@@ -80,7 +81,7 @@ class WifiPanel(AgentPanel):
         setup_layout.setSpacing(6)
 
         setup_layout.addWidget(QLabel("Mode:"), 0, 0)
-        self.mode_box = QComboBox()
+        self.mode_box = MenuComboBox()
         self.mode_box.addItems([
             "Interface Info", "Scan Networks", "Signal Monitor",
             "Ping Test", "Kali Command Builder",
@@ -89,7 +90,7 @@ class WifiPanel(AgentPanel):
         setup_layout.addWidget(self.mode_box, 0, 1)
 
         setup_layout.addWidget(QLabel("Interface:"), 0, 2)
-        self.interface_box = QComboBox()
+        self.interface_box = MenuComboBox()
         self.interface_box.addItems(["en0", "en1", "en2", "en3"])
         setup_layout.addWidget(self.interface_box, 0, 3)
 
@@ -107,14 +108,14 @@ class WifiPanel(AgentPanel):
         kali_layout.setSpacing(6)
 
         kali_layout.addWidget(QLabel("Operation:"), 0, 0)
-        self.kali_op_box = QComboBox()
+        self.kali_op_box = MenuComboBox()
         self.kali_op_box.addItems([
             "Handshake Capture", "Deauth Attack", "WPS Audit", "PMKID Attack",
         ])
         kali_layout.addWidget(self.kali_op_box, 0, 1)
 
         kali_layout.addWidget(QLabel("Adapter:"), 0, 2)
-        self.kali_adapter_box = QComboBox()
+        self.kali_adapter_box = MenuComboBox()
         self.kali_adapter_box.addItems(list(KALI_ADAPTERS.keys()))
         kali_layout.addWidget(self.kali_adapter_box, 0, 3)
 
@@ -136,27 +137,28 @@ class WifiPanel(AgentPanel):
         layout.addWidget(self.kali_group)
         self.kali_group.hide()
 
-        # ── Provider / action row ────────────────────────────────────────
-        provider_row_container, provider_row = self.flow_row()
-        self.build_provider_row(provider_row, labels=False)
-
         self.run_btn = QPushButton("Run")
         self.run_btn.setMinimumWidth(110)
         self.run_btn.setObjectName("PrimaryAction")
         self.run_btn.clicked.connect(self.run)
-        provider_row.addWidget(self.run_btn)
 
         self.detect_btn = QPushButton("Detect Adapters")
         self.detect_btn.setToolTip("Scan USB bus for connected Wi-Fi adapters")
         self.detect_btn.clicked.connect(self.detect_adapters)
-        provider_row.addWidget(self.detect_btn)
 
         self.stop_btn = QPushButton("Stop")
         self.stop_btn.setEnabled(False)
         self.stop_btn.setObjectName("DangerAction")
         self.stop_btn.clicked.connect(self.stop)
-        provider_row.addWidget(self.stop_btn)
         self.set_busy(self.run_btn, self.stop_btn, False)
+
+        # ── Provider / action row ────────────────────────────────────────
+        provider_row_container = self.build_run_bar(
+            self.run_btn,
+            stop=self.stop_btn,
+            secondary=(self.detect_btn,),
+            context="Wireless",
+        )
 
         layout.addWidget(provider_row_container)
 

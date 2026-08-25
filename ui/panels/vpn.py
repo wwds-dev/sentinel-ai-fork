@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
 
 from agents.vpn_agent import build_configs
 from ui.panels.base import AgentPanel
+from ui.widgets import MenuComboBox
 
 
 class VpnPanel(AgentPanel):
@@ -45,7 +46,7 @@ class VpnPanel(AgentPanel):
         setup_layout.setSpacing(6)
 
         setup_layout.addWidget(QLabel("Mode:"), 0, 0)
-        self.mode_box = QComboBox()
+        self.mode_box = MenuComboBox()
         self.mode_box.addItems(["Remote (VPS)", "Native (home LAN)"])
         self.mode_box.setToolTip(
             "Remote: traffic exits at a rented VPS — hides your IP, changes your "
@@ -55,7 +56,7 @@ class VpnPanel(AgentPanel):
         setup_layout.addWidget(self.mode_box, 0, 1)
 
         setup_layout.addWidget(QLabel("Protocol:"), 0, 2)
-        self.protocol_box = QComboBox()
+        self.protocol_box = MenuComboBox()
         self.protocol_box.addItems(["WireGuard", "OpenVPN 443 fallback", "Both"])
         setup_layout.addWidget(self.protocol_box, 0, 3)
 
@@ -105,22 +106,23 @@ class VpnPanel(AgentPanel):
         self.question_input.returnPressed.connect(self.run)
         layout.addWidget(self.question_input)
 
-        # ── Provider / action row ────────────────────────────────────────
-        provider_row_container, provider_row = self.flow_row()
-        self.build_provider_row(provider_row, labels=False)
-
         self.run_btn = QPushButton("Ask Advisor")
         self.run_btn.setMinimumWidth(120)
         self.run_btn.setObjectName("PrimaryAction")
         self.run_btn.clicked.connect(self.run)
-        provider_row.addWidget(self.run_btn)
 
         self.stop_btn = QPushButton("Stop")
         self.stop_btn.setEnabled(False)
         self.stop_btn.setObjectName("DangerAction")
         self.stop_btn.clicked.connect(self.stop)
-        provider_row.addWidget(self.stop_btn)
         self.set_busy(self.run_btn, self.stop_btn, False)
+
+        # ── Provider / action row ────────────────────────────────────────
+        provider_row_container = self.build_run_bar(
+            self.run_btn,
+            stop=self.stop_btn,
+            context="Advisor",
+        )
 
         layout.addWidget(provider_row_container)
 

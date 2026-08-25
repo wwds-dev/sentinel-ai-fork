@@ -7,23 +7,31 @@ Zero-cost stack:
   • crt.sh JSON API → certificate transparency subdomain enumeration
 """
 
-import re
+import ipaddress
 import requests
+from urllib.parse import urlsplit
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────
 
 def _normalize(target: str) -> str:
     """Strip protocol, path, query, port from a domain or IP string."""
-    t = target.strip().lower()
-    for prefix in ("https://", "http://", "ftp://"):
-        if t.startswith(prefix):
-            t = t[len(prefix):]
-    return t.split("/")[0].split("?")[0].split("#")[0].split(":")[0]
+    value = target.strip().lower()
+    bare = value.strip("[]")
+    try:
+        return str(ipaddress.ip_address(bare))
+    except ValueError:
+        pass
+    parsed = urlsplit(value if "://" in value else f"//{value}")
+    return (parsed.hostname or bare).rstrip(".")
 
 
 def _is_ip(s: str) -> bool:
-    return bool(re.match(r"^\d{1,3}(\.\d{1,3}){3}$", s))
+    try:
+        ipaddress.ip_address(s)
+        return True
+    except ValueError:
+        return False
 
 
 def _scalar(v) -> object:
@@ -104,7 +112,7 @@ def _crtsh(domain: str) -> dict:
 
 # ── public interface ──────────────────────────────────────────────────────────
 
-def lookup(domain: str) -> dict:
+def lookup(domain: str, *, on_progress=None, should_stop=None) -> dict:
     """
     Return a normalised OSINT dict for a domain or IP address.
 
@@ -113,14 +121,28 @@ def lookup(domain: str) -> dict:
       type, query, whois, dns                 (IP — crt.sh skipped)
     """
     target = _normalize(domain)
-    result: dict = {"type": "domain", "query": target}
+    is_ip = _is_ip(target)
+    result: dict = {
+        "type": "ip" if is_ip else "domain",
+        "query": target,
+        "sources_contacted": [],
+    }
 
-    if _is_ip(target):
-        result["whois"] = _whois(target)
-        result["dns"]   = _dns(target)
-    else:
-        result["whois"]        = _whois(target)
-        result["dns"]          = _dns(target)
-        result["certificates"] = _crtsh(target)
+    sources = [("WHOIS", "whois", _whois), ("DNS", "dns", _dns)]
+    if not is_ip:
+        sources.append(("Certificate transparency (crt.sh)", "certificates", _crtsh))
+
+    for label, key, source_lookup in sources:
+        if should_stop and should_stop():
+            result["cancelled"] = True
+            break
+        if on_progress:
+            on_progress(label, "checking")
+        source_result = source_lookup(target)
+        result[key] = source_result
+        status = "error" if isinstance(source_result, dict) and source_result.get("error") else "checked"
+        result["sources_contacted"].append({"source": label, "status": status})
+        if on_progress:
+            on_progress(label, status)
 
     return result

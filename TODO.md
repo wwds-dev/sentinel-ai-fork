@@ -11,7 +11,7 @@ under **Detail** — this checklist is the summary view.
 
 ## v2 — current
 
-- [ ] `P1` `design` `@ai` **Refactor Phase 4** — move the agent verticals into `ui/panels/`, smallest first: osint → manager → bug_bounty → osint_heavy → vpn → wifi. Move verbatim, one commit per panel, and key `_pending_requests` by run id (the `P1` bug below) while each panel is in hand. See `docs/refactor_plan.md`.
+- [x] `P1` `design` `@ai` **Refactor Phase 4** — all six specialist verticals now live in `ui/panels/` behind the shared `AgentPanel` boundary. The separate run-id hardening remains tracked below. See `docs/refactor_plan.md`.
 - [x] `P1` `design` `@ai` **Refactor Phase 3** — `AgentHost` (`ui/host.py`) and the `AgentPanel` base (`ui/panels/base.py`), with the design decision settled: composition, not mixins. Six panels' hand-built provider/model rows collapsed to one `build_provider_row` call each, six `*_load_models` methods to one `load_models_into`, and a map of loader *method names* to a registry panels fill in as they build. `main.py` 5,520 → 5,378; 77 new tests, 20 of which construct a panel with no `GodAI` at all.
 - [x] `P1` `design` `@ai` **GUI overhaul — section renderer.** Shipped for Trace: `SectionCard`/`SectionView` in `ui/widgets.py`, four tabbed text boxes replaced by cards with per-card copy, raw response collapsed behind a disclosure, and a separate streaming box so tokens still show live before there are sections to render. Reuse for Bloodhound next — its parser already exists.
 - [ ] `P2` `design` `@ai` **GUI overhaul — section renderer, remaining agents.** Bloodhound has a parser (`_parse_osint_heavy_sections`); Beacon, Bug Spray and Forge need one each. Original note: The change that justifies the rest, and it needs no new parsing: 12 `_parse_*_sections` methods already structure every answer and 70 text panes render it flat. Build against Trace (smallest vertical), then reuse. See `docs/gui_redesign.md`.
@@ -32,6 +32,9 @@ under **Detail** — this checklist is the summary view.
 - [x] `P1` `bug` `@ai` Twelve silent `except: pass` blocks replaced with `_note_failure`, which writes to stderr and attaches the reason as a tooltip
 - [x] `P1` `testing` `@ai` Test coverage was inverted — the money logic was the untested part. `test_cost_and_limits.py` (31 tests) and `test_request_guard.py` (30 tests), both mutation-verified.
 - [x] `P2` `feature` `@ai` Saved Chats — agent filter above the search box, double-click to rename
+- [x] `P1` `feature` `@ai` **Trace Live Research, domain/IP slice** — separate consent-gated WHOIS, DNS, and crt.sh collection with source-by-source activity, partial-result retention, cancellation, zero-cost run logging, and Saved Searches integration.
+- [x] `P2` `feature` `@ai` **Trace Live Research, username/email slice** — URLScan requires confirmation; email research offers per-source selection, keeps breach services off by default, disables HIBP without a key, distinguishes skipped services from contacted ones, and preserves partial results. Structure Query remains planning-only.
+- [ ] `P2` `feature` `@ai` **Trace Live Research, remaining target types** — evaluate lawful, privacy-preserving sources for people, companies, and phone numbers before exposing any collector. Require source-specific consent and avoid data-broker scraping by default.
 
 ### Workspace restructure — see `docs/workspace_structure.md`
 
@@ -47,7 +50,7 @@ under **Detail** — this checklist is the summary view.
 
 ### Interface, remaining from the approved mock screens
 
-- [ ] `P2` `design` `@ai` **Trace and Bloodhound still render into tabs** in places the section renderer should own.
+- [x] `P2` `design` `@ai` **Trace result renderer** — Trace now uses `SectionView` cards with persistent activity tracking; no result tabs remain in its panel. Bloodhound presentation work is tracked with the remaining-agent renderer item above.
 - [ ] `P3` `design` `@ai` The `READY` pill is the last uppercase letter-spaced element in the centre column; the design has no such chrome.
 - [ ] `P3` `design` `@ai` **SAVED CHATS is a four-control stack** (filter, search, list, two buttons) in a rail that is otherwise flat rows. Compress it.
 - [ ] `P3` `design` `@ai` Normalise the remaining ad-hoc `setContentsMargins` calls onto the 4/8/16/24 scale — the right rail and centre are done, the agent panels are not.

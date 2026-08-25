@@ -17,7 +17,7 @@ load_dotenv(user_data_base() / ".env")
 
 import markdown
 
-from PySide6.QtCore import Qt, QTimer, QProcess, QUrl, QThread, Signal, QEvent, QRect, QPoint, QSize
+from PySide6.QtCore import Qt, QTimer, QProcess, QUrl, QThread, Signal, QEvent, QRect, QPoint, QSize, QSettings
 from PySide6.QtGui import (
     QTextCursor, QDesktopServices, QColor, QFont, QTextDocument,
     QKeySequence, QShortcut,
@@ -28,7 +28,7 @@ from PySide6.QtWidgets import (
     QLabel, QTextEdit, QPushButton, QComboBox, QListWidget, QListWidgetItem,
     QMessageBox, QCheckBox, QTextBrowser, QSplitter, QLineEdit, QFileDialog,
     QProgressBar, QDialog, QTabWidget, QFrame, QScrollArea, QStackedWidget, QLayout,
-    QInputDialog, QMenu, QWidgetAction, QToolTip,
+    QInputDialog, QMenu, QToolTip,
 )
 
 from services.ollama_client import OllamaClient, MUSE_GLIMMER_VARIANTS, muse_glimmer_default
@@ -118,8 +118,8 @@ AGENT_SETUP_WIDGETS = {
 from ui.workers import (
     ChatWorker, SubprocessWorker, ModelPullWorker,
 )
-from ui.widgets import FlowLayout, KeyValue, Meter, SectionView
-from ui.style import GLOBAL_STYLESHEET
+from ui.widgets import KeyValue, MenuComboBox, Meter, SectionView
+from ui.style import GLOBAL_STYLESHEET, polish_combo_box, polish_combo_boxes
 from ui.tooltips import seed_tooltips
 from ui.panels.base import PROVIDERS, build_provider_row, configure_model_controls
 from ui.panels.bug_bounty import BugBountyPanel
@@ -247,6 +247,7 @@ class GodAI(QWidget):
         self.update_usage_labels()
         self.start_resource_timer()
         self.select_agent("chat")
+        polish_combo_boxes(self)
 
     def _polish_tab_widgets(self):
         """Disable text elision and enable scroll buttons on every QTabWidget
@@ -462,6 +463,16 @@ class GodAI(QWidget):
                 self.runbar_cost.setText(f"free · {tokens} tok")
             else:
                 self.runbar_cost.setText(f"~€{estimated_cost:.2f} · {tokens} tok")
+
+        if hasattr(self, "cost_rows"):
+            tokens = f"{approx_tokens/1000:.1f}k" if approx_tokens >= 1000 else str(approx_tokens)
+            if backend == "ollama":
+                estimate = f"free · {tokens} tok"
+            elif backend:
+                estimate = f"~€{estimated_cost:.2f} · {tokens} tok"
+            else:
+                estimate = "€0.00 · 0 tok"
+            self.cost_rows["estimate"].set(estimate)
 
         if backend == "ollama":
             self.live_estimate_label.setText("")
@@ -759,8 +770,11 @@ class GodAI(QWidget):
         except RuntimeError as exc:
             provider = self.provider_box.currentText() if hasattr(self, "provider_box") else "ollama"
             model = self.model_box.currentText() if hasattr(self, "model_box") else ""
+            pricing = pricing_metadata(provider, model)
             return {"mode": "Local only" if provider == "ollama" else "Hybrid allowed",
-                    "provider": provider, "model": model, "reason": str(exc), "fallbacks": []}
+                    "provider": provider, "model": model, "reason": str(exc),
+                    "fallbacks": [], "pricing": vars(pricing),
+                    "cost_label": pricing.compact}
 
     def apply_recommended_setup(self):
         rec = self.get_recommended_setup()
@@ -802,8 +816,15 @@ class GodAI(QWidget):
             self.routing_rows["Suggested"].set(rec["provider"], rec["reason"])
             self.routing_rows["Model"].set(rec["model"], rec["reason"])
             self.routing_rows["Mode"].set(rec.get("mode", "—"), rec["reason"])
-            pricing = rec.get("pricing") or pricing_metadata(rec["provider"], rec["model"])
-            self.routing_rows["Cost"].set(pricing.compact, rec["reason"])
+            # RouteDecision.as_dict() deliberately serialises nested metadata,
+            # so its pricing value is a plain dict here.  cost_label is the
+            # display-safe string produced from that same metadata.
+            cost_label = rec.get("cost_label")
+            if not cost_label:
+                cost_label = pricing_metadata(
+                    rec["provider"], rec["model"]
+                ).compact
+            self.routing_rows["Cost"].set(cost_label, rec["reason"])
         # Chat's recommendation moves with the tool/command/prompt, so repaint
         # the red dropdown markings whenever the label is refreshed.
         self.refresh_recommendation_marks("chat")
@@ -877,6 +898,10 @@ class GodAI(QWidget):
             "failure recovery. Runs locally, so it is free and nothing leaves "
             "this machine."
         )
+        menu_action = getattr(self, "get_muse_menu_action", None)
+        if menu_action is not None:
+            menu_action.setVisible(not installed)
+            menu_action.setToolTip(btn.toolTip())
 
     def pull_muse_glimmer(self) -> None:
         if getattr(self, "muse_pull_worker", None) is not None and self.muse_pull_worker.isRunning():
@@ -992,6 +1017,8 @@ class GodAI(QWidget):
             model_box.addItem(
                 "(no local models)" if provider == "ollama" else "(unavailable)"
             )
+        polish_combo_box(provider_box)
+        polish_combo_box(model_box)
 
     def setup_widgets_for(self, agent_key: str):
         """One agent's provider and model boxes, wherever they now live.
@@ -1146,7 +1173,9 @@ class GodAI(QWidget):
         if provider_box is not None:
             idx = provider_box.findText(rec["provider"])
             self._paint_recommended_item(provider_box, idx, tooltip)
-            provider_box.setToolTip(tooltip)
+            provider_box.setToolTip(
+                f"Selected provider: {provider_box.currentText()}."
+            )
             self._mark_deviation(
                 provider_box, provider_box.currentText() == rec["provider"]
             )
@@ -1154,7 +1183,12 @@ class GodAI(QWidget):
         if model_box is not None:
             idx = self._find_model_index(model_box, rec["model"])
             self._paint_recommended_item(model_box, idx, tooltip)
-            model_box.setToolTip(tooltip)
+            selected_provider = (
+                provider_box.currentText() if provider_box is not None else ""
+            )
+            model_box.setToolTip(
+                f"Selected model: {selected_provider} · {model_box.currentText()}."
+            )
             self._mark_deviation(
                 model_box, idx >= 0 and model_box.currentIndex() == idx
             )
@@ -1376,7 +1410,7 @@ class GodAI(QWidget):
 
         # Narrow the list to one agent. Populated from the chats that exist, so
         # it only ever offers agents you have actually used.
-        self.history_agent_filter = QComboBox()
+        self.history_agent_filter = MenuComboBox()
         self.history_agent_filter.addItem(ALL_AGENTS_FILTER)
         self.history_agent_filter.currentTextChanged.connect(self.load_history_list)
         saved_layout.addWidget(self.history_agent_filter)
@@ -1571,6 +1605,13 @@ class GodAI(QWidget):
         self.header_more_btn.setObjectName("ChipBtn")
         self.header_more_btn.setToolTip("More application tools")
         header_more_menu = QMenu(self.header_more_btn)
+        header_more_menu.addAction("App documentation").triggered.connect(
+            self.show_docs
+        )
+        header_more_menu.addAction("Model guide").triggered.connect(
+            self.show_model_guide
+        )
+        header_more_menu.addSeparator()
         header_more_menu.addAction("Cost history").triggered.connect(
             self.show_cost_history
         )
@@ -1602,7 +1643,7 @@ class GodAI(QWidget):
         # things that change weekly — execution mode, the provider permissions,
         # the model tools — moved behind the gear. They were occupying the strip
         # directly above the input box permanently.
-        self.agent_box = QComboBox()
+        self.agent_box = MenuComboBox()
         # Built-ins come exclusively from the canonical catalog.
         agent_items = list(BUILTIN_AGENT_ORDER)
         self.agent_box.addItems(agent_items)
@@ -1621,13 +1662,13 @@ class GodAI(QWidget):
         runbar.setContentsMargins(10, 8, 10, 8)
         runbar.setSpacing(8)
 
-        self.tool_box = QComboBox()
+        self.tool_box = MenuComboBox()
         self.tool_box.setObjectName("ToolChip")
         self.tool_box.addItems(self.tool_prompts.keys())
         self.tool_box.setMinimumWidth(100)
         runbar.addWidget(self.tool_box)
 
-        self.provider_box = QComboBox()
+        self.provider_box = MenuComboBox()
         self.provider_box.setObjectName("MachinePick")
         self.provider_box.addItems(PROVIDERS)
         self.provider_box.setMinimumWidth(90)
@@ -1637,7 +1678,7 @@ class GodAI(QWidget):
         dot.setObjectName("RunBarDot")
         runbar.addWidget(dot)
 
-        self.model_box = QComboBox()
+        self.model_box = MenuComboBox()
         self.model_box.setObjectName("MachinePick")
         configure_model_controls(self.provider_box, self.model_box)
         runbar.addWidget(self.model_box)
@@ -1682,132 +1723,160 @@ class GodAI(QWidget):
         self.command_label = QLabel("Command:")
         self.command_label.hide()
 
-        # ── Behind the gear ───────────────────────────────────────────────────
-        settings_panel = QWidget()
-        settings_panel.setObjectName("RunBarPopover")
-        settings_panel.setAttribute(Qt.WA_StyledBackground, True)
-        sp = QVBoxLayout(settings_panel)
-        sp.setContentsMargins(12, 10, 12, 12)
-        sp.setSpacing(8)
-
-        command_row = QHBoxLayout()
-        command_row.setSpacing(8)
-        command_row.addWidget(QLabel("Command"))
-        self.command_box = QComboBox()
+        # ── Compact request options ───────────────────────────────────────────
+        # Keep state in ordinary widgets because request execution and settings
+        # already depend on them, but expose it through native nested menus.
+        # Global utilities live in the header overflow and Inspector instead of
+        # being duplicated in a settings dialog disguised as a popup.
+        self.command_box = MenuComboBox(self)
         self.command_box.addItems(self.commands.keys())
-        self.command_box.setMinimumWidth(190)
-        command_row.addWidget(self.command_box)
-        command_row.addStretch()
-        sp.addLayout(command_row)
+        self.command_box.hide()
 
-        mode_row = QHBoxLayout()
-        mode_row.setSpacing(8)
-        mode_row.addWidget(QLabel("Mode"))
-        self.execution_mode_box = QComboBox()
+        self.execution_mode_box = MenuComboBox(self)
         self.execution_mode_box.addItems(["Local only", "Hybrid allowed", "Cloud only"])
-        self.execution_mode_box.setMinimumWidth(150)
-        mode_row.addWidget(self.execution_mode_box)
-        mode_row.addStretch()
-        sp.addLayout(mode_row)
+        self.execution_mode_box.hide()
 
-        perms_label = QLabel("ALLOWED PAID PROVIDERS")
-        perms_label.setObjectName("PopoverHeading")
-        sp.addWidget(perms_label)
-
-        perms_container = QWidget()
-        perms = FlowLayout(perms_container, spacing=6)
-        self.allow_openai_checkbox = QCheckBox("OpenAI")
-        self.allow_deepseek_checkbox = QCheckBox("DeepSeek")
-        self.allow_kimi_checkbox = QCheckBox("Kimi")
-        self.allow_gemini_checkbox = QCheckBox("Gemini")
-        self.allow_anthropic_checkbox = QCheckBox("Anthropic")
-        self.allow_qwen_checkbox = QCheckBox("Qwen")
+        self.allow_openai_checkbox = QCheckBox("OpenAI", self)
+        self.allow_deepseek_checkbox = QCheckBox("DeepSeek", self)
+        self.allow_kimi_checkbox = QCheckBox("Kimi", self)
+        self.allow_gemini_checkbox = QCheckBox("Gemini", self)
+        self.allow_anthropic_checkbox = QCheckBox("Anthropic", self)
+        self.allow_qwen_checkbox = QCheckBox("Qwen", self)
         for box in (self.allow_openai_checkbox, self.allow_deepseek_checkbox,
                     self.allow_kimi_checkbox, self.allow_gemini_checkbox,
                     self.allow_anthropic_checkbox, self.allow_qwen_checkbox):
             box.setChecked(False)
-            perms.addWidget(box)
-        sp.addWidget(perms_container)
+            box.hide()
 
-        tools_label = QLabel("MODELS")
-        tools_label.setObjectName("PopoverHeading")
-        sp.addWidget(tools_label)
-
-        request_label = QLabel("THIS REQUEST")
-        request_label.setObjectName("PopoverHeading")
-        sp.addWidget(request_label)
-
-        request_container = QWidget()
-        request_actions = FlowLayout(request_container, spacing=6)
-        self.auto_route_btn = QPushButton("Auto route")
+        self.auto_route_btn = QPushButton("Auto route", self)
         self.auto_route_btn.setObjectName("ChipBtn")
         self.auto_route_btn.clicked.connect(self.auto_route_agent)
-        request_actions.addWidget(self.auto_route_btn)
+        self.auto_route_btn.hide()
 
-        self.recommend_setup_btn = QPushButton("Use recommended")
+        self.recommend_setup_btn = QPushButton("Use recommended", self)
         self.recommend_setup_btn.setObjectName("ChipBtn")
         self.recommend_setup_btn.clicked.connect(self.apply_recommended_setup)
-        request_actions.addWidget(self.recommend_setup_btn)
+        self.recommend_setup_btn.hide()
 
-        self.auto_recommend_checkbox = QCheckBox("Auto-apply")
+        self.auto_recommend_checkbox = QCheckBox("Auto-apply", self)
         self.auto_recommend_checkbox.setChecked(False)
-        request_actions.addWidget(self.auto_recommend_checkbox)
+        self.auto_recommend_checkbox.hide()
 
-        self.estimate_btn = QPushButton("Estimate cost")
+        self.estimate_btn = QPushButton("Estimate cost", self)
         self.estimate_btn.setObjectName("ChipBtn")
         self.estimate_btn.clicked.connect(self.show_cost_estimate_popup)
-        request_actions.addWidget(self.estimate_btn)
+        self.estimate_btn.hide()
 
-        self.export_btn = QPushButton("Export report")
+        self.export_btn = QPushButton("Export report", self)
         self.export_btn.setObjectName("ChipBtn")
         self.export_btn.clicked.connect(self.export_report)
-        request_actions.addWidget(self.export_btn)
-        sp.addWidget(request_container)
+        self.export_btn.hide()
 
-        tools_container = QWidget()
-        tools = FlowLayout(tools_container, spacing=6)
-        self.refresh_models_btn = QPushButton("Refresh models")
+        self.refresh_models_btn = QPushButton("Refresh models", self)
         self.refresh_models_btn.setObjectName("ChipBtn")
         self.refresh_models_btn.clicked.connect(self.load_provider_models)
-        tools.addWidget(self.refresh_models_btn)
+        self.refresh_models_btn.hide()
 
-        # Hidden once Muse Glimmer is installed — it is then just another entry
-        # in the model box.
-        self.get_muse_btn = QPushButton("⬇ Get Muse Glimmer")
+        self.get_muse_btn = QPushButton("Get Muse Glimmer", self)
         self.get_muse_btn.setObjectName("ChipBtn")
         self.get_muse_btn.clicked.connect(self.pull_muse_glimmer)
-        tools.addWidget(self.get_muse_btn)
+        self.get_muse_btn.hide()
 
-        self.model_guide_btn = QPushButton("Model guide")
+        self.model_guide_btn = QPushButton("Model guide", self)
         self.model_guide_btn.setObjectName("ChipBtn")
         self.model_guide_btn.clicked.connect(self.show_model_guide)
-        tools.addWidget(self.model_guide_btn)
+        self.model_guide_btn.hide()
 
-        self.docs_btn = QPushButton("App docs")
+        self.docs_btn = QPushButton("App docs", self)
         self.docs_btn.setObjectName("ChipBtn")
         self.docs_btn.clicked.connect(self.show_docs)
-        tools.addWidget(self.docs_btn)
+        self.docs_btn.hide()
 
-        self.options_cost_history_btn = QPushButton("Cost history")
+        self.options_cost_history_btn = QPushButton("Cost history", self)
         self.options_cost_history_btn.setObjectName("ChipBtn")
         self.options_cost_history_btn.clicked.connect(self.show_cost_history)
-        tools.addWidget(self.options_cost_history_btn)
+        self.options_cost_history_btn.hide()
 
-        self.options_run_log_btn = QPushButton("Run log")
+        self.options_run_log_btn = QPushButton("Run log", self)
         self.options_run_log_btn.setObjectName("ChipBtn")
         self.options_run_log_btn.clicked.connect(self.show_run_log)
-        tools.addWidget(self.options_run_log_btn)
+        self.options_run_log_btn.hide()
 
-        self.options_settings_btn = QPushButton("Settings")
+        self.options_settings_btn = QPushButton("Settings", self)
         self.options_settings_btn.setObjectName("ChipBtn")
         self.options_settings_btn.clicked.connect(self.show_settings)
-        tools.addWidget(self.options_settings_btn)
-        sp.addWidget(tools_container)
+        self.options_settings_btn.hide()
 
-        self.runbar_menu = QMenu(self)
-        action = QWidgetAction(self.runbar_menu)
-        action.setDefaultWidget(settings_panel)
-        self.runbar_menu.addAction(action)
+        self.runbar_menu = QMenu(self.runbar_settings_btn)
+        self.runbar_menu.setMinimumWidth(230)
+
+        def add_combo_submenu(title: str, combo: QComboBox) -> QMenu:
+            submenu = self.runbar_menu.addMenu(title)
+            actions = {}
+            for index in range(combo.count()):
+                value = combo.itemText(index)
+                action = submenu.addAction(value)
+                action.setCheckable(True)
+                action.triggered.connect(
+                    lambda _checked=False, selected=value: combo.setCurrentText(selected)
+                )
+                actions[value] = action
+
+            def sync(selected: str) -> None:
+                for value, action in actions.items():
+                    action.setChecked(value == selected)
+
+            combo.currentTextChanged.connect(sync)
+            sync(combo.currentText())
+            return submenu
+
+        add_combo_submenu("Command", self.command_box)
+        add_combo_submenu("Execution mode", self.execution_mode_box)
+
+        provider_menu = self.runbar_menu.addMenu("Paid provider access")
+        for box in (self.allow_openai_checkbox, self.allow_deepseek_checkbox,
+                    self.allow_kimi_checkbox, self.allow_gemini_checkbox,
+                    self.allow_anthropic_checkbox, self.allow_qwen_checkbox):
+            action = provider_menu.addAction(box.text())
+            action.setCheckable(True)
+            action.setChecked(box.isChecked())
+            action.toggled.connect(box.setChecked)
+            box.toggled.connect(action.setChecked)
+
+        self.runbar_menu.addSeparator()
+        self.runbar_menu.addAction("Auto route now").triggered.connect(
+            self.auto_route_btn.click
+        )
+        self.runbar_menu.addAction("Use recommended model").triggered.connect(
+            self.recommend_setup_btn.click
+        )
+        self.auto_recommend_action = self.runbar_menu.addAction(
+            "Auto-apply recommendations"
+        )
+        self.auto_recommend_action.setCheckable(True)
+        self.auto_recommend_action.toggled.connect(
+            self.auto_recommend_checkbox.setChecked
+        )
+        self.auto_recommend_checkbox.toggled.connect(
+            self.auto_recommend_action.setChecked
+        )
+        self.runbar_menu.addAction("Estimate this request").triggered.connect(
+            self.estimate_btn.click
+        )
+        self.runbar_menu.addAction("Export current report").triggered.connect(
+            self.export_btn.click
+        )
+
+        models_menu = self.runbar_menu.addMenu("Models")
+        models_menu.addAction("Refresh model list").triggered.connect(
+            self.refresh_models_btn.click
+        )
+        self.get_muse_menu_action = models_menu.addAction("Get Muse Glimmer")
+        self.get_muse_menu_action.triggered.connect(self.get_muse_btn.click)
+        models_menu.addAction("Open model guide").triggered.connect(
+            self.model_guide_btn.click
+        )
+
         self.runbar_settings_btn.setMenu(self.runbar_menu)
 
         self.model_box.currentTextChanged.connect(self.save_provider_model_preference)
@@ -2016,11 +2085,14 @@ class GodAI(QWidget):
         }
         for meter in self.resource_meters.values():
             system_layout.addWidget(meter)
-        self.resource_meters["BATT"].hide()
 
         self.realtime_monitor_btn = QPushButton("Realtime monitor")
         self.realtime_monitor_btn.setEnabled(False)
-        self.realtime_monitor_btn.hide()
+        self.realtime_monitor_btn.setToolTip(
+            "Detailed realtime monitoring is not available yet; live summary "
+            "metrics above refresh every second."
+        )
+        system_layout.addWidget(self.realtime_monitor_btn)
 
         cards_layout.addWidget(system_card)
 
@@ -2043,14 +2115,14 @@ class GodAI(QWidget):
         }
         for row in self.routing_rows.values():
             routing_layout.addWidget(row)
-        self.routing_rows["Mode"].hide()
-        self.routing_rows["Cost"].hide()
 
         # kept so the existing update paths still have something to write to
         self.route_result_label = QLabel()
         self.route_result_label.hide()
         self.recommendation_label = QLabel()
         self.recommendation_label.hide()
+
+        cards_layout.addWidget(routing_card)
 
         # ── Card 3: Cost ────────────────────────────────────────────────
         cost_card = QGroupBox("COST")
@@ -2060,6 +2132,7 @@ class GodAI(QWidget):
         cost_layout.setSpacing(6)
 
         self.cost_rows = {
+            "estimate": KeyValue("Live estimate", "€0.00 · 0 tok"),
             "last": KeyValue("Last request", "€0.00"),
             "session": KeyValue("This session", "€0.00"),
             "today": KeyValue("Today", "€0.00"),
@@ -2076,7 +2149,6 @@ class GodAI(QWidget):
         self.request_count_label = QLabel(); self.request_count_label.hide()
 
         cards_layout.addWidget(cost_card)
-        cost_card.hide()
 
         # ── Card 4: Budget ──────────────────────────────────────────────
         budget_card = QGroupBox("BUDGET")
@@ -2109,10 +2181,9 @@ class GodAI(QWidget):
         self.edit_budget_btn = QPushButton("Edit limits…")
         self.edit_budget_btn.setObjectName("RailLink")
         self.edit_budget_btn.clicked.connect(self.show_settings)
-        self.edit_budget_btn.hide()
+        budget_layout.addWidget(self.edit_budget_btn)
 
         cards_layout.addWidget(budget_card)
-        cards_layout.addWidget(routing_card)
 
         # ── Card 5: Quick Actions ───────────────────────────────────────
         actions_card = QGroupBox("ACTIONS")
@@ -2134,7 +2205,6 @@ class GodAI(QWidget):
         actions_layout.addWidget(self.settings_btn)
 
         cards_layout.addWidget(actions_card)
-        actions_card.hide()
 
         # ── Card 6: API Keys ────────────────────────────────────────────
         keys_card = QGroupBox("API KEYS")
@@ -2150,7 +2220,8 @@ class GodAI(QWidget):
                               ("DeepSeek", DeepSeekClientWrapper),
                               ("Kimi", KimiClientWrapper),
                               ("Gemini", GeminiClientWrapper),
-                              ("Anthropic", AnthropicClientWrapper)):
+                              ("Anthropic", AnthropicClientWrapper),
+                              ("Qwen", QwenClientWrapper)):
             ready = False
             try:
                 ready = bool(wrapper.key_available())
@@ -2170,7 +2241,6 @@ class GodAI(QWidget):
         self.anthropic_key_label = QLabel(); self.anthropic_key_label.hide()
 
         cards_layout.addWidget(keys_card)
-        keys_card.hide()
 
         cards_layout.addStretch()
 
@@ -2514,12 +2584,14 @@ class GodAI(QWidget):
         rec = self._recommendation_for(agent_name)
         if not rec:
             return
-        pricing = rec.get("pricing") or pricing_metadata(rec["provider"], rec["model"])
         reason = rec.get("reason", "")
+        cost_label = rec.get("cost_label")
+        if not cost_label:
+            cost_label = pricing_metadata(rec["provider"], rec["model"]).compact
         self.routing_rows["Suggested"].set(rec["provider"], reason)
         self.routing_rows["Model"].set(rec["model"], reason)
         self.routing_rows["Mode"].set(rec.get("mode", "—"), reason)
-        self.routing_rows["Cost"].set(pricing.compact, reason)
+        self.routing_rows["Cost"].set(cost_label, reason)
 
     def load_models(self):
         self.model_box.clear()
@@ -3041,6 +3113,45 @@ class GodAI(QWidget):
         if context and context["run_id"]:
             self.run_logger.finish(run_id=context["run_id"], status=reason)
 
+    def record_external_research(self, *, agent: str, target: str,
+                                 query_type: str, response: str,
+                                 cancelled: bool = False) -> None:
+        """Persist a consented public-source lookup without billing an LLM request."""
+        run_id = self.run_logger.start(
+            agent=agent,
+            tool=f"Live Research · {query_type}",
+            provider="public-sources",
+            model="selected-public-sources",
+            mode="External lookup",
+            prompt_summary=target,
+        )
+        try:
+            self.history.save_chat(
+                agent=agent,
+            backend="public-sources",
+            model="selected-public-sources",
+                command=f"Live Research · {query_type}",
+                messages=[
+                    {"role": "user", "content": target},
+                    {"role": "assistant", "content": response},
+                ],
+                response=response,
+            )
+        except Exception:
+            if run_id:
+                self.run_logger.finish(run_id=run_id, status="error")
+            raise
+        if run_id:
+            self.run_logger.finish(
+                run_id=run_id,
+                status="cancelled" if cancelled else "success",
+                input_tokens=0,
+                output_tokens=0,
+                cost_eur=0.0,
+            )
+        self.load_history_list()
+        self.load_saved_searches()
+
     def run_backend(self, backend, model, messages, prompt):
         if backend == "ollama":
             # Runs on the worker thread, so this cannot prompt — it is the hard
@@ -3446,7 +3557,10 @@ class GodAI(QWidget):
             response = data.get("response", "")
             panel._clear_output()
             panel._last_response = response
-            panel._populate_sections(response)
+            if str(data.get("command", "")).startswith("Live Research"):
+                panel._show_lookup_result(json.loads(response), save=False)
+            else:
+                panel._populate_sections(response)
             panel._reset_activity()
             panel._append_activity(
                 "Opened a saved Trace search. This is a stored query-planning "
@@ -3881,6 +3995,42 @@ class GodAI(QWidget):
         event.accept()
 
 SINGLE_INSTANCE_KEY = "sentinel-fork.single-instance.v2"
+WINDOW_SETTINGS_KEY = "mainWindow/geometry"
+
+
+def _activate_native_app():
+    """Ask macOS to foreground the Python GUI process, when AppKit is present."""
+    if sys.platform != "darwin":
+        return
+    try:
+        from AppKit import NSApplication
+        NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
+    except (ImportError, AttributeError):
+        # Qt's activation request below is the portable fallback.
+        pass
+
+
+def _show_main_window(window):
+    """Show, restore, clamp to the primary work area, and foreground a window."""
+    screen = QApplication.primaryScreen()
+    if screen is not None and not window.isFullScreen() and not window.isMaximized():
+        work_area = screen.availableGeometry()
+        frame = window.frameGeometry()
+        width = min(frame.width(), work_area.width())
+        height = min(frame.height(), work_area.height())
+        x = min(max(frame.x(), work_area.left()), work_area.right() - width + 1)
+        y = min(max(frame.y(), work_area.top()), work_area.bottom() - height + 1)
+        window.resize(width, height)
+        window.move(x, y)
+
+    if window.isMinimized():
+        window.setWindowState(window.windowState() & ~Qt.WindowMinimized)
+    window.show()
+    window.raise_()
+    window.activateWindow()
+    if window.windowHandle() is not None:
+        window.windowHandle().requestActivate()
+    _activate_native_app()
 
 
 def _hand_off_to_running_instance() -> bool:
@@ -3913,20 +4063,20 @@ if __name__ == "__main__":
     instance_server.listen(SINGLE_INSTANCE_KEY)
 
     window = GodAI()
-    # Always open in fullscreen. The three panes need ~1000px before the
-    # splitter starts squeezing panels, so a small default window is the state
-    # the layout looks worst in.
-    window.showFullScreen()
+    settings = QSettings("Sentinel", "Sentinel Fork")
+    saved_geometry = settings.value(WINDOW_SETTINGS_KEY)
+    if saved_geometry is not None:
+        window.restoreGeometry(saved_geometry)
+    _show_main_window(window)
+    QTimer.singleShot(150, lambda: _show_main_window(window))
 
     def _raise_existing_window():
         instance_server.nextPendingConnection()      # drain the pending connection
-        window.setWindowState(
-            (window.windowState() & ~Qt.WindowMinimized) | Qt.WindowActive
-        )
-        window.show()
-        window.raise_()
-        window.activateWindow()
+        _show_main_window(window)
 
     instance_server.newConnection.connect(_raise_existing_window)
 
+    app.aboutToQuit.connect(
+        lambda: settings.setValue(WINDOW_SETTINGS_KEY, window.saveGeometry())
+    )
     app.exec()

@@ -59,21 +59,21 @@ class ManagerPanel(AgentPanel):
         self.idea_input.setMaximumHeight(160)
         idea_layout.addWidget(self.idea_input)
 
-        idea_btn_row = QHBoxLayout()
-        self.build_provider_row(idea_btn_row, empty_placeholder=True)
-        idea_btn_row.addStretch()
-
         self.analyze_btn = QPushButton("Analyze Idea")
         self.analyze_btn.setMinimumWidth(140)
         self.analyze_btn.setObjectName("PrimaryAction")
         self.analyze_btn.clicked.connect(self.analyze_idea)
-        idea_btn_row.addWidget(self.analyze_btn)
 
         self.clear_btn = QPushButton("Clear")
         self.clear_btn.clicked.connect(self.clear)
-        idea_btn_row.addWidget(self.clear_btn)
 
-        idea_layout.addLayout(idea_btn_row)
+        idea_run_bar = self.build_run_bar(
+            self.analyze_btn,
+            secondary=(self.clear_btn,),
+            context="Agent Builder",
+            empty_placeholder=True,
+        )
+        idea_layout.addWidget(idea_run_bar)
         layout.addWidget(idea_group)
 
         # ── Generated spec ───────────────────────────────────────────────

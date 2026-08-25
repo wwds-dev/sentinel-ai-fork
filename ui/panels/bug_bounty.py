@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
 )
 
 from ui.panels.base import AgentPanel
+from ui.widgets import MenuComboBox
 
 SEVERITY_COLOURS = {
     "Critical": "#ff3333", "High": "#ff7722", "Medium": "#f0c040",
@@ -66,7 +67,7 @@ class BugBountyPanel(AgentPanel):
         setup_layout.addWidget(self.program_input, 1, 1, 1, 3)
 
         setup_layout.addWidget(QLabel("Scope Type:"), 2, 0)
-        self.scope_box = QComboBox()
+        self.scope_box = MenuComboBox()
         self.scope_box.addItems([
             "Web Application", "API / REST", "Mobile (Android)", "Mobile (iOS)",
             "Network / Infrastructure", "Source Code Review", "Cloud Config", "Other",
@@ -74,7 +75,7 @@ class BugBountyPanel(AgentPanel):
         setup_layout.addWidget(self.scope_box, 2, 1)
 
         setup_layout.addWidget(QLabel("Severity Target:"), 2, 2)
-        self.severity_box = QComboBox()
+        self.severity_box = MenuComboBox()
         self.severity_box.addItems(
             ["Critical (P1)", "High (P2)", "Medium (P3)", "Low (P4)", "Informational"])
         setup_layout.addWidget(self.severity_box, 2, 3)
@@ -125,22 +126,23 @@ class BugBountyPanel(AgentPanel):
         findings_layout.addWidget(self.findings_input)
         layout.addWidget(findings_group)
 
-        # ── Provider row ─────────────────────────────────────────────────
-        provider_row_container, provider_row = self.flow_row()
-        self.build_provider_row(provider_row)
-
         self.analyse_btn = QPushButton("Analyse")
         self.analyse_btn.setMinimumWidth(130)
         self.analyse_btn.setObjectName("PrimaryAction")
         self.analyse_btn.clicked.connect(self.analyse)
-        provider_row.addWidget(self.analyse_btn)
 
         self.stop_btn = QPushButton("Stop")
         self.stop_btn.setEnabled(False)
         self.stop_btn.setObjectName("DangerAction")
         self.stop_btn.clicked.connect(self.stop)
-        provider_row.addWidget(self.stop_btn)
         self.set_busy(self.analyse_btn, self.stop_btn, False)
+
+        # ── Provider row ─────────────────────────────────────────────────
+        provider_row_container = self.build_run_bar(
+            self.analyse_btn,
+            stop=self.stop_btn,
+            context="Analysis",
+        )
         layout.addWidget(provider_row_container)
 
         # ── Results: tabs + sidebar ──────────────────────────────────────

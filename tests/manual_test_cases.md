@@ -50,6 +50,15 @@ Use a disposable test database and non-sensitive prompts. Do not send paid reque
 - [ ] The response provides a focused research plan, useful source types, and clear next steps.
 - [ ] Claims are framed as leads to verify rather than unsupported facts.
 - [ ] The request is logged under `osint` and can be stopped safely.
+- [ ] The Activity trail remains visible after completion and accurately states that Structure Query contacted no external sources.
+- [ ] A completed run appears under Saved Searches and can be reopened without issuing another model or network request.
+- [ ] Auto-detect records the resolved target type; malformed typed email, domain, phone, username, or IP input is blocked before authorization.
+- [ ] Live Research for a domain names WHOIS, DNS, and crt.sh before confirmation and contacts nothing when confirmation is declined.
+- [ ] The Activity trail records each source actually contacted, retains successful results if another source fails, and saves the collected record under Saved Searches.
+- [ ] Stopping Live Research preserves completed source results and marks the run as partial/cancelled.
+- [ ] Username Live Research names URLScan before confirmation and records only URLScan as contacted.
+- [ ] Email Live Research sends the address only to checked services; HIBP and BreachDirectory start off, and HIBP is unavailable without a key.
+- [ ] A skipped email service is recorded as skipped-before-contact rather than contacted or failed.
 
 ## 4. Bloodhound (`osint_heavy`)
 

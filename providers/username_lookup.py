@@ -12,7 +12,7 @@ Zero-cost stack:
 import requests
 
 
-def lookup(username: str) -> dict:
+def lookup(username: str, *, on_progress=None, should_stop=None) -> dict:
     """
     Return a normalised OSINT dict for a username handle.
 
@@ -24,11 +24,18 @@ def lookup(username: str) -> dict:
     result: dict = {
         "type":  "username",
         "query": username,
+        "sources_contacted": [],
     }
 
     if not username:
         result["error"] = "Empty username — skipping live lookup."
         return result
+
+    if should_stop and should_stop():
+        result["cancelled"] = True
+        return result
+    if on_progress:
+        on_progress("URLScan", "checking")
 
     # Search for pages whose URL contains the username string.
     # URLScan stores real browser scans of public pages — hits here
@@ -86,5 +93,10 @@ def lookup(username: str) -> dict:
         result["error"] = "urlscan.io request timed out (>10 s)"
     except Exception as exc:
         result["error"] = str(exc)[:300]
+
+    status = "error" if result.get("error") else "checked"
+    result["sources_contacted"].append({"source": "URLScan", "status": status})
+    if on_progress:
+        on_progress("URLScan", status)
 
     return result

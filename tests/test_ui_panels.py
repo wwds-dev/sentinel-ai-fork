@@ -20,6 +20,7 @@ from pathlib import Path
 
 import pytest
 from PySide6.QtCore import QObject, Signal
+from PySide6.QtWidgets import QMessageBox
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -99,20 +100,21 @@ class TestPanelProviderRows:
         finally:
             provider_box.setCurrentText(before)
 
-    def test_labels_are_kept_where_the_panel_had_them(self, win):
-        # Beacon and Tunnel never had "Provider:"/"Model:" labels; the flag that
-        # preserves that is easy to get backwards, and nothing else would notice.
+    @pytest.mark.parametrize("agent", PANEL_AGENTS)
+    def test_specialists_use_the_same_compact_run_bar_as_chat(self, win, agent):
         from PySide6.QtWidgets import QLabel
+
+        panel = win.panels[agent]
+        run_bar = panel.findChild(QObject, "RunBar")
+        assert run_bar is not None
         labels = {
-            w.text() for w in win.wifi_panel.findChildren(QLabel)
+            w.text() for w in run_bar.findChildren(QLabel)
             if w.text() in ("Provider:", "Model:")
         }
         assert labels == set()
-        osint_labels = {
-            w.text() for w in win.osint_panel.findChildren(QLabel)
-            if w.text() in ("Provider:", "Model:")
-        }
-        assert osint_labels == {"Provider:", "Model:"}
+        provider_box, model_box = win.setup_widgets_for(agent)
+        assert provider_box.objectName() == "MachinePick"
+        assert model_box.objectName() == "MachinePick"
 
 
 class TestRecommendationsStillReachThePanels:
@@ -132,6 +134,13 @@ class TestRecommendationsStillReachThePanels:
         rec = main.AGENT_RECOMMENDATIONS[agent]
         expected = pricing_metadata(rec["provider"], rec["model"]).compact
         assert win.routing_rows["Cost"].value.text() == expected
+
+    def test_chat_startup_accepts_serialized_route_pricing(self, win):
+        """The capability router returns pricing as a dict from as_dict()."""
+        rec = win.get_recommended_setup()
+        assert isinstance(rec["pricing"], dict)
+        win.update_recommendation_label()
+        assert win.routing_rows["Cost"].value.text() == rec["cost_label"]
 
     @pytest.mark.parametrize("agent", PANEL_AGENTS)
     def test_panel_starts_on_its_recommended_provider_and_model(
@@ -394,6 +403,114 @@ class TestWorkspaceLayoutRegressions:
         assert gap <= 12
         assert win.input_box.height() == 74
 
+    def test_inspector_exposes_complete_operational_information(self, win):
+        from PySide6.QtWidgets import QGroupBox
+
+        visible_sections = {
+            group.title() for group in win.right_panel.findChildren(QGroupBox)
+            if not group.isHidden()
+        }
+        assert {
+            "SYSTEM", "ROUTING", "COST", "BUDGET", "ACTIONS", "API KEYS"
+        } <= visible_sections
+        assert not win.routing_rows["Mode"].isHidden()
+        assert not win.routing_rows["Cost"].isHidden()
+        assert "estimate" in win.cost_rows
+        assert "Qwen" in win.key_rows
+
+    def test_live_cost_row_tracks_the_chat_prompt(self, win):
+        win.select_agent("chat")
+        original = win.input_box.toPlainText()
+        try:
+            win.input_box.setPlainText("Summarise the current investigation.")
+            win.update_live_cost_estimate()
+            value = win.cost_rows["estimate"].value.text()
+            assert "tok" in value
+            assert value != "€0.00 · 0 tok"
+        finally:
+            win.input_box.setPlainText(original)
+            win.update_live_cost_estimate()
+
+    def test_chat_options_is_a_compact_request_menu(self, win):
+        top_level = {action.text() for action in win.runbar_menu.actions()}
+        assert {
+            "Command", "Execution mode", "Paid provider access",
+            "Auto route now", "Use recommended model",
+            "Auto-apply recommendations", "Estimate this request",
+            "Export current report", "Models",
+        } <= top_level
+        assert {"Cost history", "Run log", "Settings", "App docs"}.isdisjoint(
+            top_level
+        )
+
+        providers = next(
+            action.menu() for action in win.runbar_menu.actions()
+            if action.text() == "Paid provider access"
+        )
+        assert {action.text() for action in providers.actions()} == {
+            "OpenAI", "DeepSeek", "Kimi", "Gemini", "Anthropic", "Qwen"
+        }
+
+    def test_every_application_combo_uses_the_shared_popup_contract(self, win):
+        from PySide6.QtWidgets import QComboBox
+        from ui.widgets import MenuComboBox
+
+        combos = win.findChildren(QComboBox)
+        assert combos
+        for combo in combos:
+            assert isinstance(combo, MenuComboBox)
+            assert combo.property("sentinelMenuCombo") is True
+            assert combo.maxVisibleItems() == 12
+
+    def test_provider_and_model_selectors_use_meaningful_nested_menus(self, win):
+        from ui.widgets import MenuComboBox
+
+        provider = win.provider_box
+        model = win.model_box
+        assert provider.menuMode() == MenuComboBox.PROVIDER
+        assert model.menuMode() == MenuComboBox.MODEL
+
+        provider_menu = provider.buildMenu()
+        provider_groups = {
+            action.text(): action.menu() for action in provider_menu.actions()
+            if action.menu() is not None
+        }
+        assert set(provider_groups) == {"Local providers", "Cloud providers"}
+        assert [a.text() for a in provider_groups["Local providers"].actions()] == [
+            "ollama"
+        ]
+        assert "openai" in {
+            a.text() for a in provider_groups["Cloud providers"].actions()
+        }
+
+        model_menu = model.buildMenu()
+        assert not [
+            action for action in model_menu.actions() if action.menu() is not None
+        ]
+        assert [a.text() for a in model_menu.actions()] == [
+            model.itemText(index) for index in range(model.count())
+        ]
+
+    def test_closed_model_tooltip_describes_the_selected_route(self, win):
+        provider = win.provider_box
+        model = win.model_box
+        win.refresh_recommendation_marks("chat")
+        assert model.toolTip() == (
+            f"Selected model: {provider.currentText()} · {model.currentText()}."
+        )
+
+    def test_simple_selectors_keep_the_menu_style_without_fake_hierarchy(self, win):
+        combo = win.osint_panel.type_box
+        menu = combo.buildMenu()
+        assert not [action for action in menu.actions() if action.menu() is not None]
+        assert [action.text() for action in menu.actions()] == [
+            combo.itemText(index) for index in range(combo.count())
+        ]
+
+        person = next(action for action in menu.actions() if action.text() == "Person")
+        person.trigger()
+        assert combo.currentText() == "Person"
+
     @pytest.mark.parametrize("panel_name", ["wifi_panel", "vpn_panel"])
     def test_specialists_do_not_duplicate_the_global_help_button(
             self, win, panel_name):
@@ -561,6 +678,9 @@ class FakeHost:
 
     def note_request_usage(self, agent, usage):
         self.calls.append(("usage", agent, usage))
+
+    def record_external_research(self, **details):
+        self.calls.append(("external", details))
 
     def run_backend(self, backend, model, messages, prompt):
         self.calls.append(("run", backend, model, messages, prompt))
@@ -766,6 +886,43 @@ class FakeOsintAgent:
         self.calls.append((target, query_type))
         return [{"role": "user", "content": f"{query_type}:{target}"}]
 
+    def validate_target(self, target, query_type):
+        from agents.osint_agent import OSINTAgent
+        return OSINTAgent.validate_target(target, query_type)
+
+
+class FakeLookupWorker(QObject):
+    progress_signal = Signal(str, str)
+    finished_signal = Signal(dict)
+    error_signal = Signal(str)
+    instances = []
+
+    def __init__(self, target):
+        super().__init__()
+        self.target = target
+        self.running = True
+        self.cancelled = False
+        self.__class__.instances.append(self)
+
+    def start(self):
+        pass
+
+    def isRunning(self):
+        return self.running
+
+    def cancel(self):
+        self.cancelled = True
+        self.running = False
+
+
+class FakeIdentityLookupWorker(FakeLookupWorker):
+    instances = []
+
+    def __init__(self, target, query_type, sources=()):
+        super().__init__(target)
+        self.query_type = query_type
+        self.sources = tuple(sources)
+
 
 @pytest.fixture
 def trace(qapp, monkeypatch):
@@ -775,7 +932,13 @@ def trace(qapp, monkeypatch):
 
     monkeypatch.setattr(QMessageBox, "warning", staticmethod(lambda *a, **k: None))
     monkeypatch.setattr(OsintPanel, "worker_class", FakeWorker)
+    monkeypatch.setattr(OsintPanel, "lookup_worker_class", FakeLookupWorker)
+    monkeypatch.setattr(
+        OsintPanel, "identity_lookup_worker_class", FakeIdentityLookupWorker
+    )
     FakeWorker.instances.clear()
+    FakeLookupWorker.instances.clear()
+    FakeIdentityLookupWorker.instances.clear()
 
     host = FakeHost()
     host.agent_instances["osint"] = FakeOsintAgent()
@@ -800,6 +963,21 @@ class TestTracePanel:
         trace.target_input.clear()
         trace.analyse()
         assert [c for c in trace.host.calls if c[0] == "authorize"] == []
+
+    def test_an_invalid_typed_target_never_reaches_the_guard(self, trace):
+        trace.type_box.setCurrentText("Email")
+        trace.target_input.setText("not-an-email")
+        trace.analyse()
+        assert [c for c in trace.host.calls if c[0] == "authorize"] == []
+        assert trace.status_label.text() == "Check the target and try again."
+        assert "Target validation stopped" in trace.activity_box.toPlainText()
+
+    def test_auto_detected_type_reaches_agent_guard_and_tracker(self, trace):
+        trace.target_input.setText("analyst@example.com")
+        trace.analyse()
+        authorize = [c for c in trace.host.calls if c[0] == "authorize"][-1]
+        assert authorize[6] == "Email"
+        assert "Email (auto-detected)" in trace.activity_box.toPlainText()
 
     def test_no_model_never_reaches_the_guard(self, trace):
         trace.model_box.clear()
@@ -831,6 +1009,107 @@ class TestTracePanel:
         assert "target stays on this Mac" in activity
         assert "No websites or public databases are contacted" in activity
         assert "Google dorks" in activity
+
+    def test_live_domain_research_requires_explicit_confirmation(
+            self, trace, monkeypatch):
+        trace.target_input.setText("example.com")
+        monkeypatch.setattr(
+            QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.No)
+        )
+        trace.live_research()
+        assert FakeLookupWorker.instances == []
+        assert trace.status_label.text() == "Live Research cancelled before any lookup."
+
+    def test_live_domain_research_tracks_sources_and_saves_results(
+            self, trace, monkeypatch):
+        trace.target_input.setText("example.com")
+        monkeypatch.setattr(
+            QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.Yes)
+        )
+        trace.live_research()
+        worker = FakeLookupWorker.instances[-1]
+        assert worker.target == "example.com"
+        assert [call for call in trace.host.calls if call[0] == "authorize"] == []
+
+        worker.progress_signal.emit("WHOIS", "checking")
+        worker.progress_signal.emit("WHOIS", "checked")
+        worker.progress_signal.emit("DNS", "error")
+        worker.finished_signal.emit({
+            "type": "domain",
+            "query": "example.com",
+            "whois": {"registrar": "Example Registrar"},
+            "dns": {"error": "no records resolved"},
+            "certificates": {"total_unique": 2, "sample": ["www.example.com"]},
+            "sources_contacted": [
+                {"source": "WHOIS", "status": "checked"},
+                {"source": "DNS", "status": "error"},
+                {"source": "Certificate transparency (crt.sh)", "status": "checked"},
+            ],
+        })
+
+        assert trace.status_label.text() == "Live Research complete."
+        assert "Sources actually contacted" in trace.activity_box.toPlainText()
+        assert "Example Registrar" in trace.sections._raw
+        saved = [call for call in trace.host.calls if call[0] == "external"]
+        assert saved and saved[-1][1]["target"] == "example.com"
+
+    def test_live_research_stop_retains_partial_results(
+            self, trace, monkeypatch):
+        trace.target_input.setText("192.0.2.10")
+        monkeypatch.setattr(
+            QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.Yes)
+        )
+        trace.live_research()
+        worker = FakeLookupWorker.instances[-1]
+        trace.stop()
+        assert worker.cancelled
+        worker.finished_signal.emit({
+            "type": "ip", "query": "192.0.2.10", "cancelled": True,
+            "whois": {"country": "ZZ"},
+            "sources_contacted": [{"source": "WHOIS", "status": "checked"}],
+        })
+        assert trace.status_label.text() == "Stopped — partial results retained."
+        assert "partial results retained" in trace.status_label.text()
+        assert '"cancelled": true' in trace.sections._raw
+
+    def test_live_username_research_requires_consent_and_uses_urlscan(
+            self, trace, monkeypatch):
+        trace.target_input.setText("@researcher_1")
+        monkeypatch.setattr(
+            QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.Yes)
+        )
+        trace.live_research()
+        worker = FakeIdentityLookupWorker.instances[-1]
+        assert worker.query_type == "Username"
+        assert worker.sources == ()
+        assert "URLScan" in trace.activity_box.toPlainText()
+
+        worker.finished_signal.emit({
+            "type": "username", "query": "researcher_1",
+            "urlscan": {"unique_domains_found": 1, "hits": []},
+            "sources_contacted": [{"source": "URLScan", "status": "checked"}],
+        })
+        assert "unique_domains_found" in trace.sections._raw
+
+    def test_live_email_research_passes_only_explicitly_selected_sources(
+            self, trace, monkeypatch):
+        trace.target_input.setText("analyst@example.com")
+        monkeypatch.setattr(
+            trace, "_choose_email_sources", lambda target: ("emailrep",)
+        )
+        trace.live_research()
+        worker = FakeIdentityLookupWorker.instances[-1]
+        assert worker.query_type == "Email"
+        assert worker.sources == ("emailrep",)
+        assert "BreachDirectory" not in trace.activity_box.toPlainText()
+        assert "Have I Been Pwned" not in trace.activity_box.toPlainText()
+
+        worker.finished_signal.emit({
+            "type": "email", "query": "analyst@example.com",
+            "reputation": {"score": "high"},
+            "sources_contacted": [{"source": "EmailRep", "status": "checked"}],
+        })
+        assert "\"score\": \"high\"" in trace.sections._raw
 
     def test_tokens_stream_into_the_raw_box(self, trace):
         trace.analyse()

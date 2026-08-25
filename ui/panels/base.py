@@ -17,12 +17,13 @@ so the two paths cannot drift.
 
 from __future__ import annotations
 
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QComboBox, QGridLayout, QGroupBox, QLabel, QPushButton, QSizePolicy,
-    QTabWidget, QTextBrowser, QTextEdit, QVBoxLayout, QWidget,
+    QComboBox, QGridLayout, QGroupBox, QHBoxLayout, QLabel, QPushButton,
+    QSizePolicy, QTabWidget, QTextBrowser, QTextEdit, QVBoxLayout, QWidget,
 )
 
-from ui.widgets import FlowLayout, ProgressiveSection, WorkspaceState
+from ui.widgets import FlowLayout, MenuComboBox, ProgressiveSection, WorkspaceState
 from ui.workers import ChatWorker
 from services.provider_catalog import SUPPORTED_PROVIDERS
 
@@ -44,6 +45,10 @@ def configure_model_controls(provider_box: QComboBox, model_box: QComboBox) -> N
     model_box.setMinimumContentsLength(24)
     provider_box.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
     model_box.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+    if isinstance(provider_box, MenuComboBox):
+        provider_box.setMenuMode(MenuComboBox.PROVIDER)
+    if isinstance(model_box, MenuComboBox):
+        model_box.setMenuMode(MenuComboBox.MODEL)
 
 
 def flow_row(parent: QWidget | None = None,
@@ -71,6 +76,7 @@ def build_provider_row(
     labels: bool = True,
     model_width: int = MODEL_BOX_WIDTH,
     empty_placeholder: bool = False,
+    separator: bool = False,
 ) -> tuple[QComboBox, QComboBox]:
     """Add "Provider: […] Model: […]" to `layout` and keep the two in step.
 
@@ -83,18 +89,22 @@ def build_provider_row(
     `empty_placeholder` is on for Forge, which shows "(no local models)" rather
     than an empty box. Both exist to keep this a refactor rather than a redesign.
     """
-    provider_box = QComboBox()
+    provider_box = MenuComboBox()
     provider_box.addItems(PROVIDERS)
     provider_box.setCurrentText(default)
     if labels:
         layout.addWidget(QLabel("Provider:"))
     layout.addWidget(provider_box)
 
-    model_box = QComboBox()
+    model_box = MenuComboBox()
     model_box.setMinimumWidth(model_width)
     configure_model_controls(provider_box, model_box)
     if labels:
         layout.addWidget(QLabel("Model:"))
+    elif separator:
+        dot = QLabel("·")
+        dot.setObjectName("RunBarDot")
+        layout.addWidget(dot)
     layout.addWidget(model_box)
 
     def load() -> None:
@@ -148,6 +158,53 @@ class AgentPanel(QWidget):
             self.host, layout, self.agent_key, **kwargs
         )
         return self.provider_box, self.model_box
+
+    def build_run_bar(
+        self,
+        primary: QPushButton,
+        *,
+        stop: QPushButton | None = None,
+        secondary: tuple[QPushButton, ...] = (),
+        context: str = "",
+        empty_placeholder: bool = False,
+    ) -> QWidget:
+        """Build the same compact provider/model/action surface used by Chat.
+
+        Specialist panels keep their task-specific forms and results, but the
+        decision immediately before execution should always read the same way:
+        workflow, provider, model, optional utility, primary action. Centralising
+        this also prevents provider widths and action order drifting per agent.
+        """
+        container = QWidget(self)
+        container.setObjectName("RunBar")
+        container.setAttribute(Qt.WA_StyledBackground, True)
+        container.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+
+        row = QHBoxLayout(container)
+        row.setContentsMargins(10, 7, 10, 7)
+        row.setSpacing(8)
+
+        if context:
+            chip = QLabel(context)
+            chip.setObjectName("WorkflowChip")
+            row.addWidget(chip)
+
+        self.build_provider_row(
+            row,
+            labels=False,
+            separator=True,
+            empty_placeholder=empty_placeholder,
+        )
+        self.provider_box.setObjectName("MachinePick")
+        self.model_box.setObjectName("MachinePick")
+        row.addStretch()
+
+        for button in secondary:
+            row.addWidget(button)
+        if stop is not None:
+            row.addWidget(stop)
+        row.addWidget(primary)
+        return container
 
     def build_model_override(self, *, expanded: bool = False,
                              empty_placeholder: bool = False) -> ProgressiveSection:

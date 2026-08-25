@@ -20,6 +20,8 @@ from services.kimi_client import KimiClientWrapper
 from services.openai_client import OpenAIClientWrapper
 from services.registry import Registry
 from services.validator import Validator
+from ui.style import polish_combo_box
+from ui.widgets import MenuComboBox
 
 
 def show_cost_history(app):
@@ -33,8 +35,12 @@ def show_cost_history(app):
 
     filter_row = QHBoxLayout()
 
-    provider_filter = QComboBox()
-    provider_filter.addItems(["all", "ollama", "openai", "deepseek", "kimi", "gemini"])
+    provider_filter = MenuComboBox()
+    provider_filter.addItems([
+        "all", "ollama", "openai", "deepseek", "kimi", "gemini",
+        "anthropic", "qwen",
+    ])
+    polish_combo_box(provider_filter)
     filter_row.addWidget(QLabel("Provider:"))
     filter_row.addWidget(provider_filter)
 
@@ -178,13 +184,15 @@ def show_run_log(app):
 
     filter_row = QHBoxLayout()
 
-    status_filter = QComboBox()
+    status_filter = MenuComboBox()
     status_filter.addItems(["all", "success", "error", "cancelled"])
+    polish_combo_box(status_filter)
     filter_row.addWidget(QLabel("Status:"))
     filter_row.addWidget(status_filter)
 
-    agent_filter = QComboBox()
+    agent_filter = MenuComboBox()
     agent_filter.addItems(["all"] + sorted({e.get("agent", "") for e in entries if e.get("agent")}))
+    polish_combo_box(agent_filter)
     filter_row.addWidget(QLabel("Agent:"))
     filter_row.addWidget(agent_filter)
 

@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
 
 from services.runtime_paths import user_data_base
 from ui.panels.base import AgentPanel
+from ui.widgets import MenuComboBox
 
 
 # ── EXIF, as plain functions ────────────────────────────────────────────────
@@ -139,7 +140,7 @@ class OsintHeavyPanel(AgentPanel):
         brief_layout.addWidget(self.target_input, 0, 1, 1, 3)
 
         brief_layout.addWidget(QLabel("Target Type:"), 1, 0)
-        self.type_box = QComboBox()
+        self.type_box = MenuComboBox()
         self.type_box.addItems([
             "Person", "Username", "Email Address", "Domain / IP",
             "Organisation", "Phone Number", "Auto-detect",
@@ -147,7 +148,7 @@ class OsintHeavyPanel(AgentPanel):
         brief_layout.addWidget(self.type_box, 1, 1)
 
         brief_layout.addWidget(QLabel("Scope:"), 1, 2)
-        self.scope_box = QComboBox()
+        self.scope_box = MenuComboBox()
         self.scope_box.addItems(["Quick Scan", "Standard Investigation", "Deep Dive"])
         self.scope_box.setCurrentText("Standard Investigation")
         brief_layout.addWidget(self.scope_box, 1, 3)
@@ -162,21 +163,22 @@ class OsintHeavyPanel(AgentPanel):
         self.objective_input.setMaximumHeight(120)
         brief_layout.addWidget(self.objective_input, 2, 1, 1, 3)
 
-        provider_row_container, provider_row = self.flow_row()
-        self.build_provider_row(provider_row)
-
         self.investigate_btn = QPushButton("Investigate")
         self.investigate_btn.setMinimumWidth(140)
         self.investigate_btn.setObjectName("PrimaryAction")
         self.investigate_btn.clicked.connect(self.investigate)
-        provider_row.addWidget(self.investigate_btn)
 
         self.stop_btn = QPushButton("Stop")
         self.stop_btn.setEnabled(False)
         self.stop_btn.setObjectName("DangerAction")
         self.stop_btn.clicked.connect(self.stop)
-        provider_row.addWidget(self.stop_btn)
         self.set_busy(self.investigate_btn, self.stop_btn, False)
+
+        provider_row_container = self.build_run_bar(
+            self.investigate_btn,
+            stop=self.stop_btn,
+            context="Investigation",
+        )
 
         brief_layout.addWidget(provider_row_container, 3, 0, 1, 4)
         layout.addWidget(brief_group)

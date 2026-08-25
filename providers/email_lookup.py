@@ -94,7 +94,54 @@ def _breachdirectory(email: str) -> dict:
         return {"source": "breachdirectory", "status": "error", "detail": str(e)[:200]}
 
 
-def lookup(email: str) -> dict:
+def _emailrep(email: str) -> dict:
+    """Return EmailRep's normalized reputation payload or an error."""
+    try:
+        resp = requests.get(
+            f"https://emailrep.io/{email}",
+            timeout=10,
+            headers={"User-Agent": "SentinelAI-OSINT/1.0", "Accept": "application/json"},
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            details = data.get("details", {})
+            return {
+                "score": data.get("reputation"),
+                "suspicious": data.get("suspicious"),
+                "references": data.get("references"),
+                "blacklisted": details.get("blacklisted"),
+                "malicious_activity": details.get("malicious_activity"),
+                "credentials_leaked": details.get("credentials_leaked"),
+                "credentials_leaked_recent": details.get("credentials_leaked_recent"),
+                "data_breach": details.get("data_breach"),
+                "first_seen": details.get("first_seen"),
+                "last_seen": details.get("last_seen"),
+                "domain_reputation": details.get("domain_reputation"),
+                "new_domain": details.get("new_domain"),
+                "days_since_domain_creation": details.get("days_since_domain_creation"),
+                "suspicious_tld": details.get("suspicious_tld"),
+                "spam": details.get("spam"),
+                "free_provider": details.get("free_provider"),
+                "disposable": details.get("disposable"),
+                "deliverable": details.get("deliverable"),
+                "spoofable": details.get("spoofable"),
+                "spf_strict": details.get("spf_strict"),
+                "dmarc_enforced": details.get("dmarc_enforced"),
+                "profiles": details.get("profiles", []),
+            }
+        if resp.status_code == 400:
+            return {"error": "emailrep.io: invalid email or bad request"}
+        if resp.status_code == 429:
+            return {"error": "emailrep.io rate limit reached (~10 requests/day without a key)"}
+        return {"error": f"emailrep.io returned HTTP {resp.status_code}"}
+    except requests.exceptions.Timeout:
+        return {"error": "emailrep.io request timed out (>10 s)"}
+    except Exception as exc:
+        return {"error": str(exc)[:300]}
+
+
+def lookup(email: str, *, selected_sources=None, on_progress=None,
+           should_stop=None) -> dict:
     """
     Return a normalised OSINT dict for an email address.
 
@@ -106,78 +153,49 @@ def lookup(email: str) -> dict:
     valid_format = bool(email and "@" in email and "." in domain_part)
 
     result: dict = {
-        "type":         "email",
-        "query":        email,
-        "valid_format": valid_format,
+        "type": "email", "query": email, "valid_format": valid_format,
+        "sources_contacted": [], "sources_skipped": [],
     }
 
     if not valid_format:
         result["error"] = "Invalid email format — skipping live lookup."
         return result
 
-    try:
-        resp = requests.get(
-            f"https://emailrep.io/{email}",
-            timeout=10,
-            headers={
-                "User-Agent": "SentinelAI-OSINT/1.0",
-                "Accept":     "application/json",
-            },
-        )
-
-        if resp.status_code == 200:
-            data = resp.json()
-            # Pull the most OSINT-relevant fields to the top level for readability
-            details = data.get("details", {})
-            result["reputation"] = {
-                "score":                    data.get("reputation"),          # high/medium/low/none
-                "suspicious":               data.get("suspicious"),
-                "references":               data.get("references"),          # number of sources
-                "blacklisted":              details.get("blacklisted"),
-                "malicious_activity":       details.get("malicious_activity"),
-                "credentials_leaked":       details.get("credentials_leaked"),
-                "credentials_leaked_recent":details.get("credentials_leaked_recent"),
-                "data_breach":              details.get("data_breach"),
-                "first_seen":               details.get("first_seen"),
-                "last_seen":                details.get("last_seen"),
-                "domain_reputation":        details.get("domain_reputation"),
-                "new_domain":               details.get("new_domain"),
-                "days_since_domain_creation": details.get("days_since_domain_creation"),
-                "suspicious_tld":           details.get("suspicious_tld"),
-                "spam":                     details.get("spam"),
-                "free_provider":            details.get("free_provider"),
-                "disposable":               details.get("disposable"),
-                "deliverable":              details.get("deliverable"),
-                "spoofable":                details.get("spoofable"),
-                "spf_strict":               details.get("spf_strict"),
-                "dmarc_enforced":           details.get("dmarc_enforced"),
-                "profiles":                 details.get("profiles", []),     # known platform profiles
-            }
-
-        elif resp.status_code == 400:
-            result["error"] = "emailrep.io: invalid email or bad request"
-        elif resp.status_code == 429:
-            result["error"] = (
-                "emailrep.io rate limit reached (~10 req/day without API key). "
-                "Register at https://emailrep.io for a free key."
-            )
+    selected = set(selected_sources or {"emailrep", "hibp", "breachdirectory"})
+    source_calls = [
+        ("emailrep", "EmailRep", _emailrep),
+        ("hibp", "Have I Been Pwned", _hibp),
+        ("breachdirectory", "BreachDirectory", _breachdirectory),
+    ]
+    for key, label, source_lookup in source_calls:
+        if key not in selected:
+            continue
+        if should_stop and should_stop():
+            result["cancelled"] = True
+            break
+        if on_progress:
+            on_progress(label, "checking")
+        payload = source_lookup(email)
+        if key == "emailrep" and not payload.get("error"):
+            result["reputation"] = payload
+        elif key == "emailrep":
+            result["error"] = payload["error"]
+            result["emailrep"] = payload
         else:
-            result["error"] = f"emailrep.io returned HTTP {resp.status_code}"
-
-    except requests.exceptions.Timeout:
-        result["error"] = "emailrep.io request timed out (>10 s)"
-    except Exception as exc:
-        result["error"] = str(exc)[:300]
-
-    # ── Additional sources ──────────────────────────────────────────────────
-    result["hibp"]             = _hibp(email)
-    result["breachdirectory"]  = _breachdirectory(email)
+            result[key] = payload
+        status = payload.get("status", "error" if payload.get("error") else "checked")
+        status = "checked" if status == "ok" else status
+        destination = "sources_skipped" if status == "skipped" else "sources_contacted"
+        result[destination].append({"source": label, "status": status})
+        if on_progress:
+            on_progress(label, status)
 
     # Convenience summary for Bloodhound prompt injector
     breach_hits = 0
-    if result["hibp"].get("status") == "ok":
+    if result.get("hibp", {}).get("status") == "ok":
         breach_hits += result["hibp"].get("breach_count", 0)
-    if result["breachdirectory"].get("status") == "ok" and result["breachdirectory"].get("found"):
+    if (result.get("breachdirectory", {}).get("status") == "ok"
+            and result["breachdirectory"].get("found")):
         breach_hits += result["breachdirectory"].get("result_count", 0)
 
     emailrep_suspicious = (
@@ -188,9 +206,9 @@ def lookup(email: str) -> dict:
     result["summary"] = {
         "breach_hits":    breach_hits,
         "suspicious":     emailrep_suspicious,
-        "sources_queried": 3,
+        "sources_queried": len(result["sources_contacted"]),
         "sources_live":   sum(
-            1 for s in [result.get("reputation"), result["hibp"], result["breachdirectory"]]
+            1 for s in [result.get("reputation"), result.get("hibp"), result.get("breachdirectory")]
             if s and (isinstance(s, dict) and s.get("status", "ok") not in ("skipped", "error"))
         ),
     }

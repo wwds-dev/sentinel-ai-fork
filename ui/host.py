@@ -69,6 +69,12 @@ class AgentHost(Protocol):
         """Real token counts, when the worker reports them."""
         ...
 
+    def record_external_research(self, *, agent: str, target: str,
+                                 query_type: str, response: str,
+                                 cancelled: bool = False) -> None:
+        """Save a consented zero-model public-source run and its run-log entry."""
+        ...
+
     # ── Shared services ─────────────────────────────────────────────────
     def load_models_into(self, provider_box, model_box, context: str,
                          empty_placeholder: bool = False) -> None:

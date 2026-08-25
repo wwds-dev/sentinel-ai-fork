@@ -170,6 +170,32 @@ class TestOSINTAgent:
         # "Auto-detect" itself should NOT appear verbatim in the user message
         assert "Auto-detect" not in _user(msgs)
 
+    @pytest.mark.parametrize("target,resolved", [
+        ("analyst@example.com", "Email"),
+        ("@researcher_1", "Username"),
+        ("https://example.com/path", "Domain"),
+        ("192.0.2.10", "IP Address"),
+        ("+353 1 234 5678", "Phone"),
+        ("Ada Lovelace", "Person"),
+    ])
+    def test_target_validation_auto_detects_structured_inputs(
+            self, target, resolved):
+        result = self.agent.validate_target(target)
+        assert result.valid
+        assert result.query_type == resolved
+
+    @pytest.mark.parametrize("target,query_type", [
+        ("not-an-email", "Email"),
+        ("999.999.1.1", "IP Address"),
+        ("bad domain", "Domain"),
+        ("12", "Phone"),
+        ("@", "Username"),
+    ])
+    def test_invalid_typed_target_is_rejected(self, target, query_type):
+        result = self.agent.validate_target(target, query_type)
+        assert not result.valid
+        assert result.message
+
     def test_explicit_query_type_appears_in_user_message(self):
         msgs = self.agent.build_messages("h4x0r_pete", "Username")
         assert "Username" in _user(msgs)

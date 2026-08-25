@@ -12,23 +12,28 @@ and how the panel reaches the application:
 
 from __future__ import annotations
 
+import json
 import re
 
 from PySide6.QtGui import QTextCursor
 from PySide6.QtWidgets import (
-    QComboBox, QGridLayout, QGroupBox, QHBoxLayout, QLabel, QLineEdit,
-    QMessageBox, QPushButton, QTextBrowser, QVBoxLayout,
+    QCheckBox, QComboBox, QDialog, QDialogButtonBox, QGridLayout, QGroupBox,
+    QHBoxLayout, QLabel, QLineEdit, QMessageBox, QPushButton, QTextBrowser,
+    QVBoxLayout,
 )
 
-from ui.widgets import SectionView
+from ui.widgets import MenuComboBox, SectionView
 from ui.panels.base import AgentPanel
 from services.deepseek_client import is_insufficient_balance_error
+from ui.workers import DomainLookupWorker, IdentityLookupWorker
 
 
 class OsintPanel(AgentPanel):
     """Structure a target into search queries, dorks and public sources."""
 
     agent_key = "osint"
+    lookup_worker_class = DomainLookupWorker
+    identity_lookup_worker_class = IdentityLookupWorker
 
     def __init__(self, host, parent=None):
         super().__init__(host, parent)
@@ -60,28 +65,38 @@ class OsintPanel(AgentPanel):
         setup_layout.addWidget(self.target_input, 0, 1, 1, 3)
 
         setup_layout.addWidget(QLabel("Query Type:"), 1, 0)
-        self.type_box = QComboBox()
+        self.type_box = MenuComboBox()
         self.type_box.addItems([
             "Auto-detect", "Person", "Username", "Email",
             "Domain", "Company", "Phone", "IP Address",
         ])
         setup_layout.addWidget(self.type_box, 1, 1)
 
-        provider_row_container, provider_row = self.flow_row()
-        self.build_provider_row(provider_row)
-
         self.analyse_btn = QPushButton("Structure Query")
         self.analyse_btn.setMinimumWidth(150)
         self.analyse_btn.setObjectName("PrimaryAction")
         self.analyse_btn.clicked.connect(self.analyse)
-        provider_row.addWidget(self.analyse_btn)
+
+        self.live_btn = QPushButton("Live Research")
+        self.live_btn.setMinimumWidth(130)
+        self.live_btn.setToolTip(
+            "Check public WHOIS, DNS, and certificate-transparency sources "
+            "after explicit confirmation. Supports domains, IPs, usernames, and emails."
+        )
+        self.live_btn.clicked.connect(self.live_research)
 
         self.stop_btn = QPushButton("Stop")
         self.stop_btn.setEnabled(False)
         self.stop_btn.setObjectName("DangerAction")
         self.stop_btn.clicked.connect(self.stop)
-        provider_row.addWidget(self.stop_btn)
-        self.set_busy(self.analyse_btn, self.stop_btn, False)
+        self._set_trace_busy(False)
+
+        provider_row_container = self.build_run_bar(
+            self.analyse_btn,
+            stop=self.stop_btn,
+            secondary=(self.live_btn,),
+            context="Query",
+        )
 
         setup_layout.addWidget(provider_row_container, 2, 0, 1, 4)
         layout.addWidget(setup_group)
@@ -135,16 +150,28 @@ class OsintPanel(AgentPanel):
             QMessageBox.warning(self, "No Model", "Please select a model.")
             return
 
-        messages = self.agent().build_messages(target, query_type)
+        validation = self.agent().validate_target(target, query_type)
+        if not validation.valid:
+            self._reset_activity()
+            self._append_activity(f"Target validation stopped the run: {validation.message}")
+            self.status_label.setText("Check the target and try again.")
+            QMessageBox.warning(self, "Invalid Target", validation.message)
+            return
 
-        if not self.authorize(target, label=query_type):
+        effective_type = validation.query_type
+        messages = self.agent().build_messages(target, effective_type)
+
+        if not self.authorize(target, label=effective_type):
             return
 
         self._clear_output()
         self._last_response = ""
         self._received_first_token = False
         self._reset_activity()
-        self._append_activity(f"Target accepted: {target} ({query_type}).")
+        detected_note = " (auto-detected)" if query_type == "Auto-detect" else ""
+        self._append_activity(
+            f"Target accepted: {target} ({effective_type}{detected_note})."
+        )
         if self.provider == "ollama":
             self._append_activity(
                 f"Running locally with Ollama · {self.model}; the target stays on this Mac."
@@ -166,7 +193,7 @@ class OsintPanel(AgentPanel):
             f"{notice} Structuring query…" if notice else "Structuring query…"
         )
         self._route_notice = ""
-        self.set_busy(self.analyse_btn, self.stop_btn, True)
+        self._set_trace_busy(True)
 
         self.start_worker(
             messages, target,
@@ -198,7 +225,7 @@ class OsintPanel(AgentPanel):
             "recommendations for the user to check, not verified findings."
         )
         self.status_label.setText("Done.")
-        self.set_busy(self.analyse_btn, self.stop_btn, False)
+        self._set_trace_busy(False)
 
     def _on_error(self, error: str) -> None:
         self.abandon()
@@ -219,7 +246,7 @@ class OsintPanel(AgentPanel):
             )
         else:
             self.status_label.setText("Error.")
-        self.set_busy(self.analyse_btn, self.stop_btn, False)
+        self._set_trace_busy(False)
 
     def _prepare_balance_recovery(self) -> str:
         """Select, but never automatically run, a local retry after a 402."""
@@ -250,7 +277,229 @@ class OsintPanel(AgentPanel):
         self.stop_worker()
         self._append_activity("Stopped by the user. No further processing was performed.")
         self.status_label.setText("Stopped.")
-        self.set_busy(self.analyse_btn, self.stop_btn, False)
+        self._set_trace_busy(False)
+
+    def _set_trace_busy(self, busy: bool) -> None:
+        self.set_busy(self.analyse_btn, self.stop_btn, busy)
+        if hasattr(self, "live_btn"):
+            self.live_btn.setVisible(not busy)
+            self.live_btn.setEnabled(not busy)
+
+    # ── Explicit live public-source research ───────────────────────────
+    def live_research(self) -> None:
+        target = self.target_input.text().strip()
+        validation = self.agent().validate_target(target, self.type_box.currentText())
+        if not validation.valid:
+            QMessageBox.warning(self, "Invalid Target", validation.message)
+            return
+        if validation.query_type not in {"Domain", "IP Address", "Username", "Email"}:
+            QMessageBox.information(
+                self, "Target Type Not Available",
+                "Live Research currently supports domains, IP addresses, "
+                "usernames, and emails. "
+                "Use Structure Query for other target types.",
+            )
+            return
+
+        selected_sources = ()
+        if validation.query_type == "Email":
+            selected_sources = self._choose_email_sources(target)
+            if not selected_sources:
+                self.status_label.setText("Live Research cancelled before any lookup.")
+                return
+            labels = {
+                "emailrep": "EmailRep",
+                "hibp": "Have I Been Pwned",
+                "breachdirectory": "BreachDirectory",
+            }
+            sources = ", ".join(labels[source] for source in selected_sources)
+        else:
+            source_map = {
+                "IP Address": "WHOIS and DNS",
+                "Domain": "WHOIS, DNS, and crt.sh",
+                "Username": "URLScan",
+            }
+            sources = source_map[validation.query_type]
+            consent = QMessageBox.question(
+                self,
+                "Confirm Live Research",
+                f"Trace will send this target to public research services:\n\n"
+                f"{target}\n\nSources: {sources}\n\n"
+                "This is a real external lookup, not local model processing. Continue?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if consent != QMessageBox.Yes:
+                self.status_label.setText("Live Research cancelled before any lookup.")
+                return
+
+        self._clear_output()
+        self._reset_activity()
+        self._append_activity(
+            f"Consent recorded. Live Research target: {target} "
+            f"({validation.query_type})."
+        )
+        self._append_activity(f"Approved external sources: {sources}.")
+        self.status_label.setText("Checking public sources…")
+        self._set_trace_busy(True)
+
+        if validation.query_type in {"Domain", "IP Address"}:
+            worker = self.lookup_worker_class(target)
+        else:
+            worker = self.identity_lookup_worker_class(
+                target, validation.query_type, selected_sources
+            )
+        worker.progress_signal.connect(self._on_lookup_progress)
+        worker.finished_signal.connect(self._on_lookup_finished)
+        worker.error_signal.connect(self._on_lookup_error)
+        self.worker = worker
+        worker.start()
+
+    def _choose_email_sources(self, target: str) -> tuple[str, ...]:
+        """Ask separately which services may receive a complete email address."""
+        from providers.email_lookup import HIBP_KEY
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Choose Email Research Sources")
+        layout = QVBoxLayout(dialog)
+        explanation = QLabel(
+            f"The complete address {target} will be sent only to the services "
+            "selected below. Breach services are off by default."
+        )
+        explanation.setWordWrap(True)
+        layout.addWidget(explanation)
+
+        emailrep = QCheckBox("EmailRep — reputation and public profile signals")
+        emailrep.setChecked(True)
+        hibp = QCheckBox("Have I Been Pwned — breach and paste records (API key required)")
+        hibp.setEnabled(bool(HIBP_KEY))
+        breach = QCheckBox("BreachDirectory — open breach-index search")
+        layout.addWidget(emailrep)
+        layout.addWidget(hibp)
+        layout.addWidget(breach)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+        if dialog.exec() != QDialog.Accepted:
+            return ()
+        selected = []
+        if emailrep.isChecked():
+            selected.append("emailrep")
+        if hibp.isChecked():
+            selected.append("hibp")
+        if breach.isChecked():
+            selected.append("breachdirectory")
+        if not selected:
+            QMessageBox.information(
+                self, "No Sources Selected", "Select at least one email research source."
+            )
+        return tuple(selected)
+
+    def _on_lookup_progress(self, source: str, status: str) -> None:
+        if status == "checking":
+            self._append_activity(f"Checking {source}…")
+        elif status == "checked":
+            self._append_activity(f"{source} responded successfully.")
+        elif status == "skipped":
+            self._append_activity(f"{source} was skipped before contact.")
+        else:
+            self._append_activity(f"{source} returned an error; continuing with other sources.")
+
+    @staticmethod
+    def _lookup_text(value) -> str:
+        if value is None:
+            return "Not checked."
+        return json.dumps(value, indent=2, ensure_ascii=False, default=str)
+
+    def _on_lookup_finished(self, result: dict) -> None:
+        self._show_lookup_result(result, save=True)
+
+    def _show_lookup_result(self, result: dict, *, save: bool) -> None:
+        """Render a live result; saved searches use this without saving again."""
+        contacted = result.get("sources_contacted", [])
+        skipped = result.get("sources_skipped", [])
+        checked = [item["source"] for item in contacted if item.get("status") == "checked"]
+        failed = [item["source"] for item in contacted if item.get("status") == "error"]
+        summary = [
+            f"Target: {result.get('query', '')}",
+            f"Sources contacted: {len(contacted)}",
+            f"Successful: {', '.join(checked) if checked else 'none'}",
+            f"Errors: {', '.join(failed) if failed else 'none'}",
+            f"Skipped before contact: "
+            f"{', '.join(item['source'] for item in skipped) if skipped else 'none'}",
+            "These are collected public-source records, not model inferences.",
+        ]
+        if result.get("cancelled"):
+            summary.append("The run was cancelled; displayed results are partial.")
+
+        cards = [("Research summary", "\n".join(summary))]
+        if result.get("type") in {"domain", "ip"}:
+            cards.extend([
+                ("WHOIS", self._lookup_text(result.get("whois"))),
+                ("DNS records", self._lookup_text(result.get("dns"))),
+            ])
+        if result.get("type") == "domain":
+            cards.append((
+                "Certificate transparency",
+                self._lookup_text(result.get("certificates")),
+            ))
+        elif result.get("type") == "username":
+            cards.append(("URLScan findings", self._lookup_text(result.get("urlscan"))))
+        elif result.get("type") == "email":
+            cards.extend([
+                ("Email reputation", self._lookup_text(
+                    result.get("reputation") or result.get("emailrep")
+                )),
+                ("Have I Been Pwned", self._lookup_text(result.get("hibp"))),
+                ("BreachDirectory", self._lookup_text(result.get("breachdirectory"))),
+            ])
+        raw = self._lookup_text(result)
+        self.sections.show_sections(cards, raw=raw)
+        self.sections.setVisible(True)
+        self.stream_box.setVisible(False)
+        self._last_response = raw
+        self._append_activity(
+            f"Live Research finished. Sources actually contacted: "
+            f"{', '.join(item['source'] for item in contacted) if contacted else 'none'}."
+        )
+        if skipped:
+            self._append_activity(
+                "Skipped without contact: "
+                + ", ".join(item["source"] for item in skipped) + "."
+            )
+
+        recorder = getattr(self.host, "record_external_research", None)
+        if save and recorder is not None and (contacted or skipped):
+            try:
+                recorder(
+                    agent="osint",
+                    target=result.get("query", ""),
+                    query_type={
+                        "ip": "IP Address", "domain": "Domain",
+                        "username": "Username", "email": "Email",
+                    }.get(result.get("type"), "Auto-detect"),
+                    response=raw,
+                    cancelled=bool(result.get("cancelled")),
+                )
+            except Exception as error:
+                self._append_activity(
+                    f"Results are visible, but saving the search failed: {error}"
+                )
+        self.status_label.setText(
+            "Stopped — partial results retained."
+            if result.get("cancelled") else "Live Research complete."
+        )
+        self._set_trace_busy(False)
+
+    def _on_lookup_error(self, error: str) -> None:
+        self._append_activity(f"Live Research failed before completion: {error}")
+        self.stream_box.setPlainText(f"Live Research error\n\n{error}")
+        self.stream_box.setVisible(True)
+        self.sections.setVisible(False)
+        self.status_label.setText("Live Research error.")
+        self._set_trace_busy(False)
 
     # ── Output ──────────────────────────────────────────────────────────
     def clear(self) -> None:

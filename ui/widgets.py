@@ -7,10 +7,133 @@ minimum width, which pins an impossible minimum on a pane and makes Qt compress
 controls past their own minimums until the labels are chopped.
 """
 from PySide6.QtCore import Qt, QRect, QPoint, QSize, QTimer
-from PySide6.QtGui import QColor, QPainter
-from PySide6.QtWidgets import (QFrame, QHBoxLayout, QLabel, QLayout,
-                               QPushButton, QScrollArea, QSizePolicy,
+from PySide6.QtGui import QColor, QFont, QIcon, QPainter, QPixmap
+from PySide6.QtWidgets import (QComboBox, QFrame, QHBoxLayout, QLabel, QLayout,
+                               QMenu, QPushButton, QScrollArea, QSizePolicy,
                                QVBoxLayout, QWidget)
+
+
+class MenuComboBox(QComboBox):
+    """A combo box whose choices use Sentinel's compact cascading menus.
+
+    Qt uses a platform-native popup for some combo boxes on macOS, which made
+    selectors look unrelated to Chat's Options menu.  This class keeps the
+    familiar closed combo-box control while rendering every popup as a QMenu.
+    Provider and model selectors can expose real hierarchy; short, unrelated
+    lists stay flat instead of gaining a ceremonial extra click.
+    """
+
+    FLAT = "flat"
+    PROVIDER = "provider"
+    MODEL = "model"
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._menu_mode = self.FLAT
+        self._active_menu: QMenu | None = None
+        self.setProperty("sentinelMenuCombo", True)
+
+    def setMenuMode(self, mode: str) -> None:
+        if mode not in {self.FLAT, self.PROVIDER, self.MODEL}:
+            raise ValueError(f"Unsupported menu mode: {mode}")
+        self._menu_mode = mode
+
+    def menuMode(self) -> str:
+        return self._menu_mode
+
+    def _add_choice(self, menu: QMenu, index: int) -> None:
+        action = menu.addAction(self.itemText(index))
+        action.setEnabled(bool(self.model().flags(self.model().index(index, 0)) & Qt.ItemIsEnabled))
+
+        # Carry the recommendation/warning metadata that used to be painted by
+        # the combo's item delegate into the QMenu.  The current choice wins the
+        # marker (green); a different recommendation remains red; hardware
+        # warnings retain their muted dot and tooltip.
+        marker = QColor("#3cff88") if index == self.currentIndex() else self.itemData(
+            index, Qt.ForegroundRole
+        )
+        if isinstance(marker, QColor) and marker.isValid():
+            pixmap = QPixmap(10, 10)
+            pixmap.fill(Qt.transparent)
+            painter = QPainter(pixmap)
+            painter.setRenderHint(QPainter.Antialiasing)
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(marker)
+            painter.drawEllipse(1, 1, 8, 8)
+            painter.end()
+            action.setIcon(QIcon(pixmap))
+
+        item_font = self.itemData(index, Qt.FontRole)
+        if isinstance(item_font, QFont):
+            action.setFont(item_font)
+        elif index == self.currentIndex():
+            current_font = QFont(self.font())
+            current_font.setWeight(QFont.DemiBold)
+            action.setFont(current_font)
+        tip = self.itemData(index, Qt.ToolTipRole)
+        if tip:
+            action.setToolTip(str(tip))
+            action.setStatusTip(str(tip))
+        action.triggered.connect(
+            lambda _checked=False, selected=index: self.setCurrentIndex(selected)
+        )
+
+    def buildMenu(self) -> QMenu:
+        """Build a fresh menu from the live combo model (also useful in tests)."""
+        menu = QMenu(self)
+        menu.setObjectName("SelectorMenu")
+        menu.setMinimumWidth(max(220, self.width()))
+
+        if self.count() == 0:
+            empty = menu.addAction("No choices available")
+            empty.setEnabled(False)
+            return menu
+
+        if self._menu_mode == self.PROVIDER:
+            current = menu.addAction(f"Current · {self.currentText()}")
+            current.setEnabled(False)
+            menu.addSeparator()
+            local = menu.addMenu("Local providers")
+            cloud = menu.addMenu("Cloud providers")
+            local.setMinimumWidth(menu.minimumWidth())
+            cloud.setMinimumWidth(menu.minimumWidth())
+            for index in range(self.count()):
+                target = local if self.itemText(index).strip().lower() == "ollama" else cloud
+                self._add_choice(target, index)
+            if not local.actions():
+                local.menuAction().setVisible(False)
+            if not cloud.actions():
+                cloud.menuAction().setVisible(False)
+        elif self._menu_mode == self.MODEL:
+            # Opening the model control already supplies all the context the
+            # user needs. A redundant "Available models" submenu only added a
+            # second click, so model choices are listed directly.
+            menu.setMinimumWidth(max(280, menu.minimumWidth()))
+            for index in range(self.count()):
+                self._add_choice(menu, index)
+        else:
+            for index in range(self.count()):
+                self._add_choice(menu, index)
+        return menu
+
+    def showPopup(self) -> None:
+        if self._active_menu is not None:
+            self._active_menu.close()
+        menu = self.buildMenu()
+        self._active_menu = menu
+
+        def release_menu() -> None:
+            if self._active_menu is menu:
+                self._active_menu = None
+            menu.deleteLater()
+
+        menu.aboutToHide.connect(release_menu)
+        menu.popup(self.mapToGlobal(self.rect().bottomLeft()))
+
+    def hidePopup(self) -> None:
+        if self._active_menu is not None:
+            self._active_menu.close()
+        super().hidePopup()
 
 
 class FlowLayout(QLayout):

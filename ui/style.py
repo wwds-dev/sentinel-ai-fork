@@ -1,8 +1,93 @@
-"""The application stylesheet.
+"""The application stylesheet and shared popup sizing rules.
 
 Moved verbatim out of main.py (see docs/refactor_plan.md, phase 1). It is a
 single Qt style sheet string with no application state in it.
 """
+
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QColor, QFont, QPalette
+from PySide6.QtWidgets import (
+    QAbstractItemView, QComboBox, QFrame, QListView, QStyle,
+    QStyledItemDelegate, QWidget,
+)
+
+
+class SentinelComboDelegate(QStyledItemDelegate):
+    """Paint the current popup choice like Chat without native checkmarks."""
+
+    def __init__(self, combo: QComboBox, parent=None) -> None:
+        super().__init__(parent)
+        self.combo = combo
+
+    def initStyleOption(self, option, index) -> None:
+        super().initStyleOption(option, index)
+        if index.row() == self.combo.currentIndex():
+            green = QColor("#3cff88")
+            option.palette.setColor(QPalette.Text, green)
+            option.palette.setColor(QPalette.HighlightedText, green)
+            option.font.setWeight(QFont.DemiBold)
+
+    def paint(self, painter, option, index) -> None:
+        """Draw text directly so macOS cannot reintroduce native selection."""
+        painter.save()
+        current = index.row() == self.combo.currentIndex()
+        hovered = bool(option.state & QStyle.State_MouseOver)
+        if hovered and not current:
+            painter.fillRect(option.rect, QColor(60, 255, 136, 18))
+
+        font = QFont(option.font)
+        if current:
+            font.setWeight(QFont.DemiBold)
+        painter.setFont(font)
+        painter.setPen(QColor("#3cff88") if current else QColor("#d8dfdb"))
+        painter.drawText(
+            option.rect.adjusted(10, 0, -8, 0),
+            Qt.AlignLeft | Qt.AlignVCenter,
+            str(index.data(Qt.DisplayRole) or ""),
+        )
+        painter.restore()
+
+
+def polish_combo_box(combo: QComboBox) -> None:
+    """Make one combo and its popup readable without allowing giant menus."""
+    longest = max((len(combo.itemText(i)) for i in range(combo.count())), default=8)
+    is_machine_picker = combo.objectName() in {"MachinePick", "ToolChip"}
+    is_menu_combo = bool(combo.property("sentinelMenuCombo"))
+    if not is_machine_picker:
+        combo.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+        combo.setMinimumContentsLength(min(24, max(8, longest)))
+        # macOS otherwise substitutes a native checked menu for ordinary combo
+        # boxes. Chat's provider/model controls use Qt's list popup, so give all
+        # other selectors that exact rendering path as well.
+        if not is_menu_combo and not combo.property("sentinelPopupInstalled"):
+            view = QListView(combo)
+            view.setObjectName("SentinelComboView")
+            view.setItemDelegate(SentinelComboDelegate(combo, view))
+            combo.setView(view)
+            combo.setProperty("sentinelPopupInstalled", True)
+    combo.setMaxVisibleItems(12)
+
+    # MenuComboBox owns a QMenu popup, so its hidden internal item view should
+    # not be restyled or used for popup sizing.
+    if is_menu_combo:
+        return
+
+    view = combo.view()
+    view.setFrameShape(QFrame.NoFrame)
+    view.setTextElideMode(Qt.ElideNone)
+    view.setVerticalScrollMode(QAbstractItemView.ScrollPerItem)
+    view.setUniformItemSizes(True)
+    content_width = max(0, view.sizeHintForColumn(0)) + 38
+    view.setMinimumWidth(min(520, max(combo.minimumSizeHint().width(), content_width)))
+    popup = view.window()
+    popup.setObjectName("ComboPopup")
+    popup.setAttribute(Qt.WA_StyledBackground, True)
+
+
+def polish_combo_boxes(root: QWidget) -> None:
+    """Apply the dropdown contract to every combo under a window or dialog."""
+    for combo in root.findChildren(QComboBox):
+        polish_combo_box(combo)
 
 # ── VPN-Agent-inspired design system ─────────────────────────────
 # Palette: #0d0f0e page · #151816 card · #151816 input · #262d29 border
@@ -38,8 +123,8 @@ GLOBAL_STYLESHEET = """
             color: #e8ece9;
             border: 1px solid #262d29;
             border-radius: 8px;
-            padding: 3px 9px;
-            min-height: 20px;
+            padding: 4px 28px 4px 10px;
+            min-height: 22px;
             selection-background-color: rgba(60, 255, 136, 0.25);
             selection-color: #ffffff;
         }
@@ -48,7 +133,7 @@ GLOBAL_STYLESHEET = """
         }
         QComboBox::drop-down {
             border: none;
-            width: 22px;
+            width: 26px;
         }
         QComboBox QAbstractItemView {
             background-color: #151816;
@@ -57,7 +142,82 @@ GLOBAL_STYLESHEET = """
             selection-background-color: rgba(60, 255, 136, 0.15);
             selection-color: #3cff88;
             outline: none;
-            padding: 4px;
+            padding: 5px;
+        }
+        QWidget#ComboPopup {
+            background-color: #151816;
+            border: 1px solid #303934;
+            border-radius: 7px;
+        }
+        QComboBox QAbstractItemView::item {
+            min-height: 28px;
+            padding: 4px 9px;
+            border-radius: 5px;
+        }
+        QListView#SentinelComboView {
+            background-color: #151816;
+            color: #d8dfdb;
+            border: 1px solid #303934;
+            border-radius: 7px;
+            outline: none;
+            padding: 6px;
+            font-family: Menlo, Monaco, monospace;
+            font-size: 13px;
+        }
+        QListView#SentinelComboView::item {
+            background-color: transparent;
+            color: #d8dfdb;
+            border: none;
+            border-radius: 5px;
+            min-height: 30px;
+            padding: 4px 10px;
+        }
+        QListView#SentinelComboView::item:hover {
+            background-color: rgba(60, 255, 136, 0.07);
+            color: #ffffff;
+        }
+        QListView#SentinelComboView::item:selected {
+            background-color: transparent;
+            color: #3cff88;
+            font-weight: 600;
+        }
+
+        /* Native menus share one density and hierarchy. Submenus keep long
+           choice lists out of the first level instead of becoming a settings
+           dialog disguised as a popup. */
+        QMenu {
+            background-color: #151816;
+            color: #d8dfdb;
+            border: 1px solid #303934;
+            border-radius: 8px;
+            padding: 6px;
+            font-size: 13px;
+        }
+        QMenu::item {
+            background: transparent;
+            border-radius: 5px;
+            padding: 7px 28px 7px 10px;
+            min-width: 180px;
+        }
+        QMenu::item:selected {
+            background-color: rgba(60, 255, 136, 0.12);
+            color: #3cff88;
+        }
+        QMenu::item:disabled { color: #58635d; }
+        QMenu::separator {
+            height: 1px;
+            background-color: #2a312d;
+            margin: 5px 8px;
+        }
+        QMenu::indicator {
+            width: 14px;
+            height: 14px;
+            margin-left: 7px;
+        }
+        QMenu::indicator:checked {
+            background-color: #3cff88;
+            border: 3px solid #173321;
+            border-radius: 7px;
         }
 
         /* ── Buttons (default — neutral) ───────────────────────────── */
@@ -404,6 +564,15 @@ GLOBAL_STYLESHEET = """
             background-color: #151816;
             border: 1px solid #262d29;
             border-radius: 10px;
+        }
+        QLabel#WorkflowChip {
+            background-color: rgba(60, 255, 136, 0.10);
+            border: none;
+            border-radius: 6px;
+            color: #3cff88;
+            font-size: 13px;
+            font-weight: 500;
+            padding: 5px 10px;
         }
         QLabel#RunBarCost {
             font-size: 11px;
