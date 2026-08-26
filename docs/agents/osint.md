@@ -12,7 +12,7 @@ A fast, lightweight open-source-intelligence assistant. Given a target (name, us
 | Query type | Auto-detect, Person, Username, Email, Domain, Company, Phone, or IP Address. Auto-detect records the resolved type in the activity trail. |
 | Model override | Optional provider/model change; the task recommendation is selected by default. |
 | Structure Query | Generate a model-based investigation plan without contacting research sources. |
-| Live Research | After explicit confirmation, query WHOIS/DNS/crt.sh for domains and IPs, URLScan for usernames, or individually selected email services. |
+| Live Research | After explicit confirmation, query WHOIS/DNS/crt.sh for domains and IPs, URLScan for usernames, individually selected email services, or GLEIF for company legal-entity records. Person and phone targets remain local-only. |
 | Stop | Request cancellation; completed source results remain visible as a partial result. |
 
 ## Outputs
@@ -38,6 +38,16 @@ BreachDirectory are off by default. HIBP cannot be selected without a configured
 API key. A service skipped before contact is recorded separately and is not
 reported as contacted.
 
+For company targets, the complete company name is sent only to the **GLEIF Legal
+Entity Index** after the user confirms that exact destination. Results contain
+legal-entity identifiers and registration reference data. GLEIF covers entities
+with an LEI, so no match is not proof that an organization does not exist.
+
+Trace intentionally performs no live collection for **Person** or **Phone**
+targets. It does not send those personal identifiers to people-search,
+reverse-phone, or data-broker services. Structure Query remains available for a
+local planning-only workflow.
+
 ## How it works
 `OSINTAgent.validate_target()` validates and classifies the target entirely
 offline. `build_messages()` then wraps the accepted target in a system prompt
@@ -53,15 +63,16 @@ request guard, cost tracking, history, and run logger.
 | `providers/domain_lookup.py` | Consented live WHOIS, DNS, and certificate-transparency collection for domains/IPs. |
 | `providers/username_lookup.py` | Consented URLScan search for public pages containing a username. |
 | `providers/email_lookup.py` | Per-source EmailRep, HIBP, and BreachDirectory collection with breach services opt-in. |
+| `providers/company_lookup.py` | Consented company-name search against GLEIF's public legal-entity records. |
 
 ## Extend it
-- **People/company/phone enrichment (not implemented)**: evaluate lawful sources and source-specific privacy implications before adding collectors. Do not silently add network collection to Structure Query.
+- **Person/phone enrichment**: intentionally local-only. Do not add people-search, reverse-phone, or data-broker collectors without a new privacy review and explicit source-specific consent design.
 - **Escalation**: hand results to **Bloodhound** (`osint_heavy`) for a full dossier.
 - Edit the system prompt in `agents/osint_agent.py` to change tradecraft focus.
 
 ## Requirements
 Any model provider (API key and consent for cloud; Ollama is local and free).
 HIBP requires `HIBP_API_KEY`; its checkbox is unavailable without one. EmailRep,
-BreachDirectory, URLScan, WHOIS, the configured DNS resolver, and crt.sh can be
-used without a configured application key, subject to their own limits and
-availability. Structure Query never contacts these services.
+BreachDirectory, URLScan, GLEIF, WHOIS, the configured DNS resolver, and crt.sh
+can be used without a configured application key, subject to their own limits
+and availability. Structure Query never contacts these services.

@@ -170,16 +170,25 @@ if the recommendation system found each panel's loader through the new registry.
 Two mutants confirmed the tests bite: dropping the initial `load()` and making
 `register_model_loader` a no-op fail 3 and 13 tests respectively.
 
-**Phase 4 — move agent verticals one at a time**, smallest first:
-osint → manager → bug_bounty → osint_heavy → vpn → wifi. (The 2026-08-19 cull
-took the app from fifteen agents to seven; the old order — webdesign, health,
-music, fiverr, ops_identity, nfl_bet, manuscript, author — went with it.)
+**Phase 4 — move agent verticals one at a time, smallest first. DONE.**
+Bundled into the `chore: initialize Sentinel AI fork` commit (2026-08-22) that
+split this project's history out of Sentinel AI: all six verticals — osint,
+manager, bug_bounty, osint_heavy, vpn, wifi — landed in `ui/panels/`, each its
+own module against the `AgentHost` protocol and `AgentPanel` base Phase 3
+defined. `main.py` 5,378 → 3,567 in that commit. Not a clean phase-only number:
+the same commit also reshaped `services/registry.py`, `services/pricing.py`
+and `services/model_router.py` as part of establishing this as its own project,
+so the drop reflects more than the panel move alone. `main.py` has since grown
+to 4,082 lines (Trace Live Research work, tracked in TODO.md) — expected, since
+the phase was a one-time structural move, not a ceiling.
 
-Smallest first is deliberate: the first move proves the base class and the host
-protocol on a cheap target, and each later one is the same shape.
+Not resolved by this phase: `_pending_requests` stayed keyed by agent name.
+Moving the panels didn't touch `authorize_request` / `record_request` /
+`abandon_request`, which still live on `GodAI` in `main.py`. Still open — see
+Risks below and TODO.md.
 
 **Phase 5 — `GodAI` becomes a shell**: build the three panes, own the shared
-services, hold the panel instances.
+services, hold the panel instances. Not started.
 
 ## The decision phase 3 settled
 
@@ -212,8 +221,9 @@ Phases 4–5 are the remaining move and want a clear run.
   provider/model row, the loader registry and `AgentPanel` — but nothing else
   about layout. The offscreen `GodAI()` build is still the only automated check
   that a panel *as a whole* constructs, so run the suite after every move.
-- **`_pending_requests` is keyed by agent name** (TODO #1). Panels moving to
-  their own classes is the natural moment to key it by run id instead.
+- **`_pending_requests` is keyed by agent name** (TODO #1) — still true after
+  Phase 4. The panels moved to their own classes but the request guard they
+  call into did not move with them; keying by run id remains open.
 - **Do not renumber during a move.** Moving a vertical and editing it in the
   same commit makes a regression impossible to bisect. Move verbatim, commit,
   then clean up.

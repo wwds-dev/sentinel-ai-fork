@@ -1,0 +1,106 @@
+"""Company OSINT provider using GLEIF's public legal-entity registry.
+
+Only organization records are queried.  Trace deliberately does not use
+people-search or data-broker services for person and phone targets.
+"""
+
+import requests
+
+
+GLEIF_URL = "https://api.gleif.org/api/v1/lei-records"
+
+
+def _name(value) -> str | None:
+    if isinstance(value, dict):
+        return value.get("name")
+    return value if isinstance(value, str) else None
+
+
+def _address(value) -> dict:
+    value = value if isinstance(value, dict) else {}
+    return {
+        "lines": value.get("addressLines") or [],
+        "city": value.get("city"),
+        "region": value.get("region"),
+        "postal_code": value.get("postalCode"),
+        "country": value.get("country"),
+    }
+
+
+def _record(item: dict) -> dict:
+    attributes = item.get("attributes") or {}
+    entity = attributes.get("entity") or {}
+    registration = attributes.get("registration") or {}
+    other_names = entity.get("otherNames") or []
+    return {
+        "legal_name": _name(entity.get("legalName")),
+        "other_names": [name for name in (_name(value) for value in other_names) if name][:10],
+        "lei": attributes.get("lei") or item.get("id"),
+        "entity_status": entity.get("status"),
+        "registration_status": registration.get("status"),
+        "jurisdiction": entity.get("jurisdiction"),
+        "registered_as": entity.get("registeredAs"),
+        "registered_at": (entity.get("registeredAt") or {}).get("id"),
+        "legal_address": _address(entity.get("legalAddress")),
+        "headquarters_address": _address(entity.get("headquartersAddress")),
+        "initial_registration_date": registration.get("initialRegistrationDate"),
+        "last_update_date": registration.get("lastUpdateDate"),
+        "next_renewal_date": registration.get("nextRenewalDate"),
+    }
+
+
+def lookup(company: str, *, on_progress=None, should_stop=None) -> dict:
+    """Search GLEIF by company name and return compact legal-entity records."""
+    company = company.strip()
+    result = {
+        "type": "company",
+        "query": company,
+        "sources_contacted": [],
+    }
+    if not company:
+        result["error"] = "Empty company name — skipping live lookup."
+        return result
+    if should_stop and should_stop():
+        result["cancelled"] = True
+        return result
+
+    label = "GLEIF Legal Entity Index"
+    if on_progress:
+        on_progress(label, "checking")
+    try:
+        response = requests.get(
+            GLEIF_URL,
+            params={"filter[fulltext]": company, "page[size]": 10},
+            timeout=12,
+            headers={
+                "Accept": "application/vnd.api+json",
+                "User-Agent": "SentinelAI-OSINT/1.0",
+            },
+        )
+        if response.status_code == 200:
+            payload = response.json()
+            records = [_record(item) for item in (payload.get("data") or [])[:10]]
+            pagination = (payload.get("meta") or {}).get("pagination") or {}
+            result["legal_entities"] = {
+                "total_matches": pagination.get("total", len(records)),
+                "records_shown": len(records),
+                "records": records,
+                "coverage_note": (
+                    "GLEIF covers legal entities with an LEI; absence is not proof "
+                    "that an organization does not exist."
+                ),
+            }
+        elif response.status_code == 429:
+            result["error"] = "GLEIF is temporarily rate-limiting searches. Try again later."
+        else:
+            result["error"] = f"GLEIF returned HTTP {response.status_code}."
+    except requests.exceptions.Timeout:
+        result["error"] = "GLEIF did not respond within 12 seconds."
+    except Exception as error:
+        result["error"] = str(error)[:300]
+
+    status = "error" if result.get("error") else "checked"
+    result["sources_contacted"].append({"source": label, "status": status})
+    if on_progress:
+        on_progress(label, status)
+    return result

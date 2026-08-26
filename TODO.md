@@ -1,4 +1,4 @@
-# Sentinel AI — TODO
+# Sentinel Fork — TODO
 
 > **Legend** — priority `P0` critical · `P1` high · `P2` normal · `P3` low
 > categories `security` `bug` `feature` `performance` `design` `docs` `testing` `infra` `research`
@@ -20,7 +20,7 @@ under **Detail** — this checklist is the summary view.
 - [x] `P1` `design` `@ai` **GUI overhaul — type and spacing scale.** Five sizes (four of which read as one) → three; six weights → two; documented in `ui/style.py` with the 15px section-title role reserved.
 - [x] `P1` `design` `@ai` **GUI overhaul — status rail figures.** `Meter`/`Bar` in `ui/widgets.py` drive system and budget; exact numbers moved to tooltips; budget bars fill with what is spent.
 - [ ] `P1` `bug` `@ai` Key `_pending_requests` by run-id rather than agent name. Two simultaneous runs of the same agent would overwrite each other's context; unreachable today only because the panels disable their run button mid-flight.
-- [ ] `P2` `bug` `@ai` Remove the dead `ops_identity` sidebar entry — it is listed in `agent_titles` with no agent module or panel behind it
+- [x] `P2` `bug` `@ai` Remove the dead `ops_identity` sidebar entry — done: `services/agent_catalog.py`'s `BUILTIN_AGENT_ORDER` (the actual sidebar list) has no `ops_identity`; it's tracked in the new `RETIRED_BUILTIN_AGENTS` frozenset instead, which retires its registry row explicitly rather than leaving a dangling title.
 - [ ] `P2` `feature` `@ai` Model Kimi prompt caching in `config/pricing.json`. Cache hits are ~80% off input ($0.19/1M), so estimates for repeated context are currently conservative.
 - [ ] `P2` `feature` `@ai` **Chat Projects Stage 2** — turn a group of saved chats into a context bundle (instructions, defaults, optional budget). Tractable now that every paid request has one choke point: two hook points instead of 22. See `docs/projects_roadmap.md`.
 - [ ] `P3` `design` `@ai` Budget card: `Session €` and `Daily €` could share a row (~34px), but the two label+field pairs do not fit the sidebar's ~250px inner width without shortening the labels
@@ -34,7 +34,7 @@ under **Detail** — this checklist is the summary view.
 - [x] `P2` `feature` `@ai` Saved Chats — agent filter above the search box, double-click to rename
 - [x] `P1` `feature` `@ai` **Trace Live Research, domain/IP slice** — separate consent-gated WHOIS, DNS, and crt.sh collection with source-by-source activity, partial-result retention, cancellation, zero-cost run logging, and Saved Searches integration.
 - [x] `P2` `feature` `@ai` **Trace Live Research, username/email slice** — URLScan requires confirmation; email research offers per-source selection, keeps breach services off by default, disables HIBP without a key, distinguishes skipped services from contacted ones, and preserves partial results. Structure Query remains planning-only.
-- [ ] `P2` `feature` `@ai` **Trace Live Research, remaining target types** — evaluate lawful, privacy-preserving sources for people, companies, and phone numbers before exposing any collector. Require source-specific consent and avoid data-broker scraping by default.
+- [x] `P2` `feature` `@ai` **Trace Live Research, remaining target types** — company-name searches now use the public GLEIF Legal Entity Index after source-specific consent. Person and phone collectors were evaluated and deliberately excluded: Trace keeps those identifiers local and will not send them to people-search, reverse-phone, or data-broker services. The UI explains this boundary and offers Structure Query instead.
 
 ### Workspace restructure — see `docs/workspace_structure.md`
 
@@ -183,8 +183,18 @@ to, so a container that falls out of scope leaves every combo raising
 `RuntimeError: Internal C++ object already deleted` from lines that have nothing
 to do with ownership. `flow_row(parent)` takes a parent now.
 
-**Next: Phase 4** — move the verticals into `ui/panels/`, smallest first, verbatim,
-one commit each.
+**Phase 4 is DONE.** Bundled into the `chore: initialize Sentinel AI fork`
+commit (2026-08-22) that split this project out of Sentinel AI's history: all
+six verticals — osint, osint_heavy, wifi, bug_bounty, vpn, manager — landed in
+`ui/panels/`. `main.py` 5,378 → 3,567 in that commit (it also carried other
+fork-specific reshaping — `services/registry.py`, `services/pricing.py`,
+`services/model_router.py` — so the drop isn't a pure panel-move number the way
+Phases 1–3 were). `main.py` has since grown to 4,082 lines on new feature work
+(the Trace Live Research slices below), which is expected — the phase measured
+a one-time structural move, not a ceiling.
+
+Not part of this phase, still open: `_pending_requests` stayed keyed by agent
+name (see the bug item above and Risks in `docs/refactor_plan.md`).
 
 ## 3. Other agent panels still crush when the window is narrow
 
@@ -325,15 +335,14 @@ mockup (run bar, section-rendered Trace output, narrow-window reflow).
       `ui/style.py` with the 15px section-title role reserved.
 - [x] **Status rail figures** — `Meter`/`Bar` in `ui/widgets.py` driving system
       and budget; exact numbers moved to tooltips.
-- [ ] **Flat agent list.** The sidebar accordion existed for fifteen agents;
-      there are six. Drop `CollapsibleSection` from the sidebar, keep it where
-      panels still use it.
-- [ ] **Run bar.** One row — agent · provider/model · live cost · Run — with
-      mode, the provider toggles and auto-apply behind a settings affordance.
-      Restructures the chat panel, so cheaper after refactor phase 4.
-- [ ] **Section renderer.** The one that justifies the rest, and it needs no new
-      parsing. Build against Trace (smallest vertical, 227 lines), then reuse
-      for the other five agents.
+- [x] **Flat agent list.** `CollapsibleSection` is gone from the sidebar —
+      confirmed no references remain in `main.py` or `ui/panels/`.
+- [x] **Run bar.** `execution_mode_box` and the provider/model tools now sit in
+      a hidden combo driven from a submenu (`add_combo_submenu`) rather than a
+      permanent control row.
+- [x] **Section renderer, Trace.** `ui/panels/osint.py` builds a `SectionView`
+      for its output. The remaining five agents are tracked separately above
+      (item 2 in the v2 checklist).
 
 Deliberately not proposed: a new palette (the one part that is not broken), and
 a command palette (the sidebar was never the bottleneck — the control rows

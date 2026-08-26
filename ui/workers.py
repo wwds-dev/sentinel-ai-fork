@@ -43,7 +43,7 @@ class DomainLookupWorker(QThread):
 
 
 class IdentityLookupWorker(QThread):
-    """Run a consented username or email lookup with selected sources."""
+    """Run a consented username, email, or company public-source lookup."""
 
     progress_signal = Signal(str, str)
     finished_signal = Signal(dict)
@@ -75,6 +75,11 @@ class IdentityLookupWorker(QThread):
                     selected_sources=self.sources,
                     on_progress=progress,
                     should_stop=stopped,
+                )
+            elif self.query_type == "Company":
+                from providers.company_lookup import lookup
+                result = lookup(
+                    self.target, on_progress=progress, should_stop=stopped
                 )
             else:
                 raise ValueError(f"Unsupported identity lookup type: {self.query_type}")

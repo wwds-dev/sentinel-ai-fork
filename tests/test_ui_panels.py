@@ -1111,6 +1111,51 @@ class TestTracePanel:
         })
         assert "\"score\": \"high\"" in trace.sections._raw
 
+    def test_live_company_research_requires_consent_and_uses_gleif(
+            self, trace, monkeypatch):
+        trace.type_box.setCurrentText("Company")
+        trace.target_input.setText("Example Limited")
+        monkeypatch.setattr(
+            QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.Yes)
+        )
+        trace.live_research()
+        worker = FakeIdentityLookupWorker.instances[-1]
+        assert worker.query_type == "Company"
+        assert worker.sources == ()
+        assert "GLEIF Legal Entity Index" in trace.activity_box.toPlainText()
+
+        worker.finished_signal.emit({
+            "type": "company", "query": "Example Limited",
+            "legal_entities": {
+                "total_matches": 1,
+                "records": [{"legal_name": "Example Limited", "lei": "LEI123"}],
+            },
+            "sources_contacted": [
+                {"source": "GLEIF Legal Entity Index", "status": "checked"}
+            ],
+        })
+        assert "LEI123" in trace.sections._raw
+        saved = [call for call in trace.host.calls if call[0] == "external"]
+        assert saved[-1][1]["query_type"] == "Company"
+
+    @pytest.mark.parametrize("query_type,target", [
+        ("Person", "Example Person"),
+        ("Phone", "+353 1 234 5678"),
+    ])
+    def test_person_and_phone_live_research_stays_local(
+            self, trace, monkeypatch, query_type, target):
+        notices = []
+        monkeypatch.setattr(
+            QMessageBox, "information",
+            staticmethod(lambda *args, **kwargs: notices.append(args[2])),
+        )
+        trace.type_box.setCurrentText(query_type)
+        trace.target_input.setText(target)
+        trace.live_research()
+        assert FakeLookupWorker.instances == []
+        assert FakeIdentityLookupWorker.instances == []
+        assert "will not send personal identifiers" in notices[-1]
+
     def test_tokens_stream_into_the_raw_box(self, trace):
         trace.analyse()
         trace.worker.token_signal.emit("## QUERY ")

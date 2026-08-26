@@ -81,6 +81,13 @@ The main runtime is organised around:
 - `services/usage_tracker.py` and `services/run_logger.py` — cost and request lifecycle records
 - `config/tool_prompts.json` — Chat tool instructions
 - `data/sentinel.db` — local application data
+- `assets/` — `icon.icns` and its source PNG for the macOS app bundle; used by
+  `scripts/install_app.sh`, `scripts/build_app.sh`, and `SentinelAI.spec`
+- `output/` — gitignored, generated-only. Currently holds leftover files from
+  before this fork was narrowed to the security roster (`launch_assets/` has a
+  KDP listing, an ARC outreach email and a BookTok pitch — publishing-agent
+  output, not something this Sentinel builds). Safe to clear; nothing in this
+  repo reads from it.
 
 Built-in agents come from the canonical catalog. Forge-generated agents use the dynamic registry and remain separate from the built-in roster.
 

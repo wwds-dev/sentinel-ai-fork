@@ -1,4 +1,4 @@
-# Sentinel AI — Suggestions
+# Sentinel Fork — Suggestions
 
 Ideas not yet committed to. Status: `IDEA` · `CONSIDERING` · `PLANNED` · `DONE` · `REJECTED`
 

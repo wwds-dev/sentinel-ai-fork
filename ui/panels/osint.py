@@ -292,12 +292,20 @@ class OsintPanel(AgentPanel):
         if not validation.valid:
             QMessageBox.warning(self, "Invalid Target", validation.message)
             return
-        if validation.query_type not in {"Domain", "IP Address", "Username", "Email"}:
+        if validation.query_type not in {
+            "Domain", "IP Address", "Username", "Email", "Company"
+        }:
+            privacy_note = (
+                "Person and phone Live Research is intentionally unavailable. "
+                "Trace will not send personal identifiers to people-search, "
+                "reverse-phone, or data-broker services. Use Structure Query to "
+                "build a local research plan instead."
+                if validation.query_type in {"Person", "Phone"}
+                else "Use Structure Query for this target type."
+            )
             QMessageBox.information(
                 self, "Target Type Not Available",
-                "Live Research currently supports domains, IP addresses, "
-                "usernames, and emails. "
-                "Use Structure Query for other target types.",
+                privacy_note,
             )
             return
 
@@ -318,6 +326,7 @@ class OsintPanel(AgentPanel):
                 "IP Address": "WHOIS and DNS",
                 "Domain": "WHOIS, DNS, and crt.sh",
                 "Username": "URLScan",
+                "Company": "GLEIF Legal Entity Index",
             }
             sources = source_map[validation.query_type]
             consent = QMessageBox.question(
@@ -455,6 +464,11 @@ class OsintPanel(AgentPanel):
                 ("Have I Been Pwned", self._lookup_text(result.get("hibp"))),
                 ("BreachDirectory", self._lookup_text(result.get("breachdirectory"))),
             ])
+        elif result.get("type") == "company":
+            cards.append((
+                "Legal entity records",
+                self._lookup_text(result.get("legal_entities")),
+            ))
         raw = self._lookup_text(result)
         self.sections.show_sections(cards, raw=raw)
         self.sections.setVisible(True)
@@ -479,6 +493,7 @@ class OsintPanel(AgentPanel):
                     query_type={
                         "ip": "IP Address", "domain": "Domain",
                         "username": "Username", "email": "Email",
+                        "company": "Company",
                     }.get(result.get("type"), "Auto-detect"),
                     response=raw,
                     cancelled=bool(result.get("cancelled")),

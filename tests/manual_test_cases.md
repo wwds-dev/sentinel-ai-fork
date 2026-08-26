@@ -58,6 +58,8 @@ Use a disposable test database and non-sensitive prompts. Do not send paid reque
 - [ ] Stopping Live Research preserves completed source results and marks the run as partial/cancelled.
 - [ ] Username Live Research names URLScan before confirmation and records only URLScan as contacted.
 - [ ] Email Live Research sends the address only to checked services; HIBP and BreachDirectory start off, and HIBP is unavailable without a key.
+- [ ] Company Live Research names GLEIF before confirmation, shows the LEI coverage limitation, and saves legal-entity results in Saved Searches.
+- [ ] Person and Phone Live Research contacts nothing and explains that Trace does not use people-search, reverse-phone, or data-broker services.
 - [ ] A skipped email service is recorded as skipped-before-contact rather than contacted or failed.
 
 ## 4. Bloodhound (`osint_heavy`)
