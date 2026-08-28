@@ -203,6 +203,19 @@ def test_request_exactly_at_the_remaining_budget_is_allowed():
     assert check(session_cost=0.5, session_budget=1.0, estimated_cost=0.5).allowed
 
 
+def test_decimal_budget_boundary_is_not_refused_by_float_noise():
+    assert check(
+        session_cost=0.9,
+        session_budget=1.0,
+        estimated_cost=0.1,
+    ).allowed
+    assert check(
+        daily_cost=4.9,
+        daily_budget=5.0,
+        estimated_cost=0.1,
+    ).allowed
+
+
 def test_ollama_ignores_every_budget():
     """A local request costs nothing, so an exhausted budget must not block it."""
     result = check(

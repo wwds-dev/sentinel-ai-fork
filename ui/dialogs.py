@@ -89,6 +89,7 @@ def show_cost_history(app):
                 <td>{e.get('backend', '')}</td>
                 <td>{e.get('model', '')}</td>
                 <td>{e.get('input_tokens', 0)}</td>
+                <td>{e.get('cached_input_tokens', 0)}</td>
                 <td>{e.get('output_tokens', 0)}</td>
                 <td>{e.get('total_tokens', 0)}</td>
                 <td>€{float(e.get('cost_eur', e.get('estimated_cost', 0.0))):.2f}</td>
@@ -105,6 +106,7 @@ def show_cost_history(app):
                 <th>Provider</th>
                 <th>Model</th>
                 <th>Input</th>
+                <th>Cached input</th>
                 <th>Output</th>
                 <th>Total</th>
                 <th>Cost</th>
@@ -145,6 +147,7 @@ def show_cost_history(app):
                 "backend",
                 "model",
                 "input_tokens",
+                "cached_input_tokens",
                 "output_tokens",
                 "total_tokens",
                 "cost_eur",
@@ -158,6 +161,7 @@ def show_cost_history(app):
                     e.get("backend", ""),
                     e.get("model", ""),
                     e.get("input_tokens", 0),
+                    e.get("cached_input_tokens", 0),
                     e.get("output_tokens", 0),
                     e.get("total_tokens", 0),
                     float(e.get("cost_eur", e.get("estimated_cost", 0.0))),
@@ -374,13 +378,18 @@ def show_settings(app):
 
     pricing_grid = QGridLayout()
     pricing_grid.setSpacing(6)
-    for col, hdr in enumerate(["Provider", "Model", "Input /1M USD", "Output /1M USD"]):
+    for col, hdr in enumerate([
+        "Provider", "Model", "Input /1M USD", "Cached input /1M USD",
+        "Output /1M USD",
+    ]):
         pricing_grid.addWidget(QLabel(f"<b>{hdr}</b>"), 0, col)
 
     pricing_widgets = {}
     with get_connection() as conn:
         pricing_rows = conn.execute(
-            "SELECT backend, model, input_per_1m_usd, output_per_1m_usd FROM pricing ORDER BY backend, model"
+            "SELECT backend, model, input_per_1m_usd, "
+            "cached_input_per_1m_usd, output_per_1m_usd "
+            "FROM pricing ORDER BY backend, model"
         ).fetchall()
 
     for i, row in enumerate(pricing_rows, start=1):
@@ -389,11 +398,18 @@ def show_settings(app):
         pricing_grid.addWidget(QLabel(row["model"]), i, 1)
         in_edit = QLineEdit(str(row["input_per_1m_usd"]))
         in_edit.setMaximumWidth(100)
+        cached_edit = QLineEdit(
+            "" if row["cached_input_per_1m_usd"] is None
+            else str(row["cached_input_per_1m_usd"])
+        )
+        cached_edit.setMaximumWidth(100)
+        cached_edit.setPlaceholderText("same as input")
         out_edit = QLineEdit(str(row["output_per_1m_usd"]))
         out_edit.setMaximumWidth(100)
         pricing_grid.addWidget(in_edit, i, 2)
-        pricing_grid.addWidget(out_edit, i, 3)
-        pricing_widgets[key] = (in_edit, out_edit)
+        pricing_grid.addWidget(cached_edit, i, 3)
+        pricing_grid.addWidget(out_edit, i, 4)
+        pricing_widgets[key] = (in_edit, cached_edit, out_edit)
 
     pl.addLayout(pricing_grid)
     pl.addStretch()
@@ -446,13 +462,17 @@ def show_settings(app):
 
         # Pricing
         with get_connection() as conn:
-            for (backend, model), (in_edit, out_edit) in pricing_widgets.items():
+            for (backend, model), (in_edit, cached_edit, out_edit) in pricing_widgets.items():
                 try:
                     in_val = float(in_edit.text().strip())
+                    cached_raw = cached_edit.text().strip()
+                    cached_val = float(cached_raw) if cached_raw else None
                     out_val = float(out_edit.text().strip())
                     conn.execute(
-                        "UPDATE pricing SET input_per_1m_usd = ?, output_per_1m_usd = ? WHERE backend = ? AND model = ?",
-                        (in_val, out_val, backend, model)
+                        "UPDATE pricing SET input_per_1m_usd = ?, "
+                        "cached_input_per_1m_usd = ?, output_per_1m_usd = ? "
+                        "WHERE backend = ? AND model = ?",
+                        (in_val, cached_val, out_val, backend, model)
                     )
                 except ValueError:
                     errors.append(f"Pricing {backend}/{model}: invalid number.")

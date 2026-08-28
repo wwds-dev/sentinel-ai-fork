@@ -23,6 +23,35 @@ class UsageTracker:
 
         return i, o, override or "exact"
 
+    @staticmethod
+    def cached_input_tokens(usage: dict | None, input_tokens: int) -> int:
+        """Read cache-hit input tokens and clamp them to the reported input.
+
+        Kimi documents ``cached_tokens`` at the top of ``usage``.  Accept the
+        normalized wrapper key and OpenAI-compatible nested details as well so
+        an SDK representation change cannot over-discount a request.
+        """
+        if not usage:
+            return 0
+        details = usage.get("prompt_tokens_details") or usage.get("input_tokens_details")
+        if not isinstance(details, dict):
+            details = {}
+        raw = (
+            usage.get("cached_input_tokens")
+            if usage.get("cached_input_tokens") is not None
+            else usage.get("cached_tokens")
+        )
+        if raw is None:
+            raw = (
+                details.get("cached_tokens")
+                if details.get("cached_tokens") is not None
+                else details.get("cache_read_input_tokens", 0)
+            )
+        try:
+            return min(max(0, int(raw)), max(0, int(input_tokens)))
+        except (TypeError, ValueError):
+            return 0
+
     def load_pricing(self) -> dict:
         result = {"eur_per_usd": 0.92}
         with get_connection() as conn:
@@ -30,16 +59,28 @@ class UsageTracker:
             if row:
                 result["eur_per_usd"] = float(row["value"])
 
-            for r in conn.execute("SELECT backend, model, input_per_1m_usd, output_per_1m_usd FROM pricing"):
+            for r in conn.execute(
+                "SELECT backend, model, input_per_1m_usd, "
+                "cached_input_per_1m_usd, output_per_1m_usd FROM pricing"
+            ):
                 backend = r["backend"]
                 result.setdefault(backend, {})
                 result[backend][r["model"]] = {
                     "input_per_1m_usd": r["input_per_1m_usd"],
+                    "cached_input_per_1m_usd": r["cached_input_per_1m_usd"],
                     "output_per_1m_usd": r["output_per_1m_usd"],
                 }
         return result
 
-    def calculate_cost_eur(self, backend: str, model: str, input_tokens: int, output_tokens: int) -> float:
+    def calculate_cost_eur(
+        self,
+        backend: str,
+        model: str,
+        input_tokens: int,
+        output_tokens: int,
+        *,
+        cached_input_tokens: int = 0,
+    ) -> float:
         if backend == "ollama":
             return 0.0
 
@@ -48,32 +89,54 @@ class UsageTracker:
             eur_per_usd = float(eur_row["value"]) if eur_row else 0.92
 
             row = conn.execute(
-                "SELECT input_per_1m_usd, output_per_1m_usd FROM pricing WHERE backend = ? AND model IN (?, 'default') ORDER BY CASE model WHEN ? THEN 0 ELSE 1 END LIMIT 1",
+                "SELECT input_per_1m_usd, cached_input_per_1m_usd, "
+                "output_per_1m_usd FROM pricing "
+                "WHERE backend = ? AND model IN (?, 'default') "
+                "ORDER BY CASE model WHEN ? THEN 0 ELSE 1 END LIMIT 1",
                 (backend, model, model)
             ).fetchone()
 
         if not row:
             return 0.0
 
-        input_usd = (input_tokens / 1_000_000) * row["input_per_1m_usd"]
+        total_input = max(0, int(input_tokens))
+        cached_input = min(max(0, int(cached_input_tokens)), total_input)
+        uncached_input = total_input - cached_input
+        cached_rate = row["cached_input_per_1m_usd"]
+        if cached_rate is None:
+            cached_rate = row["input_per_1m_usd"]
+        input_usd = (
+            (uncached_input / 1_000_000) * row["input_per_1m_usd"]
+            + (cached_input / 1_000_000) * cached_rate
+        )
         output_usd = (output_tokens / 1_000_000) * row["output_per_1m_usd"]
         return round((input_usd + output_usd) * eur_per_usd, 6)
 
     def log_request(self, agent: str, backend: str, model: str,
-                    prompt_text: str, response_text: str, usage: dict | None = None) -> dict:
+                    prompt_text: str, response_text: str, usage: dict | None = None,
+                    project: str | None = None) -> dict:
         input_tokens, output_tokens, cost_type = self.normalize_usage(usage, prompt_text, response_text)
-        cost_eur = self.calculate_cost_eur(backend, model, input_tokens, output_tokens)
+        cached_tokens = self.cached_input_tokens(usage, input_tokens)
+        cost_eur = self.calculate_cost_eur(
+            backend,
+            model,
+            input_tokens,
+            output_tokens,
+            cached_input_tokens=cached_tokens,
+        )
         timestamp = datetime.now().isoformat(timespec="seconds")
 
         with get_connection() as conn:
             conn.execute("""
                 INSERT INTO usage
-                  (timestamp, agent, backend, model, input_tokens, output_tokens,
-                   total_tokens, cost_eur, cost_type, cloud)
-                VALUES (?,?,?,?,?,?,?,?,?,?)
+                  (timestamp, agent, backend, model, project, input_tokens,
+                   cached_input_tokens, output_tokens, total_tokens, cost_eur,
+                   cost_type, cloud)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
             """, (
                 timestamp, agent, backend, model,
-                input_tokens, output_tokens, input_tokens + output_tokens,
+                project, input_tokens, cached_tokens, output_tokens,
+                input_tokens + output_tokens,
                 cost_eur, cost_type,
                 1 if backend in CLOUD_PROVIDERS else 0,
             ))
@@ -85,12 +148,14 @@ class UsageTracker:
             "backend": backend,
             "model": model,
             "input_tokens": input_tokens,
+            "cached_input_tokens": cached_tokens,
             "output_tokens": output_tokens,
             "total_tokens": input_tokens + output_tokens,
             "cost_eur": cost_eur,
             "estimated_cost": cost_eur,
             "cost_type": cost_type,
             "cloud": backend in CLOUD_PROVIDERS,
+            "project": project,
         }
 
     def get_today_total(self) -> float:
@@ -110,6 +175,18 @@ class UsageTracker:
                 (f"{today}%",)
             ).fetchone()
         return int(row["cnt"])
+
+    def get_project_today_total(self, project: str | None) -> float:
+        if not project:
+            return 0.0
+        today = datetime.now().date().isoformat()
+        with get_connection() as conn:
+            row = conn.execute(
+                "SELECT COALESCE(SUM(cost_eur), 0.0) AS total FROM usage "
+                "WHERE project = ? AND timestamp LIKE ?",
+                (project, f"{today}%"),
+            ).fetchone()
+        return round(float(row["total"]), 6)
 
     def load_log(self) -> list:
         with get_connection() as conn:

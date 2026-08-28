@@ -4,6 +4,51 @@ from openai import OpenAI
 from services.api_limits import REQUEST_TIMEOUT_SECONDS, MAX_RETRIES
 
 
+def _usage_value(container, *names):
+    """Read an SDK usage field from either an object or a plain mapping."""
+    if container is None:
+        return None
+    for name in names:
+        value = container.get(name) if isinstance(container, dict) else getattr(container, name, None)
+        if value is not None:
+            return value
+    return None
+
+
+def cached_input_tokens(usage) -> int:
+    """Return Kimi cache-hit tokens across current and compatible SDK shapes.
+
+    Kimi's API documents ``usage.cached_tokens``.  Some OpenAI-compatible
+    clients instead place the same value below ``prompt_tokens_details`` (or
+    call it ``cached_input_tokens``), so accept those shapes without ever
+    allowing a malformed value to inflate the cache discount.
+    """
+    candidates = [
+        _usage_value(usage, "cached_tokens", "cached_input_tokens"),
+    ]
+    details = _usage_value(usage, "prompt_tokens_details", "input_tokens_details")
+    candidates.append(
+        _usage_value(details, "cached_tokens", "cached_input_tokens", "cache_read_input_tokens")
+    )
+
+    # Pydantic/OpenAI SDK models retain provider-specific fields in a dumped
+    # mapping even when no generated attribute exists for them.
+    if not isinstance(usage, dict) and hasattr(usage, "model_dump"):
+        try:
+            dumped = usage.model_dump()
+        except Exception:
+            dumped = None
+        if dumped:
+            candidates.append(_usage_value(dumped, "cached_tokens", "cached_input_tokens"))
+
+    for value in candidates:
+        try:
+            return max(0, int(value))
+        except (TypeError, ValueError):
+            continue
+    return 0
+
+
 class KimiClientWrapper:
     """Wrapper for Moonshot AI's Kimi models via the OpenAI-compatible Kimi API.
 
@@ -55,10 +100,15 @@ class KimiClientWrapper:
 
         text = response.choices[0].message.content or ""
 
+        response_usage = response.usage
+        input_tokens = int(_usage_value(response_usage, "prompt_tokens", "input_tokens") or 0)
         usage = {
-            "input_tokens": response.usage.prompt_tokens if response.usage else 0,
-            "output_tokens": response.usage.completion_tokens if response.usage else 0,
-            "total_tokens": response.usage.total_tokens if response.usage else 0,
+            "input_tokens": input_tokens,
+            "cached_input_tokens": min(input_tokens, cached_input_tokens(response_usage)),
+            "output_tokens": int(
+                _usage_value(response_usage, "completion_tokens", "output_tokens") or 0
+            ),
+            "total_tokens": int(_usage_value(response_usage, "total_tokens") or 0),
         }
 
         return text, usage

@@ -52,20 +52,24 @@ class AgentHost(Protocol):
 
     def authorize_request(self, agent: str, provider: str, model: str,
                           prompt: str, tool: str | None = None,
-                          label: str | None = None) -> bool:
+                          label: str | None = None,
+                          request_id: str | None = None) -> bool:
         """False means the request must not be sent."""
         ...
 
     def record_request(self, agent: str, response: str,
-                       messages: list | None = None) -> None:
+                       messages: list | None = None,
+                       request_id: str | None = None) -> None:
         """Bill, save and close out an authorised request."""
         ...
 
-    def abandon_request(self, agent: str, reason: str = "error") -> None:
+    def abandon_request(self, agent: str, reason: str = "error",
+                        request_id: str | None = None) -> None:
         """Drop a failed request so it is not billed."""
         ...
 
-    def note_request_usage(self, agent: str, usage: dict) -> None:
+    def note_request_usage(self, agent: str, usage: dict,
+                           request_id: str | None = None) -> None:
         """Real token counts, when the worker reports them."""
         ...
 

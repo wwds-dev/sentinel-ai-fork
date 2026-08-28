@@ -1,4 +1,6 @@
 import json
+import re
+from datetime import datetime
 from services.database import get_connection
 
 
@@ -21,7 +23,82 @@ def _row_to_tool(row) -> dict:
     return d
 
 
+def _row_to_project(row) -> dict:
+    d = dict(row)
+    d["archived"] = bool(d.get("archived", 0))
+    return d
+
+
+def project_slug(name: str) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", name.strip().lower()).strip("-")
+    return slug[:64] or "project"
+
+
 class Registry:
+    def list_projects(self, include_archived: bool = False) -> list[dict]:
+        query = "SELECT * FROM projects"
+        params = ()
+        if not include_archived:
+            query += " WHERE archived = ?"
+            params = (0,)
+        query += " ORDER BY name COLLATE NOCASE, created_at"
+        with get_connection() as conn:
+            rows = conn.execute(query, params).fetchall()
+        return [_row_to_project(row) for row in rows]
+
+    def get_project(self, project_id: str | None) -> dict | None:
+        if not project_id:
+            return None
+        with get_connection() as conn:
+            row = conn.execute(
+                "SELECT * FROM projects WHERE id = ?", (project_id,)
+            ).fetchone()
+        return _row_to_project(row) if row else None
+
+    def upsert_project(self, project: dict) -> dict:
+        name = str(project.get("name", "")).strip()
+        if not name:
+            raise ValueError("Project name is required.")
+        project_id = str(project.get("id") or project_slug(name))
+        existing = self.get_project(project_id)
+        created_at = (
+            existing.get("created_at") if existing
+            else datetime.now().isoformat(timespec="seconds")
+        )
+        budget = project.get("budget_eur")
+        budget = float(budget) if budget not in (None, "") else None
+        values = (
+            project_id, name, str(project.get("instructions", "")),
+            str(project.get("default_agent") or "chat"),
+            str(project.get("default_provider") or "ollama"),
+            str(project.get("default_model") or ""), budget,
+            1 if project.get("archived", False) else 0, created_at,
+        )
+        with get_connection() as conn:
+            conn.execute("""
+                INSERT INTO projects
+                  (id, name, instructions, default_agent, default_provider,
+                   default_model, budget_eur, archived, created_at)
+                VALUES (?,?,?,?,?,?,?,?,?)
+                ON CONFLICT(id) DO UPDATE SET
+                  name = excluded.name,
+                  instructions = excluded.instructions,
+                  default_agent = excluded.default_agent,
+                  default_provider = excluded.default_provider,
+                  default_model = excluded.default_model,
+                  budget_eur = excluded.budget_eur,
+                  archived = excluded.archived
+            """, values)
+            conn.commit()
+        return self.get_project(project_id)
+
+    def archive_project(self, project_id: str, archived: bool = True) -> None:
+        with get_connection() as conn:
+            conn.execute(
+                "UPDATE projects SET archived = ? WHERE id = ?",
+                (1 if archived else 0, project_id),
+            )
+            conn.commit()
     def get_agent(self, name: str) -> dict | None:
         with get_connection() as conn:
             row = conn.execute(

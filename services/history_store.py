@@ -10,7 +10,8 @@ class HistoryStore:
         self.folder = Path(folder) if folder is not None else user_data_base() / "data" / "chats"
         self.folder.mkdir(parents=True, exist_ok=True)  # create the folder if needed
 
-    def save_chat(self, agent: str, backend: str, model: str, command: str, messages: list, response: str):
+    def save_chat(self, agent: str, backend: str, model: str, command: str,
+                  messages: list, response: str, project: str | None = None):
         timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S-%f")
         filepath = self.folder / f"{timestamp}_{uuid4().hex}.json"
 
@@ -23,6 +24,8 @@ class HistoryStore:
             "messages": messages,
             "response": response
         }
+        if project:
+            payload["project"] = project
 
         # Exclusive creation prevents an accidental overwrite even if clocks
         # are frozen or UUID generation is replaced in a test.

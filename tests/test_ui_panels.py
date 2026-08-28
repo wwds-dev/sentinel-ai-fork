@@ -652,6 +652,7 @@ class FakeHost:
         self.models = list(models)
         self.loaders = {}
         self.calls = []
+        self.request_ids = []
         self.agent_instances = {"demo": object()}
         self.authorized = True
         self.agent_factory = FakeAgentFactory()
@@ -666,18 +667,22 @@ class FakeHost:
         self.loaders[agent_key] = loader
 
     def authorize_request(self, agent, provider, model, prompt,
-                          tool=None, label=None):
+                          tool=None, label=None, request_id=None):
         self.calls.append(("authorize", agent, provider, model, prompt, tool, label))
+        self.request_ids.append(("authorize", request_id))
         return self.authorized
 
-    def record_request(self, agent, response, messages=None):
+    def record_request(self, agent, response, messages=None, request_id=None):
         self.calls.append(("record", agent, response, messages))
+        self.request_ids.append(("record", request_id))
 
-    def abandon_request(self, agent, reason="error"):
+    def abandon_request(self, agent, reason="error", request_id=None):
         self.calls.append(("abandon", agent, reason))
+        self.request_ids.append(("abandon", request_id))
 
-    def note_request_usage(self, agent, usage):
+    def note_request_usage(self, agent, usage, request_id=None):
         self.calls.append(("usage", agent, usage))
+        self.request_ids.append(("usage", request_id))
 
     def record_external_research(self, **details):
         self.calls.append(("external", details))
@@ -793,14 +798,25 @@ class TestAgentPanel:
         assert panel.authorize("prompt text") is False
 
     def test_record_abandon_and_usage_all_carry_the_agent_key(self, panel):
-        panel.record("response", [{"role": "user"}])
-        panel.abandon("stopped")
+        panel.authorize("prompt")
+        request_id = panel._request_id
         panel.note_usage({"input_tokens": 5})
-        assert panel.host.calls[-3:] == [
-            ("record", "demo", "response", [{"role": "user"}]),
-            ("abandon", "demo", "stopped"),
-            ("usage", "demo", {"input_tokens": 5}),
+        panel.record("response", [{"role": "user"}])
+        panel.authorize("another prompt")
+        abandon_id = panel._request_id
+        panel.abandon("stopped")
+        assert ("usage", "demo", {"input_tokens": 5}) in panel.host.calls
+        assert ("record", "demo", "response", [{"role": "user"}]) in panel.host.calls
+        assert ("abandon", "demo", "stopped") in panel.host.calls
+        assert panel.host.request_ids[-5:] == [
+            ("authorize", request_id),
+            ("usage", request_id),
+            ("record", request_id),
+            ("authorize", abandon_id),
+            ("abandon", abandon_id),
         ]
+        assert request_id != abandon_id
+        assert panel._request_id is None
 
     def test_run_backend_uses_the_current_selection(self, panel):
         panel.run_backend([{"role": "user"}], "hello")

@@ -17,13 +17,13 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QTextCursor
 from PySide6.QtWidgets import (
     QComboBox, QFileDialog, QGridLayout, QGroupBox, QHBoxLayout, QLabel,
-    QLineEdit, QMessageBox, QProgressBar, QPushButton, QSplitter, QTabWidget,
+    QLineEdit, QMessageBox, QProgressBar, QPushButton, QSplitter,
     QTextBrowser, QTextEdit, QVBoxLayout, QWidget,
 )
 
 from services.runtime_paths import user_data_base
 from ui.panels.base import AgentPanel
-from ui.widgets import MenuComboBox
+from ui.widgets import MenuComboBox, SectionView
 
 
 # ── EXIF, as plain functions ────────────────────────────────────────────────
@@ -116,6 +116,7 @@ class OsintHeavyPanel(AgentPanel):
         self.setObjectName("OSINTHeavyPanel")
         self._last_response = ""
         self._image_path = ""
+        self._image_osint = ""
         self._build()
         self.polish_workspace()
         self.hide()
@@ -222,48 +223,18 @@ class OsintHeavyPanel(AgentPanel):
         # ── Results splitter: tabs left, indicators right ────────────────
         results_splitter = QSplitter(Qt.Horizontal)
 
-        self.tabs = QTabWidget()
+        result_widget = QWidget()
+        result_layout = QVBoxLayout(result_widget)
+        result_layout.setContentsMargins(0, 0, 0, 0)
+        result_layout.setSpacing(8)
+        self.stream_box = QTextBrowser()
+        self.stream_box.setOpenExternalLinks(False)
+        self.stream_box.setVisible(False)
+        result_layout.addWidget(self.stream_box, 1)
+        self.sections = SectionView()
+        result_layout.addWidget(self.sections, 1)
 
-        self.overview_box = QTextBrowser()
-        self.overview_box.setOpenExternalLinks(True)
-        self.tabs.addTab(self.overview_box, "Overview")
-
-        self.footprint_box = QTextBrowser()
-        self.footprint_box.setOpenExternalLinks(True)
-        self.tabs.addTab(self.footprint_box, "Digital Footprint")
-
-        self.infra_box = QTextBrowser()
-        self.infra_box.setOpenExternalLinks(True)
-        self.tabs.addTab(self.infra_box, "Infra / Social")
-
-        self.risk_box = QTextBrowser()
-        self.risk_box.setOpenExternalLinks(True)
-        self.tabs.addTab(self.risk_box, "Risk && Red Flags")
-
-        self.method_box = QTextBrowser()
-        self.method_box.setOpenExternalLinks(True)
-        self.tabs.addTab(self.method_box, "Methodology")
-
-        self.dossier_box = QTextBrowser()
-        self.dossier_box.setOpenExternalLinks(True)
-        self.tabs.addTab(self.dossier_box, "Full Dossier")
-
-        self.image_tab = QTextBrowser()
-        self.image_tab.setOpenExternalLinks(True)
-        self.tabs.addTab(self.image_tab, "Image OSINT")
-
-        for box, message in (
-            (self.overview_box, "Investigation overview will appear after you select Investigate."),
-            (self.footprint_box, "Digital-footprint findings will appear here."),
-            (self.infra_box, "Infrastructure and social pivots will appear here."),
-            (self.risk_box, "Risk indicators and red flags will appear here."),
-            (self.method_box, "Sources and methodology will appear here."),
-            (self.dossier_box, "The complete dossier will appear here."),
-            (self.image_tab, "Image OSINT findings will appear after an image is analysed."),
-        ):
-            box.setPlaceholderText(message)
-
-        results_splitter.addWidget(self.tabs)
+        results_splitter.addWidget(result_widget)
 
         # ── Indicators sidebar ───────────────────────────────────────────
         indicators_widget = QWidget()
@@ -382,22 +353,27 @@ class OsintHeavyPanel(AgentPanel):
 
     def _on_token(self, token: str) -> None:
         self._last_response += token
-        self.dossier_box.setPlainText(self._last_response)
-        self.dossier_box.moveCursor(QTextCursor.End)
+        self.sections.setVisible(False)
+        self.stream_box.setVisible(True)
+        self.stream_box.setPlainText(self._last_response)
+        self.stream_box.moveCursor(QTextCursor.End)
 
     def _on_finished(self, full_response: str) -> None:
         self.record(full_response)
         self._last_response = full_response
-        self._populate_tabs(full_response)
+        self.stream_box.setVisible(False)
+        self.sections.setVisible(True)
+        self._populate_sections(full_response)
         self._update_indicators(full_response)
         self.status_label.setText("Investigation complete.")
         self.set_busy(self.investigate_btn, self.stop_btn, False)
         self.save_btn.setEnabled(True)
-        self.tabs.setCurrentIndex(0)
 
     def _on_error(self, error: str) -> None:
         self.abandon()
-        self.dossier_box.setPlainText(f"[Error] {error}")
+        self.sections.setVisible(False)
+        self.stream_box.setVisible(True)
+        self.stream_box.setPlainText(f"[Error] {error}")
         self.status_label.setText("Error.")
         self.set_busy(self.investigate_btn, self.stop_btn, False)
 
@@ -432,10 +408,12 @@ class OsintHeavyPanel(AgentPanel):
         self.clear_image()
 
     def _clear_displays(self) -> None:
-        for box in (self.overview_box, self.footprint_box, self.infra_box,
-                    self.risk_box, self.method_box, self.dossier_box,
-                    self.image_tab):
-            box.clear()
+        self.sections.clear()
+        self.stream_box.clear()
+        self.stream_box.setVisible(False)
+        self.sections.setVisible(True)
+        if self._image_osint:
+            self._populate_sections("")
         self.threat_bar.setValue(0)
         self.threat_label.setText("—")
         self.conf_label.setText("—")
@@ -443,14 +421,18 @@ class OsintHeavyPanel(AgentPanel):
         self.depth_label.setText("—")
         self.save_btn.setEnabled(False)
 
-    def _populate_tabs(self, text: str) -> None:
+    def _populate_sections(self, text: str) -> None:
         sections = self.parse_sections(text)
-        self.overview_box.setPlainText(sections.get("overview", ""))
-        self.footprint_box.setPlainText(sections.get("footprint", ""))
-        self.infra_box.setPlainText(sections.get("infra", ""))
-        self.risk_box.setPlainText(sections.get("risk", ""))
-        self.method_box.setPlainText(sections.get("methodology", ""))
-        self.dossier_box.setPlainText(text)
+        cards = [
+            ("Overview", sections.get("overview", "")),
+            ("Digital footprint", sections.get("footprint", "")),
+            ("Infrastructure / social profile", sections.get("infra", "")),
+            ("Risk and red flags", sections.get("risk", "")),
+            ("Methodology and tools", sections.get("methodology", "")),
+        ]
+        if self._image_osint:
+            cards.append(("Image OSINT", self._image_osint))
+        self.sections.show_sections(cards, raw=text)
 
     @staticmethod
     def parse_sections(text: str) -> dict:

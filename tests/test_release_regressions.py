@@ -85,11 +85,14 @@ def test_usage_cloud_flag_covers_every_supported_provider(tmp_path, monkeypatch,
         conn.executescript("""
             CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
             CREATE TABLE pricing (
-                backend TEXT, model TEXT, input_per_1m_usd REAL, output_per_1m_usd REAL
+                backend TEXT, model TEXT, input_per_1m_usd REAL,
+                cached_input_per_1m_usd REAL, output_per_1m_usd REAL
             );
             CREATE TABLE usage (
                 id INTEGER PRIMARY KEY, timestamp TEXT, agent TEXT, backend TEXT,
-                model TEXT, input_tokens INTEGER, output_tokens INTEGER,
+                model TEXT, project TEXT, input_tokens INTEGER,
+                cached_input_tokens INTEGER,
+                output_tokens INTEGER,
                 total_tokens INTEGER, cost_eur REAL, cost_type TEXT, cloud INTEGER
             );
         """)

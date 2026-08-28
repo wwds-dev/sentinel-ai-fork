@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from decimal import Decimal
 from services.registry import Registry
 
 
@@ -16,6 +17,11 @@ class Validator:
 
     def __init__(self, registry: Registry):
         self.registry = registry
+
+    @staticmethod
+    def _money(value: float | int | str) -> Decimal:
+        """Convert display/config money without carrying binary-float noise."""
+        return Decimal(str(value))
 
     def validate(
         self,
@@ -89,8 +95,8 @@ class Validator:
 
         # 9. Session budget
         if provider != "ollama":
-            session_remaining = session_budget - session_cost
-            if estimated_cost > session_remaining:
+            session_remaining = self._money(session_budget) - self._money(session_cost)
+            if self._money(estimated_cost) > session_remaining:
                 return ValidationResult(
                     False,
                     f"Session budget exceeded. "
@@ -99,8 +105,8 @@ class Validator:
 
         # 10. Daily budget
         if provider != "ollama":
-            daily_remaining = daily_budget - daily_cost
-            if estimated_cost > daily_remaining:
+            daily_remaining = self._money(daily_budget) - self._money(daily_cost)
+            if self._money(estimated_cost) > daily_remaining:
                 return ValidationResult(
                     False,
                     f"Daily budget exceeded. "

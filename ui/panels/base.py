@@ -17,6 +17,8 @@ so the two paths cannot drift.
 
 from __future__ import annotations
 
+from uuid import uuid4
+
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QComboBox, QGridLayout, QGroupBox, QHBoxLayout, QLabel, QPushButton,
@@ -146,6 +148,7 @@ class AgentPanel(QWidget):
         self.provider_box: QComboBox | None = None
         self.model_box: QComboBox | None = None
         self.worker = None
+        self._request_id: str | None = None
 
     # ── Construction helpers ────────────────────────────────────────────
     def flow_row(self, spacing: int = 6, min_height: int = 44) -> tuple[QWidget, FlowLayout]:
@@ -324,19 +327,32 @@ class AgentPanel(QWidget):
             )
             if route_result is False:
                 return False
-        return self.host.authorize_request(
+        request_id = uuid4().hex
+        allowed = self.host.authorize_request(
             self.agent_key, self.provider, self.model, prompt,
-            tool=tool, label=label,
+            tool=tool, label=label, request_id=request_id,
         )
+        self._request_id = request_id if allowed else None
+        return allowed
 
     def record(self, response: str, messages: list | None = None) -> None:
-        self.host.record_request(self.agent_key, response, messages)
+        request_id = self._request_id
+        self.host.record_request(
+            self.agent_key, response, messages, request_id=request_id,
+        )
+        self._request_id = None
 
     def abandon(self, reason: str = "error") -> None:
-        self.host.abandon_request(self.agent_key, reason)
+        request_id = self._request_id
+        self.host.abandon_request(
+            self.agent_key, reason, request_id=request_id,
+        )
+        self._request_id = None
 
     def note_usage(self, usage: dict) -> None:
-        self.host.note_request_usage(self.agent_key, usage)
+        self.host.note_request_usage(
+            self.agent_key, usage, request_id=self._request_id,
+        )
 
     # ── Running one request ─────────────────────────────────────────────
     #: Swapped by panels that drive a tool instead of a chat request, and by

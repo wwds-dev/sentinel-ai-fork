@@ -7,6 +7,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
+from uuid import uuid4
 
 from services.runtime_paths import resource_base, user_data_base, ensure_seeded, is_frozen
 ensure_seeded()
@@ -83,6 +84,8 @@ CHATS_DIR = DATA_DIR / "chats"
 
 # Sentinel value for the Saved Chats agent filter — not a real agent name.
 ALL_AGENTS_FILTER = "All agents"
+ALL_PROJECTS_FILTER = "All projects"
+UNFILED_PROJECT_FILTER = "Unfiled"
 
 SETTINGS_FILE = CONFIG_DIR / "settings.json"
 COMMANDS_FILE = CONFIG_DIR / "commands.json"
@@ -172,8 +175,9 @@ class GodAI(QWidget):
 
         self.registry = Registry()
         self.validator = Validator(self.registry)
+        self.active_project_id: str | None = None
         self.run_logger = RunLogger()
-        # agent name -> context for an in-flight request (see authorize_request)
+        # request id -> context for an in-flight request (see authorize_request)
         self._pending_requests = {}
         # agent key -> the panel's own "reload the model list" callable, filled
         # in as each panel builds (see register_model_loader)
@@ -219,6 +223,7 @@ class GodAI(QWidget):
         self.pending_command = ""
         self.pending_prompt = ""
         self.pending_messages = []
+        self.pending_project: str | None = None
 
         # Tooltip state — toggled via the chip in the centre header bar
         self.tooltips_enabled = str(
@@ -2977,13 +2982,34 @@ class GodAI(QWidget):
                 return False
         return bool(getattr(client, "api_key", None))
 
-    def note_request_usage(self, agent, usage):
+    def _pending_request_key(self, agent, request_id=None):
+        """Resolve a request id while retaining agent-only direct calls.
+
+        Panels pass a unique request id. Older callers pass only an agent name;
+        that remains unambiguous for their normal one-in-flight request shape.
+        With several matches, the newest preserves the old map's overwrite
+        semantics without destroying the other pending contexts.
+        """
+        if request_id is not None:
+            context = self._pending_requests.get(request_id)
+            if context is not None and context.get("agent") == agent:
+                return request_id
+            return None
+
+        for key, context in reversed(tuple(self._pending_requests.items())):
+            if context.get("agent") == agent:
+                return key
+        return None
+
+    def note_request_usage(self, agent, usage, request_id=None):
         """Real token counts from the worker, when it reports them."""
-        context = self._pending_requests.get(agent)
+        key = self._pending_request_key(agent, request_id)
+        context = self._pending_requests.get(key) if key is not None else None
         if context is not None:
             context["usage"] = usage
 
-    def authorize_request(self, agent, provider, model, prompt, tool=None, label=None) -> bool:
+    def authorize_request(self, agent, provider, model, prompt, tool=None,
+                          label=None, request_id=None) -> bool:
         """Budget-check and confirm one request. False means: do not send it.
 
         `tool` is a registry tool name and is validated as one — pass it only
@@ -2992,8 +3018,9 @@ class GodAI(QWidget):
         is not a registry entry: pass that as `label` instead, so it still shows
         up in the run log and Saved Chats without failing the tool check.
 
-        On success the context record_request() needs is stashed per agent, so a
-        caller only has to pass the response back later.
+        On success the context record_request() needs is stashed under a unique
+        request id. ``request_id`` is optional so older direct callers can keep
+        using the agent-only record/abandon methods for one in-flight request.
         """
         estimated_cost, approx_tokens = self.estimate_chat_cost(provider, model, prompt)
 
@@ -3041,7 +3068,11 @@ class GodAI(QWidget):
             return False
 
         descriptor = label or tool or "-"
-        self._pending_requests[agent] = {
+        request_id = request_id or uuid4().hex
+        if request_id in self._pending_requests:
+            raise ValueError(f"Request id is already pending: {request_id}")
+        self._pending_requests[request_id] = {
+            "request_id": request_id,
             "agent": agent,
             "tool": descriptor,
             "provider": provider,
@@ -3060,9 +3091,10 @@ class GodAI(QWidget):
         }
         return True
 
-    def record_request(self, agent, response, messages=None):
+    def record_request(self, agent, response, messages=None, request_id=None):
         """Bill, save and close out a request authorised by authorize_request()."""
-        context = self._pending_requests.pop(agent, None)
+        key = self._pending_request_key(agent, request_id)
+        context = self._pending_requests.pop(key, None) if key is not None else None
         if context is None:          # never authorised (or already recorded)
             return
 
@@ -3107,9 +3139,10 @@ class GodAI(QWidget):
         self.load_history_list()
         self.load_saved_searches()
 
-    def abandon_request(self, agent, reason="error"):
+    def abandon_request(self, agent, reason="error", request_id=None):
         """Drop a request that failed, so it is not billed and the log closes."""
-        context = self._pending_requests.pop(agent, None)
+        key = self._pending_request_key(agent, request_id)
+        context = self._pending_requests.pop(key, None) if key is not None else None
         if context and context["run_id"]:
             self.run_logger.finish(run_id=context["run_id"], status=reason)
 

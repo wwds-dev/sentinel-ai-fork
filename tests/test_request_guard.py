@@ -98,13 +98,12 @@ class TestValidatorEdgeCases:
         result = validate(provider="somenewprovider", api_permissions={})
         assert result.allowed is False
 
-    def test_budget_boundary_fails_safe_under_float_error(self):
-        # 1.00 - 0.90 == 0.09999999999999998 in binary floating point, so a
-        # request estimated at exactly 0.10 is refused rather than allowed.
-        # Pinned deliberately: erring towards blocking never overspends. A
-        # future switch to Decimal should make this flip, and this test say so.
+    def test_budget_boundary_is_exact_under_decimal_comparison(self):
+        # Decimal(str(value)) makes 1.00 - 0.90 exactly 0.10, so a request that
+        # costs precisely the remaining budget is allowed rather than refused
+        # because of binary floating-point noise.
         result = validate(session_cost=0.90, session_budget=1.00, estimated_cost=0.10)
-        assert result.allowed is False
+        assert result.allowed is True
 
     def test_already_over_session_budget_blocks_further_spend(self):
         # Remaining budget is negative here, not merely insufficient.
@@ -252,7 +251,11 @@ class TestAuthorizeRequest:
 
     def test_authorised_request_stashes_context_for_recording(self, win):
         win.authorize_request("alpha_agent", "openai", "gpt-4o", "hello")
-        assert "alpha_agent" in win._pending_requests
+        assert {context["agent"] for context in win._pending_requests.values()} == {
+            "alpha_agent"
+        }
+        request_id, context = next(iter(win._pending_requests.items()))
+        assert context["request_id"] == request_id
 
     def test_blocked_request_returns_false(self, win):
         win.validator = Validator(FakeRegistry(agent_enabled=False))
@@ -393,24 +396,63 @@ class TestAbandonRequest:
 
 
 class TestConcurrentAgents:
-    """_pending_requests is keyed by agent name — TODO.md flags this as a known
-    limit. These pin the behaviour that is actually relied on today."""
+    """Each in-flight request owns its context, even for the same agent."""
 
     def test_two_different_agents_do_not_interfere(self, win):
         win.authorize_request("alpha_agent", "openai", "gpt-4o", "a-prompt")
         win.authorize_request("beta_agent", "openai", "gpt-4o", "m-prompt")
         win.record_request("alpha_agent", "a-response")
-        assert "beta_agent" in win._pending_requests
+        assert any(
+            context["agent"] == "beta_agent"
+            for context in win._pending_requests.values()
+        )
         assert win.history.saved[0]["agent"] == "alpha_agent"
         win.record_request("beta_agent", "m-response")
         assert {s["agent"] for s in win.history.saved} == {"alpha_agent", "beta_agent"}
 
-    def test_same_agent_twice_overwrites_the_first_context(self, win):
-        # Documented limitation: panels disable their run button so this is not
-        # reachable today. If that ever changes, this test should start failing.
-        win.authorize_request("alpha_agent", "openai", "gpt-4o", "first")
-        win.authorize_request("alpha_agent", "openai", "gpt-4o", "second")
-        win.record_request("alpha_agent", "response")
-        assert len(win.usage_tracker.logged) == 1
-        assert win.usage_tracker.logged[0]["agent"] == "alpha_agent"
+    def test_same_agent_runs_can_finish_out_of_order(self, win):
+        first_id = "alpha-first"
+        second_id = "alpha-second"
+        win.authorize_request(
+            "alpha_agent", "openai", "gpt-4o", "first",
+            request_id=first_id,
+        )
+        win.authorize_request(
+            "alpha_agent", "deepseek", "deepseek-chat", "second",
+            request_id=second_id,
+        )
+        win.note_request_usage(
+            "alpha_agent", {"input_tokens": 111}, request_id=first_id,
+        )
+
+        win.record_request(
+            "alpha_agent", "second response", request_id=second_id,
+        )
+        assert first_id in win._pending_requests
+        assert second_id not in win._pending_requests
+        assert win.history.saved[0]["messages"][0]["content"] == "second"
+        assert win.history.saved[0]["backend"] == "deepseek"
+
+        win.record_request(
+            "alpha_agent", "first response", request_id=first_id,
+        )
+        assert [saved["messages"][0]["content"] for saved in win.history.saved] == [
+            "second", "first",
+        ]
+        assert [saved["backend"] for saved in win.history.saved] == [
+            "deepseek", "openai",
+        ]
+        assert win.usage_tracker.logged[1]["usage"] == {"input_tokens": 111}
+        assert [run["run_id"] for run in win.run_logger.finished] == [
+            "run-2", "run-1",
+        ]
+        assert win._pending_requests == {}
+
+    def test_agent_only_direct_calls_remain_supported(self, win):
+        assert win.authorize_request(
+            "alpha_agent", "openai", "gpt-4o", "legacy"
+        ) is True
+        win.note_request_usage("alpha_agent", {"input_tokens": 9})
+        win.record_request("alpha_agent", "legacy response")
+        assert win.usage_tracker.logged[0]["usage"] == {"input_tokens": 9}
         assert win._pending_requests == {}

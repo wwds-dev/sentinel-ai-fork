@@ -12,7 +12,7 @@ from services.tool_catalog import BUILTIN_TOOLS
 # Writable base: project root in dev, ~/Library/Application Support/Sentinel Fork when frozen.
 BASE_DIR = user_data_base()
 DB_PATH = BASE_DIR / "data" / "sentinel.db"
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 3
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS agents (
@@ -49,7 +49,9 @@ CREATE TABLE IF NOT EXISTS usage (
     agent         TEXT NOT NULL DEFAULT '',
     backend       TEXT NOT NULL DEFAULT '',
     model         TEXT NOT NULL DEFAULT '',
+    project       TEXT,
     input_tokens  INTEGER NOT NULL DEFAULT 0,
+    cached_input_tokens INTEGER NOT NULL DEFAULT 0,
     output_tokens INTEGER NOT NULL DEFAULT 0,
     total_tokens  INTEGER NOT NULL DEFAULT 0,
     cost_eur      REAL NOT NULL DEFAULT 0.0,
@@ -79,6 +81,7 @@ CREATE TABLE IF NOT EXISTS pricing (
     backend          TEXT NOT NULL,
     model            TEXT NOT NULL,
     input_per_1m_usd REAL NOT NULL DEFAULT 0.0,
+    cached_input_per_1m_usd REAL,
     output_per_1m_usd REAL NOT NULL DEFAULT 0.0,
     PRIMARY KEY (backend, model)
 );
@@ -86,6 +89,18 @@ CREATE TABLE IF NOT EXISTS pricing (
 CREATE TABLE IF NOT EXISTS settings (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS projects (
+    id               TEXT PRIMARY KEY,
+    name             TEXT NOT NULL,
+    instructions     TEXT NOT NULL DEFAULT '',
+    default_agent    TEXT NOT NULL DEFAULT 'chat',
+    default_provider TEXT NOT NULL DEFAULT 'ollama',
+    default_model    TEXT NOT NULL DEFAULT '',
+    budget_eur       REAL,
+    archived         INTEGER NOT NULL DEFAULT 0,
+    created_at       TEXT NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_usage_timestamp ON usage(timestamp);
@@ -145,6 +160,7 @@ def init_db() -> None:
     if is_new:
         _migrate_from_json(conn)
     _seed_missing_pricing(conn)
+    _seed_cached_input_pricing(conn)
     _correct_stale_pricing(conn)
     _seed_default_agents(conn)
     _seed_default_tools(conn)
@@ -175,7 +191,11 @@ def _backup_before_migration(conn: sqlite3.Connection, installed_version: int) -
 
 def _apply_schema_migrations(conn: sqlite3.Connection, installed_version: int) -> None:
     """Apply ordered, additive migrations and record each completed version."""
-    migrations = {1: _migrate_schema_v1}
+    migrations = {
+        1: _migrate_schema_v1,
+        2: _migrate_schema_v2,
+        3: _migrate_schema_v3,
+    }
     for version in range(installed_version + 1, SCHEMA_VERSION + 1):
         migration = migrations[version]
         with conn:
@@ -252,6 +272,53 @@ def _migrate_schema_v1(conn: sqlite3.Connection) -> None:
         for name, declaration in columns.items():
             if name not in existing:
                 conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {declaration}")
+
+
+def _migrate_schema_v2(conn: sqlite3.Connection) -> None:
+    """Add Kimi cache-token accounting without rewriting existing rows."""
+    additions = {
+        "usage": {
+            "cached_input_tokens": "INTEGER NOT NULL DEFAULT 0",
+        },
+        "pricing": {
+            # NULL deliberately means "no distinct cache rate"; billing then
+            # falls back to the normal input rate rather than assuming free.
+            "cached_input_per_1m_usd": "REAL",
+        },
+    }
+    for table, columns in additions.items():
+        existing = {
+            row["name"] for row in conn.execute(f"PRAGMA table_info({table})")
+        }
+        for name, declaration in columns.items():
+            if name not in existing:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {declaration}")
+
+
+def _migrate_schema_v3(conn: sqlite3.Connection) -> None:
+    """Add chat projects and project attribution for spend accounting."""
+    existing = {
+        row["name"] for row in conn.execute("PRAGMA table_info(usage)")
+    }
+    if "project" not in existing:
+        conn.execute("ALTER TABLE usage ADD COLUMN project TEXT")
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS projects (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            instructions TEXT NOT NULL DEFAULT '',
+            default_agent TEXT NOT NULL DEFAULT 'chat',
+            default_provider TEXT NOT NULL DEFAULT 'ollama',
+            default_model TEXT NOT NULL DEFAULT '',
+            budget_eur REAL,
+            archived INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL
+        )
+    """)
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_usage_project_timestamp "
+        "ON usage(project, timestamp)"
+    )
 
 
 def _sync_usage_cloud_flags(conn: sqlite3.Connection) -> None:
@@ -344,6 +411,30 @@ def _seed_missing_pricing(conn: sqlite3.Connection) -> None:
         conn.execute(
             "INSERT OR IGNORE INTO pricing (backend, model, input_per_1m_usd, output_per_1m_usd) VALUES (?,?,?,?)",
             (backend, model, inp, out),
+        )
+    conn.commit()
+
+
+def _seed_cached_input_pricing(conn: sqlite3.Connection) -> None:
+    """Add Kimi cache-hit rates while preserving user-edited pricing.
+
+    The USD values mirror this project's rounded USD conversion of Kimi's
+    official CNY rates.  Kimi does not publish a separate high-speed cache
+    price; that row follows the existing high-speed 2x multiplier.
+    """
+    rates = {
+        "default": 0.19,
+        "kimi-k2.7-code": 0.19,
+        "kimi-k2.7-code-highspeed": 0.38,
+        "kimi-k2.6": 0.16,
+        "kimi-k3": 0.30,
+    }
+    for model, rate in rates.items():
+        conn.execute(
+            "UPDATE pricing SET cached_input_per_1m_usd = ? "
+            "WHERE backend = 'kimi' AND model = ? "
+            "AND cached_input_per_1m_usd IS NULL",
+            (rate, model),
         )
     conn.commit()
 
@@ -510,12 +601,19 @@ def _migrate_pricing(conn: sqlite3.Connection) -> None:
             if not isinstance(prices, dict):
                 continue
             conn.execute("""
-                INSERT OR REPLACE INTO pricing (backend, model, input_per_1m_usd, output_per_1m_usd)
-                VALUES (?,?,?,?)
+                INSERT OR REPLACE INTO pricing
+                  (backend, model, input_per_1m_usd, cached_input_per_1m_usd,
+                   output_per_1m_usd)
+                VALUES (?,?,?,?,?)
             """, (
                 backend,
                 model,
                 float(prices.get("input_per_1m_usd", 0.0)),
+                (
+                    float(prices["cached_input_per_1m_usd"])
+                    if "cached_input_per_1m_usd" in prices
+                    else None
+                ),
                 float(prices.get("output_per_1m_usd", 0.0)),
             ))
 
@@ -528,8 +626,8 @@ def _migrate_usage_log(conn: sqlite3.Connection) -> None:
         conn.execute("""
             INSERT INTO usage
               (timestamp, agent, backend, model, input_tokens, output_tokens,
-               total_tokens, cost_eur, cost_type, cloud)
-            VALUES (?,?,?,?,?,?,?,?,?,?)
+               cached_input_tokens, total_tokens, cost_eur, cost_type, cloud)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?)
         """, (
             e.get("timestamp", ""),
             e.get("agent", ""),
@@ -537,6 +635,7 @@ def _migrate_usage_log(conn: sqlite3.Connection) -> None:
             e.get("model", ""),
             int(e.get("input_tokens", 0)),
             int(e.get("output_tokens", 0)),
+            int(e.get("cached_input_tokens", e.get("cached_tokens", 0))),
             int(e.get("total_tokens", 0)),
             float(e.get("cost_eur", e.get("estimated_cost", 0.0))),
             e.get("cost_type", "estimated"),
