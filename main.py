@@ -1,3 +1,4 @@
+import html
 import json
 import os
 import re
@@ -131,6 +132,20 @@ from ui.panels.osint_heavy import OsintHeavyPanel
 from ui.panels.vpn import VpnPanel
 from ui.panels.wifi import WifiPanel
 from ui.panels.osint import OsintPanel
+
+class ChatInput(QTextEdit):
+    """Multiline composer with the familiar Enter/Shift+Enter contract."""
+
+    sendRequested = Signal()
+
+    def keyPressEvent(self, event):
+        if (event.key() in (Qt.Key_Return, Qt.Key_Enter)
+                and not (event.modifiers() & Qt.ShiftModifier)):
+            self.sendRequested.emit()
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
 
 class GodAI(QWidget):
     def __init__(self):
@@ -285,7 +300,7 @@ class GodAI(QWidget):
         """Run the visible primary action without special-casing each agent."""
         agent_name = getattr(self, "_current_agent", "chat")
         if agent_name == "chat":
-            if self.send_btn.isVisible() and self.send_btn.isEnabled():
+            if not self.send_btn.isHidden() and self.send_btn.isEnabled():
                 self.send_btn.click()
             return
 
@@ -1895,13 +1910,19 @@ class GodAI(QWidget):
         self.model_box.currentTextChanged.connect(update_model_summary)
         update_model_summary()
 
-        self.input_box = QTextEdit()
+        self.input_box = ChatInput()
         self.input_box.setObjectName("PromptInput")
-        self.input_box.setPlaceholderText("Type your message here…")
-        self.input_box.setFixedHeight(74)
+        self.input_box.setPlaceholderText(
+            "Type your message here…  Enter to send · Shift+Enter for a new line"
+        )
+        self.input_box.setFixedHeight(140)
         normal_layout.addWidget(self.input_box)
 
         self.send_btn = self.run_btn
+        self.input_box.sendRequested.connect(
+            lambda: self.send_btn.click()
+            if not self.send_btn.isHidden() and self.send_btn.isEnabled() else None
+        )
 
         # ===== INPUT =====
         self.input_box.textChanged.connect(self.update_live_cost_estimate)
@@ -1999,7 +2020,7 @@ class GodAI(QWidget):
         self.vpn_panel = VpnPanel(self)
         add_specialist_panel("vpn", self.vpn_panel)
 
-        self.output_label = QPushButton("▾  Response")
+        self.output_label = QPushButton("▾  Conversation")
         self.output_label.setObjectName("OutputToggle")
         self.output_label.setCheckable(True)
         self.output_label.setChecked(True)
@@ -2010,8 +2031,10 @@ class GodAI(QWidget):
         self.output_box = QTextEdit()
         self.output_box.setObjectName("OutputBox")
         self.output_box.setReadOnly(True)
-        self.output_box.setMinimumHeight(130)
-        self.output_box.setPlaceholderText("Responses and generated results appear here.")
+        self.output_box.setMinimumHeight(260)
+        self.output_box.setPlaceholderText(
+            "Conversation messages and generated results will appear here."
+        )
         self.output_box.hide()
         center_layout.addWidget(self.output_box, 1)
 
@@ -2023,7 +2046,7 @@ class GodAI(QWidget):
         """Reveal the output label and box. Called when content arrives."""
         if hasattr(self, "output_label") and hasattr(self, "output_box"):
             self.output_label.setChecked(True)
-            self.output_label.setText("▾  Response")
+            self.output_label.setText("▾  Conversation")
             self.output_label.setVisible(True)
             self.output_box.setVisible(True)
 
@@ -2036,7 +2059,7 @@ class GodAI(QWidget):
     def _toggle_chat_output(self, expanded: bool) -> None:
         """Collapse previous output into the compact row used by the reference."""
         self.output_label.setText(
-            "▾  Response" if expanded else "▸  Previous turn"
+            "▾  Conversation" if expanded else "▸  Previous turns"
         )
         self.output_box.setVisible(bool(expanded))
 
@@ -2801,6 +2824,90 @@ class GodAI(QWidget):
             return command_name, f"{prefix}\n\n{raw_text}"
         return command_name, raw_text
 
+    @staticmethod
+    def _message_timestamp(value=None) -> str:
+        """Return an ISO local timestamp suitable for durable chat records."""
+        if isinstance(value, datetime):
+            moment = value
+        elif value:
+            try:
+                moment = datetime.fromisoformat(str(value))
+            except ValueError:
+                try:
+                    moment = datetime.strptime(str(value), "%Y-%m-%d_%H-%M-%S-%f")
+                except ValueError:
+                    moment = datetime.now().astimezone()
+        else:
+            moment = datetime.now().astimezone()
+        if moment.tzinfo is None:
+            moment = moment.astimezone()
+        return moment.isoformat(timespec="seconds")
+
+    def _timestamped_message(self, role: str, content: str, timestamp=None) -> dict:
+        return {
+            "role": role,
+            "content": content,
+            "timestamp": self._message_timestamp(timestamp),
+        }
+
+    def _normalise_chat_messages(self, messages: list, fallback=None) -> list:
+        return [
+            self._timestamped_message(
+                str(message.get("role", "system")),
+                str(message.get("content", "")),
+                message.get("timestamp") or fallback,
+            )
+            for message in messages
+            if isinstance(message, dict)
+        ]
+
+    @staticmethod
+    def _backend_messages(messages: list) -> list:
+        """Provider APIs receive only their standard role/content fields."""
+        return [
+            {"role": message["role"], "content": message["content"]}
+            for message in messages
+        ]
+
+    def _render_chat_conversation(self, *, force_tail: bool = False) -> None:
+        """Render the transcript without yanking a reader away from history."""
+        bar = self.output_box.verticalScrollBar()
+        previous_scroll = bar.value()
+        follow_tail = force_tail or bar.maximum() - bar.value() <= 24
+        role_labels = {"user": "YOU", "assistant": "ASSISTANT", "system": "SYSTEM"}
+        blocks = []
+        for message in self.current_messages:
+            role = str(message.get("role", "system")).lower()
+            label = role_labels.get(role, role.upper())
+            timestamp = self._message_timestamp(message.get("timestamp"))
+            try:
+                stamp = datetime.fromisoformat(timestamp).astimezone().strftime(
+                    "%d %b %Y · %H:%M"
+                )
+            except ValueError:
+                stamp = timestamp
+            content = html.escape(str(message.get("content", ""))).replace("\n", "<br>")
+            blocks.append(
+                f'<div class="message {role}">'
+                f'<div class="meta">{html.escape(label)} · {html.escape(stamp)}</div>'
+                f'<div class="body">{content or "&nbsp;"}</div></div>'
+            )
+        self.output_box.setHtml(
+            "<style>"
+            ".message{margin:4px 0 16px 0;padding:10px 12px;border-left:2px solid #2f3733;}"
+            ".message.user{border-left-color:#3cff88;background:#121714;}"
+            ".message.assistant{border-left-color:#65726b;}"
+            ".message.system{border-left-color:#9b8b52;background:#17160f;}"
+            ".meta{font-size:10px;color:#6f7b75;letter-spacing:.5px;margin-bottom:6px;}"
+            ".body{font-size:13px;color:#d8dedb;line-height:1.45;}"
+            "</style>" + "".join(blocks)
+        )
+        if follow_tail:
+            self.output_box.moveCursor(QTextCursor.End)
+            self.output_box.ensureCursorVisible()
+        else:
+            bar.setValue(min(previous_scroll, bar.maximum()))
+
     def send_prompt(self):
         selected_agent = self.agent_box.currentText()
 
@@ -2872,19 +2979,19 @@ class GodAI(QWidget):
             self.pending_backend = final_backend
             self.pending_model = final_model
             self.pending_command = command_name
-            self.pending_messages = messages
+            prior = list(self.current_messages) if selected_agent == "chat" else []
+            fresh = self._normalise_chat_messages(messages)
+            if prior and fresh and fresh[0].get("role") == "system":
+                fresh = fresh[1:]
+            self.pending_messages = prior + fresh
             self.pending_prompt = full_prompt
             self.pending_usage = None
 
             self.show_output_area()
-            self.output_box.clear()
-            self.output_box.append("[Working]")
-            self.output_box.append(f"Agent: {selected_agent}")
-            self.output_box.append(f"Backend: {final_backend}")
-            self.output_box.append(f"Model: {final_model}")
-            self.output_box.append(f"Command: {command_name}")
-            self.output_box.append("")
-            self.output_box.append("Starting background worker...\n")
+            self.current_messages = list(self.pending_messages)
+            self.current_messages.append(self._timestamped_message("assistant", ""))
+            self.input_box.clear()
+            self._render_chat_conversation(force_tail=True)
 
             self.route_result_label.setText(f"Router: {selected_agent} · {final_backend} · {final_model}")
 
@@ -2904,7 +3011,10 @@ class GodAI(QWidget):
                 prompt_summary=full_prompt,
             )
 
-            self.chat_worker = ChatWorker(self.run_backend, final_backend, final_model, messages, full_prompt)
+            self.chat_worker = ChatWorker(
+                self.run_backend, final_backend, final_model,
+                self._backend_messages(self.pending_messages), full_prompt,
+            )
             self.chat_worker.status_signal.connect(self.handle_chat_status)
             self.chat_worker.token_signal.connect(self.handle_chat_token)
             self.chat_worker.finished_signal.connect(self.handle_chat_finished)
@@ -3281,14 +3391,13 @@ class GodAI(QWidget):
         self.chat_progress.hide()
 
     def handle_chat_status(self, text):
-        self.output_box.moveCursor(QTextCursor.End)
-        self.output_box.insertPlainText(text + "\n")
-        self.output_box.ensureCursorVisible()
+        self.chat_status_label.setText(text)
 
     def handle_chat_token(self, text):
-        self.output_box.moveCursor(QTextCursor.End)
-        self.output_box.insertPlainText(text)
-        self.output_box.ensureCursorVisible()
+        if not self.current_messages or self.current_messages[-1].get("role") != "assistant":
+            self.current_messages.append(self._timestamped_message("assistant", ""))
+        self.current_messages[-1]["content"] += text
+        self._render_chat_conversation()
 
     def handle_chat_finished(self, response):
         self.stop_chat_timer()
@@ -3297,8 +3406,13 @@ class GodAI(QWidget):
         self.stop_chat_btn.hide()
         self.stop_chat_btn.setEnabled(False)
 
-        self.current_messages = self.pending_messages + [{"role": "assistant", "content": response}]
-        self.output_box.append("\n\n[Finished]")
+        assistant = self._timestamped_message("assistant", response)
+        if self.current_messages and self.current_messages[-1].get("role") == "assistant":
+            assistant["timestamp"] = self.current_messages[-1].get(
+                "timestamp", assistant["timestamp"]
+            )
+        self.current_messages = self.pending_messages + [assistant]
+        self._render_chat_conversation()
 
         usage_entry = self.usage_tracker.log_request(
             agent=self.pending_agent,
@@ -3341,7 +3455,14 @@ class GodAI(QWidget):
 
     def handle_chat_error(self, error):
         self.stop_chat_timer()
-        self.output_box.append(f"\n[Error]\n{error}")
+        if (self.current_messages
+                and self.current_messages[-1].get("role") == "assistant"
+                and not self.current_messages[-1].get("content")):
+            self.current_messages.pop()
+        self.current_messages.append(
+            self._timestamped_message("system", f"The request could not be completed. {error}")
+        )
+        self._render_chat_conversation()
         self.send_btn.show()
         self.send_btn.setEnabled(True)
         self.stop_chat_btn.hide()
@@ -3360,7 +3481,14 @@ class GodAI(QWidget):
             self.chat_worker.cancel()
             self.chat_worker.terminate()
             self.chat_worker.wait(2000)
-            self.output_box.append("\n[Stopped] Chat request stopped by user.")
+            if (self.current_messages
+                    and self.current_messages[-1].get("role") == "assistant"
+                    and not self.current_messages[-1].get("content")):
+                self.current_messages.pop()
+            self.current_messages.append(
+                self._timestamped_message("system", "Chat request stopped by user.")
+            )
+            self._render_chat_conversation()
         self.stop_chat_timer()
         self.send_btn.show()
         self.send_btn.setEnabled(True)
@@ -3701,15 +3829,14 @@ class GodAI(QWidget):
         try:
             data = self.history.load_chat(filepath)
             self.show_output_area()
-            self.output_box.setPlainText(data.get("response", ""))
-
-            first_user_message = ""
-            for msg in data.get("messages", []):
-                if msg.get("role") == "user":
-                    first_user_message = msg.get("content", "")
-                    break
-
-            self.input_box.setPlainText(first_user_message)
+            messages = data.get("messages", [])
+            if not messages and data.get("response"):
+                messages = [{"role": "assistant", "content": data["response"]}]
+            self.current_messages = self._normalise_chat_messages(
+                messages, fallback=data.get("timestamp")
+            )
+            self._render_chat_conversation(force_tail=True)
+            self.input_box.clear()
             self.route_result_label.setText(
                 f"Router: {data.get('agent')} · {data.get('backend')} · {data.get('model')}"
             )

@@ -19,7 +19,9 @@ import sys
 from pathlib import Path
 
 import pytest
-from PySide6.QtCore import QObject, Signal
+from PySide6.QtCore import QObject, Signal, Qt
+from PySide6.QtGui import QTextCursor
+from PySide6.QtTest import QSignalSpy, QTest
 from PySide6.QtWidgets import QMessageBox
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -399,9 +401,10 @@ class TestWorkspaceLayoutRegressions:
         win.select_agent("chat")
         run_bar = win.findChild(QObject, "RunBar")
         assert run_bar is not None
-        gap = win.input_box.geometry().top() - run_bar.geometry().bottom()
-        assert gap <= 12
-        assert win.input_box.height() == 74
+        layout = win.normal_panel.layout()
+        assert layout.indexOf(run_bar) + 1 == layout.indexOf(win.input_box)
+        assert layout.spacing() <= 12
+        assert win.input_box.height() >= 126
 
     def test_inspector_exposes_complete_operational_information(self, win):
         from PySide6.QtWidgets import QGroupBox
@@ -606,6 +609,44 @@ class TestWorkspaceLayoutRegressions:
         win.center_widget.resize(2200, 1000)
         win.select_agent("osint")
         assert win.center_layout.contentsMargins().left() == 18
+
+    def test_chat_composer_is_multiline_sized_and_enter_sends(self, win):
+        from main import ChatInput
+
+        win.select_agent("chat")
+        assert win.input_box.minimumHeight() >= 120
+        composer = ChatInput()
+        sent = QSignalSpy(composer.sendRequested)
+        composer.setPlainText("hello")
+        QTest.keyClick(composer, Qt.Key_Return)
+        assert sent.count() == 1
+
+    def test_shift_enter_adds_a_line_without_sending(self, win):
+        from main import ChatInput
+
+        win.select_agent("chat")
+        composer = ChatInput()
+        sent = QSignalSpy(composer.sendRequested)
+        composer.setPlainText("first")
+        cursor = composer.textCursor()
+        cursor.movePosition(QTextCursor.End)
+        composer.setTextCursor(cursor)
+        QTest.keyClick(composer, Qt.Key_Return, Qt.ShiftModifier)
+        assert "\n" in composer.toPlainText()
+        assert sent.count() == 0
+
+    def test_chat_transcript_renders_every_message_with_timestamps(self, win):
+        win.current_messages = [
+            win._timestamped_message("user", "Hello", "2026-08-31T10:15:00+01:00"),
+            win._timestamped_message("assistant", "Hi", "2026-08-31T10:15:03+01:00"),
+            win._timestamped_message("system", "Saved", "2026-08-31T10:15:04+01:00"),
+        ]
+        win._render_chat_conversation(force_tail=True)
+        transcript = win.output_box.toPlainText()
+        assert "YOU · 31 Aug 2026 · 10:15" in transcript
+        assert "ASSISTANT · 31 Aug 2026 · 10:15" in transcript
+        assert "SYSTEM · 31 Aug 2026 · 10:15" in transcript
+        assert win.output_box.verticalScrollBar() is not None
 
     def test_shared_document_search_counts_and_clears_matches(self, win):
         from PySide6.QtWidgets import QLabel, QLineEdit, QPushButton, QTextBrowser

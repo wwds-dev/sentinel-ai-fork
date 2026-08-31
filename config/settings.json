@@ -1,5 +1,5 @@
 {
-  "default_model_ollama": "muse-glimmer:30b-mlx",
+  "default_model_ollama": "deepseek-r1:8b",
   "default_model_deepseek": "deepseek-v4-flash",
   "default_model_kimi": "kimi-k3",
   "default_model_openai": "gpt-4.1-mini",
