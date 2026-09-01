@@ -26,6 +26,7 @@ class MenuComboBox(QComboBox):
     FLAT = "flat"
     PROVIDER = "provider"
     MODEL = "model"
+    COST_ROLE = int(Qt.UserRole) + 41
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -49,9 +50,12 @@ class MenuComboBox(QComboBox):
         # the combo's item delegate into the QMenu.  The current choice wins the
         # marker (green); a different recommendation remains red; hardware
         # warnings retain their muted dot and tooltip.
-        marker = QColor("#3cff88") if index == self.currentIndex() else self.itemData(
-            index, Qt.ForegroundRole
-        )
+        if self.itemData(index, self.COST_ROLE):
+            marker = QColor("#f0c040")
+        else:
+            marker = QColor("#3cff88") if index == self.currentIndex() else self.itemData(
+                index, Qt.ForegroundRole
+            )
         if isinstance(marker, QColor) and marker.isValid():
             pixmap = QPixmap(10, 10)
             pixmap.fill(Qt.transparent)

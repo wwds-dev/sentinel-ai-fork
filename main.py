@@ -1039,6 +1039,7 @@ class GodAI(QWidget):
             )
         polish_combo_box(provider_box)
         polish_combo_box(model_box)
+        self._mark_paid_route_choices(provider_box, model_box)
 
     def setup_widgets_for(self, agent_key: str):
         """One agent's provider and model boxes, wherever they now live.
@@ -1056,6 +1057,24 @@ class GodAI(QWidget):
         if not names:
             return None, None
         return getattr(self, names[0], None), getattr(self, names[1], None)
+
+    def _mark_paid_route_choices(self, provider_box, model_box) -> None:
+        """Mark cloud-backed choices yellow; Ollama remains local and neutral."""
+        if provider_box is None or model_box is None:
+            return
+        for index in range(provider_box.count()):
+            paid = provider_box.itemText(index).strip().lower() in CLOUD_PROVIDERS
+            provider_box.setItemData(index, paid, MenuComboBox.COST_ROLE)
+
+        selected_paid = provider_box.currentText().strip().lower() in CLOUD_PROVIDERS
+        for index in range(model_box.count()):
+            model_box.setItemData(index, selected_paid, MenuComboBox.COST_ROLE)
+
+        for combo in (provider_box, model_box):
+            combo.setProperty("paidSelection", selected_paid)
+            combo.style().unpolish(combo)
+            combo.style().polish(combo)
+            combo.update()
 
     def register_model_loader(self, agent_key: str, loader) -> None:
         """Record how to repopulate one agent's model box.
@@ -1728,9 +1747,17 @@ class GodAI(QWidget):
         self.run_btn.setObjectName("RunAction")
         self.run_btn.clicked.connect(self.send_prompt)
 
+        self.auto_route_btn = QPushButton("Auto-route")
+        self.auto_route_btn.setObjectName("ChipBtn")
+        self.auto_route_btn.setToolTip(
+            "Choose the best available provider and model for the current message"
+        )
+        self.auto_route_btn.clicked.connect(self.auto_route_agent)
+
         self.runbar_settings_btn = QPushButton("Options")
         self.runbar_settings_btn.setObjectName("ChipBtn")
         self.runbar_settings_btn.setToolTip("Execution mode, provider permissions and model tools")
+        runbar.addWidget(self.auto_route_btn)
         runbar.addWidget(self.runbar_settings_btn)
         runbar.addWidget(self.stop_chat_btn)
         runbar.addWidget(self.run_btn)
@@ -1767,11 +1794,6 @@ class GodAI(QWidget):
                     self.allow_anthropic_checkbox, self.allow_qwen_checkbox):
             box.setChecked(False)
             box.hide()
-
-        self.auto_route_btn = QPushButton("Auto route", self)
-        self.auto_route_btn.setObjectName("ChipBtn")
-        self.auto_route_btn.clicked.connect(self.auto_route_agent)
-        self.auto_route_btn.hide()
 
         self.recommend_setup_btn = QPushButton("Use recommended", self)
         self.recommend_setup_btn.setObjectName("ChipBtn")
@@ -2492,6 +2514,7 @@ class GodAI(QWidget):
                     self.model_box.setCurrentIndex(idx)
 
             self.update_live_cost_estimate()
+            self._mark_paid_route_choices(self.provider_box, self.model_box)
 
         except Exception as e:
             # Model discovery is setup metadata, not conversation output. Keep
@@ -2720,12 +2743,12 @@ class GodAI(QWidget):
         model_box.setToolTip(tooltip)
 
     def prepare_agent_route(self, agent: str, prompt: str, provider_box, model_box,
-                            *, tool: str = ""):
+                            *, tool: str = "", force: bool = False):
         """Shared request-time auto-routing entry point for every agent panel."""
         auto = getattr(self, "auto_recommend_checkbox", None)
         provider = provider_box.currentText() if provider_box is not None else ""
         panel = self.panels.get(agent) if hasattr(self, "panels") else None
-        if getattr(panel, "_prefer_local_retry_once", False):
+        if not force and getattr(panel, "_prefer_local_retry_once", False):
             panel._prefer_local_retry_once = False
             if provider == "ollama":
                 return None
@@ -2734,9 +2757,9 @@ class GodAI(QWidget):
         # A configured cloud provider can be granted for this request by the
         # single consent dialog in authorize_request(). Do not silently replace
         # the user's explicit selection merely because persistent permission is off.
-        if not permitted and self.provider_key_available(provider):
+        if not force and not permitted and self.provider_key_available(provider):
             return None
-        if (auto is None or not auto.isChecked()) and permitted:
+        if not force and (auto is None or not auto.isChecked()) and permitted:
             return None
         try:
             decision = self.route_for_request(

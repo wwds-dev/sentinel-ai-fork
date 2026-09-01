@@ -21,7 +21,7 @@ from uuid import uuid4
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QComboBox, QGridLayout, QGroupBox, QHBoxLayout, QLabel, QPushButton,
+    QComboBox, QGridLayout, QGroupBox, QHBoxLayout, QLabel, QLineEdit, QPushButton,
     QSizePolicy, QTabWidget, QTextBrowser, QTextEdit, QVBoxLayout, QWidget,
 )
 
@@ -200,6 +200,16 @@ class AgentPanel(QWidget):
         )
         self.provider_box.setObjectName("MachinePick")
         self.model_box.setObjectName("MachinePick")
+
+        self.auto_route_btn = QPushButton("Auto-route")
+        self.auto_route_btn.setObjectName("AutoRouteAction")
+        self.auto_route_btn.setToolTip(
+            "Choose the best available provider and model for this agent's current input"
+        )
+        self.auto_route_btn.clicked.connect(
+            lambda _checked=False: self.auto_route(context)
+        )
+        row.addWidget(self.auto_route_btn)
         row.addStretch()
 
         for button in secondary:
@@ -208,6 +218,40 @@ class AgentPanel(QWidget):
             row.addWidget(stop)
         row.addWidget(primary)
         return container
+
+    def routing_text(self, context: str = "") -> str:
+        """Collect only editable request fields for an explicit route decision."""
+        parts = [self.agent_key, context]
+        parts.extend(
+            field.text().strip() for field in self.findChildren(QLineEdit)
+            if field.isEnabled() and field.text().strip()
+        )
+        parts.extend(
+            field.toPlainText().strip() for field in self.findChildren(QTextEdit)
+            if not field.isReadOnly() and field.isEnabled() and field.toPlainText().strip()
+        )
+        return "\n".join(part for part in parts if part)
+
+    def auto_route(self, context: str = ""):
+        """Apply the shared router to this panel without starting a request."""
+        prepare = getattr(self.host, "prepare_agent_route", None)
+        if prepare is None:
+            return None
+        result = prepare(
+            self.agent_key,
+            self.routing_text(context),
+            self.provider_box,
+            self.model_box,
+            tool=context,
+            force=True,
+        )
+        if result not in (None, False):
+            status = getattr(self, "status_label", None)
+            if status is not None:
+                status.setText(
+                    f"Auto-routed to {self.provider} · {self.model}."
+                )
+        return result
 
     def build_model_override(self, *, expanded: bool = False,
                              empty_placeholder: bool = False) -> ProgressiveSection:

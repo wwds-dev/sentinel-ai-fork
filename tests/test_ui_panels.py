@@ -118,6 +118,48 @@ class TestPanelProviderRows:
         assert provider_box.objectName() == "MachinePick"
         assert model_box.objectName() == "MachinePick"
 
+    @pytest.mark.parametrize("agent", PANEL_AGENTS)
+    def test_every_specialist_exposes_auto_route_in_its_run_bar(self, win, agent):
+        panel = win.panels[agent]
+        run_bar = panel.findChild(QObject, "RunBar")
+        assert panel.auto_route_btn.text() == "Auto-route"
+        assert panel.auto_route_btn.objectName() == "AutoRouteAction"
+        assert not panel.auto_route_btn.isHidden()
+        assert run_bar.layout().indexOf(panel.auto_route_btn) >= 0
+
+    @pytest.mark.parametrize("agent", PANEL_AGENTS)
+    def test_every_specialist_marks_cloud_routes_as_paid(self, win, agent):
+        from ui.widgets import MenuComboBox
+
+        provider, model = win.setup_widgets_for(agent)
+        cloud_index = provider.findText("deepseek")
+        local_index = provider.findText("ollama")
+        assert provider.itemData(cloud_index, MenuComboBox.COST_ROLE) is True
+        assert provider.itemData(local_index, MenuComboBox.COST_ROLE) is False
+        assert provider.property("paidSelection") is True
+        assert model.property("paidSelection") is True
+
+    def test_specialist_auto_route_uses_current_agent_input(self, win, monkeypatch):
+        from types import SimpleNamespace
+
+        trace = win.panels["osint"]
+        trace.target_input.setText("@sapio1337")
+        calls = []
+        decision = SimpleNamespace(
+            provider="ollama", model="deepseek-r1:8b", mode="Local only",
+            reason="Private local route.", fallbacks=[],
+        )
+
+        def prepare(agent, prompt, provider_box, model_box, **kwargs):
+            calls.append((agent, prompt, kwargs))
+            return decision
+
+        monkeypatch.setattr(win, "prepare_agent_route", prepare)
+        assert trace.auto_route("Query") is decision
+        assert calls[0][0] == "osint"
+        assert "@sapio1337" in calls[0][1]
+        assert calls[0][2]["force"] is True
+
 
 class TestRecommendationsStillReachThePanels:
     """The registry replaced a map of loader method *names*.
@@ -143,6 +185,36 @@ class TestRecommendationsStillReachThePanels:
         assert isinstance(rec["pricing"], dict)
         win.update_recommendation_label()
         assert win.routing_rows["Cost"].value.text() == rec["cost_label"]
+
+    def test_chat_exposes_auto_route_in_the_primary_run_bar(self, win):
+        run_bar = win.findChild(QObject, "RunBar")
+        assert win.auto_route_btn.text() == "Auto-route"
+        assert not win.auto_route_btn.isHidden()
+        assert run_bar.layout().indexOf(win.auto_route_btn) >= 0
+
+    def test_cloud_provider_and_models_are_marked_as_paid(self, win):
+        from ui.widgets import MenuComboBox
+
+        provider = win.provider_box
+        model = win.model_box
+        provider.setCurrentText("deepseek")
+        win.load_provider_models()
+
+        cloud_index = provider.findText("deepseek")
+        local_index = provider.findText("ollama")
+        assert provider.itemData(cloud_index, MenuComboBox.COST_ROLE) is True
+        assert provider.itemData(local_index, MenuComboBox.COST_ROLE) is False
+        assert provider.property("paidSelection") is True
+        assert model.property("paidSelection") is True
+        assert all(
+            model.itemData(index, MenuComboBox.COST_ROLE) is True
+            for index in range(model.count())
+        )
+
+        provider.setCurrentText("ollama")
+        win.load_provider_models()
+        assert provider.property("paidSelection") is False
+        assert model.property("paidSelection") is False
 
     @pytest.mark.parametrize("agent", PANEL_AGENTS)
     def test_panel_starts_on_its_recommended_provider_and_model(

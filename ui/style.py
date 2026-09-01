@@ -128,6 +128,9 @@ GLOBAL_STYLESHEET = """
             selection-background-color: rgba(60, 255, 136, 0.25);
             selection-color: #ffffff;
         }
+        QComboBox[paidSelection="true"] {
+            color: #f0c040;
+        }
         QTextEdit:focus, QTextBrowser:focus, QLineEdit:focus, QComboBox:focus {
             border: 1px solid #3cff88;
         }
