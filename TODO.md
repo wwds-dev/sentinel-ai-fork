@@ -13,18 +13,21 @@ under **Detail** — this checklist is the summary view.
 
 - [x] `P1` `design` `@ai` **Refactor Phase 4** — all six specialist verticals now live in `ui/panels/` behind the shared `AgentPanel` boundary. The separate run-id hardening remains tracked below. See `docs/refactor_plan.md`.
 - [x] `P1` `design` `@ai` **Refactor Phase 3** — `AgentHost` (`ui/host.py`) and the `AgentPanel` base (`ui/panels/base.py`), with the design decision settled: composition, not mixins. Six panels' hand-built provider/model rows collapsed to one `build_provider_row` call each, six `*_load_models` methods to one `load_models_into`, and a map of loader *method names* to a registry panels fill in as they build. `main.py` 5,520 → 5,378; 77 new tests, 20 of which construct a panel with no `GodAI` at all.
-- [x] `P1` `design` `@ai` **GUI overhaul — section renderer.** Shipped for Trace: `SectionCard`/`SectionView` in `ui/widgets.py`, four tabbed text boxes replaced by cards with per-card copy, raw response collapsed behind a disclosure, and a separate streaming box so tokens still show live before there are sections to render. Reuse for Bloodhound next — its parser already exists.
-- [ ] `P2` `design` `@ai` **GUI overhaul — section renderer, remaining agents.** Bloodhound has a parser (`_parse_osint_heavy_sections`); Beacon, Bug Spray and Forge need one each. Original note: The change that justifies the rest, and it needs no new parsing: 12 `_parse_*_sections` methods already structure every answer and 70 text panes render it flat. Build against Trace (smallest vertical), then reuse. See `docs/gui_redesign.md`.
+- [x] `P1` `design` `@ai` **GUI overhaul — section renderer.** Shipped for Trace and now Bloodhound: `SectionCard`/`SectionView` in `ui/widgets.py`, tabbed text boxes replaced by cards with per-card copy, raw response collapsed behind a disclosure, and a separate streaming box so tokens still show live before there are sections to render. Remaining agents tracked below.
+- [ ] `P2` `design` `@ai` **GUI overhaul — section renderer, remaining agents.** Bloodhound is now done too: `ui/panels/osint_heavy.py` uses the shared `SectionView` with a `stream_box` for live streaming, replacing its old seven-tab `QTabWidget`. Beacon, Bug Spray and Forge still render flat text and need the same treatment — each already has a `_parse_*_sections` method to build against. See `docs/gui_redesign.md`.
 - [x] `P2` `design` `@ai` **GUI overhaul — run bar.** Three stacked control rows → one: tool · command · provider · model · live cost · gear. Execution mode, the six provider permissions and the model tools moved into a popover behind the gear. Splitter minimum dropped 985 → 927px. Deferring this to Phase 4 stopped being the right call once Sentinel was down to six agents and 111 lines of control rows.
 - [x] `P3` `design` `@ai` **GUI overhaul — flat agent list.** The sidebar accordion was built for fifteen agents; there are six. Drop `CollapsibleSection` from the sidebar, keep it where panels still use it.
 - [x] `P1` `design` `@ai` **GUI overhaul — type and spacing scale.** Five sizes (four of which read as one) → three; six weights → two; documented in `ui/style.py` with the 15px section-title role reserved.
 - [x] `P1` `design` `@ai` **GUI overhaul — status rail figures.** `Meter`/`Bar` in `ui/widgets.py` drive system and budget; exact numbers moved to tooltips; budget bars fill with what is spent.
-- [ ] `P1` `bug` `@ai` Key `_pending_requests` by run-id rather than agent name. Two simultaneous runs of the same agent would overwrite each other's context; unreachable today only because the panels disable their run button mid-flight.
+- [x] `P1` `bug` `@ai` Key `_pending_requests` by run-id rather than agent name — done. `authorize_request`/`record_request`/`abandon_request`/`note_request_usage` all take an optional `request_id` (a `uuid4().hex` generated in `authorize_request`), with `_pending_request_key()` falling back to the agent name when no id is passed for backward compatibility. Verified: `tests/test_request_guard.py`'s `test_same_agent_runs_can_finish_out_of_order` starts two runs of the same agent and checks each resolves against its own context.
+- [x] `P2` `feature` `@ai` **Auto-route button, every agent.** Chat and all six specialist panels now have an "Auto-route" action next to their run controls that calls the router for a recommendation and applies it directly, instead of only showing a recommendation label to apply by hand.
+- [x] `P3` `design` `@ai` **Paid-route highlighting.** Any provider/model other than Ollama is flagged `paidSelection` and rendered amber (`ui/style.py`, `MenuComboBox.COST_ROLE`) so a cloud route is visible on the dropdown itself.
+- [x] `P2` `feature` `@ai` **Chat composer overhaul.** `ChatInput` sends on Enter and inserts a newline on Shift+Enter; the input box grew from 74px to 140px; the transcript (now labelled "Conversation", not "Response") renders every message with a role and a timestamp.
 - [x] `P2` `bug` `@ai` Remove the dead `ops_identity` sidebar entry — done: `services/agent_catalog.py`'s `BUILTIN_AGENT_ORDER` (the actual sidebar list) has no `ops_identity`; it's tracked in the new `RETIRED_BUILTIN_AGENTS` frozenset instead, which retires its registry row explicitly rather than leaving a dangling title.
-- [ ] `P2` `feature` `@ai` Model Kimi prompt caching in `config/pricing.json`. Cache hits are ~80% off input ($0.19/1M), so estimates for repeated context are currently conservative.
-- [ ] `P2` `feature` `@ai` **Chat Projects Stage 2** — turn a group of saved chats into a context bundle (instructions, defaults, optional budget). Tractable now that every paid request has one choke point: two hook points instead of 22. See `docs/projects_roadmap.md`.
+- [x] `P2` `feature` `@ai` Model Kimi prompt caching in `config/pricing.json` — done. `cached_input_per_1m_usd` is a new pricing column (seeded at 20% of the input rate, i.e. $0.19/1M for the current Kimi model), `kimi_client.py` reports `cached_input_tokens()` from the API response, `usage_tracker.calculate_cost_eur()` bills them at the cached rate, and the cost-history dialog and Settings pricing editor both gained a "Cached input" column. `database.py` schema v2 adds the column and backfills existing rows to 0.
+- [ ] `P2` `feature` `@ai` **Chat Projects Stage 2 — finish the UI.** The backend has landed: `database.py` schema v3 adds a `projects` table, `services/registry.py` has full CRUD (`list_projects`, `get_project`, `upsert_project`, `archive_project`), `history_store.save_chat()` takes an optional `project`, and `main.py` has `ALL_PROJECTS_FILTER`/`UNFILED_PROJECT_FILTER` constants plus `active_project_id`/`pending_project` state. None of it is wired to anything a user can see yet — no project picker, no filter, no way to create or assign a project from Chat. See `docs/projects_roadmap.md`.
 - [ ] `P3` `design` `@ai` Budget card: `Session €` and `Daily €` could share a row (~34px), but the two label+field pairs do not fit the sidebar's ~250px inner width without shortening the labels
-- [ ] `P3` `testing` `@ai` Switch the budget comparison to `Decimal` — `1.00 - 0.90 == 0.09999999999999998`, so a request estimated at exactly the remaining budget is refused. It fails safe, and the test pins the current behaviour.
+- [x] `P3` `testing` `@ai` Switch the budget comparison to `Decimal` — done. `services/validator.py` now runs session/daily budget checks through a `_money()` helper (`Decimal(str(value))`) instead of raw floats. `tests/test_cost_and_limits.py::test_decimal_budget_boundary_is_not_refused_by_float_noise` and the rewritten `tests/test_request_guard.py::test_budget_boundary_is_exact_under_decimal_comparison` both now assert the boundary request is *allowed*, replacing the old test that pinned the fail-safe refusal.
 - [ ] `P2` `research` `@me` Decide whether `RunLogger` should grow a general `note` method — it is the tidier home for the `_note_failure` warnings if they ever need to be queryable
 - [x] `P0` `security` `@ai` Paid API calls bypassed every guardrail outside the chat panel — 22 sites constructed a `ChatWorker` directly. `authorize_request` / `record_request` / `abandon_request` / `note_request_usage` now wrap all 19 previously unguarded sites.
 - [x] `P1` `bug` `@ai` Agent panels crushed when the window was narrow — 13 control rows converted to `FlowLayout`; splitter minimum 1460px → 985px
@@ -124,10 +127,12 @@ agent module or panel here. **`ops_identity` is still listed in the sidebar and
 `agent_titles` despite having no implementation — a dead menu entry worth
 removing.**
 
-Concurrency caveat: `_pending_requests` is keyed by agent name, so two
-simultaneous runs of the *same* agent would overwrite each other's context. The
-panels disable their run button while a request is in flight, so this is not
-reachable today — but keyed-by-run-id would be more robust.
+Concurrency caveat: **resolved.** `_pending_requests` moved from being keyed
+by agent name to a `request_id` (`uuid4().hex`, generated in
+`authorize_request`), with a backward-compatible fallback to the agent name
+when no id is passed. Two simultaneous runs of the same agent now resolve
+against their own context instead of clobbering each other's. See the v2
+checklist above and `tests/test_request_guard.py`.
 
 ## 2. `main.py` is too big — IN PROGRESS (phases 1–3 of 5 done)
 
@@ -193,8 +198,9 @@ Phases 1–3 were). `main.py` has since grown to 4,082 lines on new feature work
 (the Trace Live Research slices below), which is expected — the phase measured
 a one-time structural move, not a ceiling.
 
-Not part of this phase, still open: `_pending_requests` stayed keyed by agent
-name (see the bug item above and Risks in `docs/refactor_plan.md`).
+Not part of this phase: `_pending_requests` stayed keyed by agent name at the
+time of this move. It has since been fixed (see the bug item above and
+`docs/refactor_plan.md`).
 
 ## 3. Other agent panels still crush when the window is narrow
 
@@ -362,10 +368,10 @@ were; revisit once the run bar exists).
   Next step is **Chat Projects Stage 2** — see `docs/projects_roadmap.md`. Stage
   1 (this) made the list tidier; Stage 2 turns a group of chats into a context
   bundle (instructions, defaults, optional budget), which is the part that
-  earns its keep. It is tractable now because TODO #1 gave every paid request a
-  single choke point: project scoping has two hook points instead of 22.
-- Kimi prompt caching ($0.19/1M on cache hits, ~80% off input) is not modelled
-  in `config/pricing.json`, so estimates for repeated context are conservative.
+  earns its keep. The backend side is now in place (`projects` table, registry
+  CRUD, `save_chat(project=...)`, and placeholder state in `main.py`) — what's
+  left is entirely UI: a picker, a filter, and a way to create/assign a
+  project. See the checklist item above.
 - `BUDGET` card: `Session €` / `Daily €` could share one row (~34px saved), but
   the two label+field pairs do not fit the sidebar's ~250px inner width without
   shortening the labels.

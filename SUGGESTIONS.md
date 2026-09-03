@@ -8,8 +8,6 @@ Ideas not yet committed to. Status: `IDEA` · `CONSIDERING` · `PLANNED` · `DON
 
 | # | Suggestion | Category | Effort | Status |
 |---|---|---|---|---|
-| 2 | Key `_pending_requests` by run-id instead of agent name, so two runs of the same agent can't clobber each other's context | bug | S | PLANNED |
-| 4 | Kimi prompt caching in the pricing model — cached input is billed differently and the estimate currently overstates it | feature | M | CONSIDERING |
 | 5 | Budget card layout — the €1 session / €5 daily figures deserve a progress bar, not two labels | design | S | CONSIDERING |
 | 6 | Per-agent cost breakdown in the cost dialog, so it's visible which agent is eating the daily cap | feature | M | IDEA |
 
@@ -33,6 +31,11 @@ Ideas not yet committed to. Status: `IDEA` · `CONSIDERING` · `PLANNED` · `DON
 | Agent panel split: shared `AgentHost`, `AgentPanel`, and specialist panel modules | Aug 2026 |
 | Canonical seven-agent roster; removed dead `ops_identity` sidebar entry | Aug 2026 |
 | UI modules: workers, widgets, style, tooltips, and dialogs | Aug 2026 |
+| Key `_pending_requests` by request id instead of agent name — two runs of the same agent no longer clobber each other's context | Sep 2026 |
+| Kimi prompt caching modelled in the pricing table — cached input billed at ~20% of the base rate ($0.19/1M) | Sep 2026 |
+| Auto-route button on every agent panel, applying the router's recommendation directly | Sep 2026 |
+| Paid-route highlighting — any non-Ollama provider/model marked amber on the dropdown | Sep 2026 |
+| Chat composer overhaul — Enter-to-send/Shift+Enter, taller input, per-message timestamps, "Conversation" relabeling | Sep 2026 |
 
 ## Rejected
 

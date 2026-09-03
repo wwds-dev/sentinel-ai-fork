@@ -184,8 +184,8 @@ the phase was a one-time structural move, not a ceiling.
 
 Not resolved by this phase: `_pending_requests` stayed keyed by agent name.
 Moving the panels didn't touch `authorize_request` / `record_request` /
-`abandon_request`, which still live on `GodAI` in `main.py`. Still open — see
-Risks below and TODO.md.
+`abandon_request`, which still live on `GodAI` in `main.py`. **Since fixed** —
+see Risks below and TODO.md.
 
 **Phase 5 — `GodAI` becomes a shell**: build the three panes, own the shared
 services, hold the panel instances. Not started.
@@ -221,9 +221,10 @@ Phases 4–5 are the remaining move and want a clear run.
   provider/model row, the loader registry and `AgentPanel` — but nothing else
   about layout. The offscreen `GodAI()` build is still the only automated check
   that a panel *as a whole* constructs, so run the suite after every move.
-- **`_pending_requests` is keyed by agent name** (TODO #1) — still true after
-  Phase 4. The panels moved to their own classes but the request guard they
-  call into did not move with them; keying by run id remains open.
+- **`_pending_requests` keyed by agent name** (TODO #1) — **resolved.** It is
+  now keyed by a `request_id` (`uuid4().hex`) generated in `authorize_request`,
+  with a fallback to the agent name when no id is passed. Verified by
+  `tests/test_request_guard.py::test_same_agent_runs_can_finish_out_of_order`.
 - **Do not renumber during a move.** Moving a vertical and editing it in the
   same commit makes a regression impossible to bisect. Move verbatim, commit,
   then clean up.

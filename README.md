@@ -45,7 +45,7 @@ DASHSCOPE_API_KEY
 DASHSCOPE_BASE_URL
 ```
 
-Only enable a paid provider when you intend to use it. Sentinel checks provider permissions and configured budgets before a request, then records the resulting run and usage.
+Only enable a paid provider when you intend to use it. Sentinel checks provider permissions and configured budgets before a request, then records the resulting run and usage. Kimi's cached-input rate is priced separately from its base input rate (roughly 80% cheaper), so a request that reuses recent context costs less than the headline per-token estimate would suggest.
 
 ## Using the app
 
@@ -58,6 +58,17 @@ Chat's Tool selector changes its system guidance:
 - **Coding** for code generation, explanation, debugging, and refactoring
 - **Summarize** for condensation and key points
 - **Rewrite** for rephrasing while preserving meaning
+
+Type a message and press **Enter** to send; **Shift+Enter** inserts a newline
+instead of sending. The transcript — labelled **Conversation** — shows every
+message with a role and a timestamp (`YOU · 31 Aug 2026 · 10:15`).
+
+Every agent, Chat included, has an **Auto-route** button next to its run
+controls: it asks the router for a recommended provider and model for the
+current input and applies the choice directly. Any provider or model other
+than Ollama is marked as a paid selection (an amber marker on the dropdown),
+so a cloud route is visible before you run it, not only after the cost is
+logged.
 
 Saved chats can be searched and filtered by agent. The right panel shows system resources, request status, usage, and budget information. Settings controls registered agents, tools, pricing, and provider permissions.
 
@@ -75,7 +86,7 @@ The main runtime is organised around:
 - `agents/` — built-in agent prompts and message builders
 - `ui/panels/` — specialist panels for Trace, Bloodhound, Beacon, Bug Spray, Tunnel, and Forge
 - `services/agent_catalog.py` — canonical built-in roster and metadata
-- `services/registry.py` and `services/validator.py` — permissions and tool/provider checks
+- `services/registry.py` and `services/validator.py` — permissions and tool/provider checks; `registry.py` also has a `projects` table with full CRUD (`docs/projects_roadmap.md`, Stage 2) that nothing in the UI reads or writes yet
 - `services/database.py` — SQLite schema and built-in registration
 - `services/*_client.py` — local and cloud model clients
 - `services/usage_tracker.py` and `services/run_logger.py` — cost and request lifecycle records
