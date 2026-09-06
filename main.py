@@ -1329,7 +1329,7 @@ class GodAI(QWidget):
         splitter.addWidget(left_widget)
         splitter.addWidget(center_widget)
         splitter.addWidget(right_widget)
-        splitter.setSizes([220, 920, 260])
+        splitter.setSizes([245, 910, 245])
         right_widget.setVisible(self.inspector_visible)
 
         outer_layout.addWidget(splitter)
@@ -1530,8 +1530,18 @@ class GodAI(QWidget):
         left_layout.addWidget(self.saved_searches_panel)
         self.saved_searches_panel.hide()
 
-        left_widget.setMinimumWidth(200)
-        left_widget.setMaximumWidth(250)
+        # Global setup belongs with global navigation. API connections and
+        # application actions are populated after the right-side live inspector
+        # is built, but their stable home is this left-rail container.
+        self.left_utility_container = QWidget()
+        self.left_utility_container.setObjectName("LeftUtilities")
+        self.left_utility_layout = QVBoxLayout(self.left_utility_container)
+        self.left_utility_layout.setContentsMargins(12, 4, 12, 0)
+        self.left_utility_layout.setSpacing(4)
+        left_layout.addWidget(self.left_utility_container)
+
+        left_widget.setMinimumWidth(220)
+        left_widget.setMaximumWidth(270)
 
         left_widget.setStyleSheet("""
         QWidget#LeftPanel {
@@ -2096,8 +2106,8 @@ class GodAI(QWidget):
         if visible:
             sizes = self.main_splitter.sizes()
             total = sum(sizes) or self.width()
-            right = min(300, max(244, total // 5))
-            left = min(250, max(200, total // 7))
+            right = min(270, max(230, total // 6))
+            left = min(270, max(220, total // 6))
             self.main_splitter.setSizes([left, max(520, total - left - right), right])
     
     def build_right_panel(self) -> QWidget:
@@ -2113,7 +2123,14 @@ class GodAI(QWidget):
         cards_container.setObjectName("RightCardsContainer")
         cards_layout = QVBoxLayout(cards_container)
         cards_layout.setContentsMargins(0, 0, 0, 0)
-        cards_layout.setSpacing(0)
+        cards_layout.setSpacing(8)
+
+        inspector_heading = QLabel("INSPECTOR")
+        inspector_heading.setObjectName("RailHeading")
+        inspector_heading.setToolTip(
+            "Current route at a glance; open a section only when you need its details."
+        )
+        cards_layout.addWidget(inspector_heading)
 
         # ── Card 1: System ──────────────────────────────────────────────
         system_card = QGroupBox("SYSTEM")
@@ -2144,10 +2161,8 @@ class GodAI(QWidget):
         )
         system_layout.addWidget(self.realtime_monitor_btn)
 
-        cards_layout.addWidget(system_card)
-
         # ── Card 2: Routing & Recommendation ────────────────────────────
-        routing_card = QGroupBox("ROUTING")
+        routing_card = QGroupBox("CURRENT ROUTE")
         routing_card.setObjectName("RightCard")
         routing_layout = QVBoxLayout(routing_card)
         routing_layout.setContentsMargins(0, 4, 0, 8)
@@ -2163,7 +2178,8 @@ class GodAI(QWidget):
             "Cost": KeyValue("Cost", "—"),
             "Last run": KeyValue("Last run", "—"),
         }
-        for row in self.routing_rows.values():
+        for key in ("Suggested", "Model", "Mode", "Cost"):
+            row = self.routing_rows[key]
             routing_layout.addWidget(row)
 
         # kept so the existing update paths still have something to write to
@@ -2171,8 +2187,6 @@ class GodAI(QWidget):
         self.route_result_label.hide()
         self.recommendation_label = QLabel()
         self.recommendation_label.hide()
-
-        cards_layout.addWidget(routing_card)
 
         # ── Card 3: Cost ────────────────────────────────────────────────
         cost_card = QGroupBox("COST")
@@ -2190,6 +2204,7 @@ class GodAI(QWidget):
         }
         for row in self.cost_rows.values():
             cost_layout.addWidget(row)
+        cost_layout.addWidget(self.routing_rows["Last run"])
 
         # written to by the existing update paths, no longer shown
         self.live_estimate_label = QLabel(); self.live_estimate_label.hide()
@@ -2197,8 +2212,6 @@ class GodAI(QWidget):
         self.session_cost_label = QLabel(); self.session_cost_label.hide()
         self.today_cost_label = QLabel(); self.today_cost_label.hide()
         self.request_count_label = QLabel(); self.request_count_label.hide()
-
-        cards_layout.addWidget(cost_card)
 
         # ── Card 4: Budget ──────────────────────────────────────────────
         budget_card = QGroupBox("BUDGET")
@@ -2233,10 +2246,8 @@ class GodAI(QWidget):
         self.edit_budget_btn.clicked.connect(self.show_settings)
         budget_layout.addWidget(self.edit_budget_btn)
 
-        cards_layout.addWidget(budget_card)
-
         # ── Card 5: Quick Actions ───────────────────────────────────────
-        actions_card = QGroupBox("ACTIONS")
+        actions_card = QGroupBox("ACTIONS", cards_container)
         actions_card.setObjectName("RightCard")
         actions_layout = QVBoxLayout(actions_card)
         actions_layout.setContentsMargins(10, 6, 10, 10)
@@ -2253,8 +2264,6 @@ class GodAI(QWidget):
         self.settings_btn = QPushButton("Settings")
         self.settings_btn.clicked.connect(self.show_settings)
         actions_layout.addWidget(self.settings_btn)
-
-        cards_layout.addWidget(actions_card)
 
         # ── Card 6: API Keys ────────────────────────────────────────────
         keys_card = QGroupBox("API KEYS")
@@ -2290,7 +2299,15 @@ class GodAI(QWidget):
         self.gemini_key_label = QLabel(); self.gemini_key_label.hide()
         self.anthropic_key_label = QLabel(); self.anthropic_key_label.hide()
 
-        cards_layout.addWidget(keys_card)
+        # The right rail is the live request inspector: selection, spend and
+        # machine state. Global connections/actions live with navigation on the
+        # left so the two rails carry comparable visual weight.
+        cards_layout.addWidget(routing_card)
+        cards_layout.addWidget(cost_card)
+        cards_layout.addWidget(budget_card)
+        cards_layout.addWidget(system_card)
+        self.left_utility_layout.addWidget(keys_card)
+        self.left_utility_layout.addWidget(actions_card)
 
         cards_layout.addStretch()
 
@@ -2303,8 +2320,8 @@ class GodAI(QWidget):
         scroll_area.setStyleSheet("QScrollArea { background: transparent; border: none; }")
         right_layout.addWidget(scroll_area)
 
-        right_widget.setMinimumWidth(244)
-        right_widget.setMaximumWidth(300)
+        right_widget.setMinimumWidth(230)
+        right_widget.setMaximumWidth(270)
 
         # ── Sizing for buttons/inputs ───────────────────────────────────
         for w in [

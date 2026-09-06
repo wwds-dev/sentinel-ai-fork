@@ -482,16 +482,74 @@ class TestWorkspaceLayoutRegressions:
         from PySide6.QtWidgets import QGroupBox
 
         visible_sections = {
-            group.title() for group in win.right_panel.findChildren(QGroupBox)
+            group.title() for group in win.findChildren(QGroupBox)
             if not group.isHidden()
         }
         assert {
-            "SYSTEM", "ROUTING", "COST", "BUDGET", "ACTIONS", "API KEYS"
+            "SYSTEM", "CURRENT ROUTE", "COST", "BUDGET", "ACTIONS", "API KEYS"
         } <= visible_sections
         assert not win.routing_rows["Mode"].isHidden()
         assert not win.routing_rows["Cost"].isHidden()
         assert "estimate" in win.cost_rows
         assert "Qwen" in win.key_rows
+
+    def test_sidebars_balance_global_and_live_information(self, win):
+        from PySide6.QtWidgets import QGroupBox
+
+        assert win.right_panel.maximumWidth() <= 270
+        assert win.left_panel.maximumWidth() == win.right_panel.maximumWidth()
+
+        right_container = win.right_panel.findChild(QObject, "RightCardsContainer")
+        right_order = []
+        for index in range(right_container.layout().count()):
+            widget = right_container.layout().itemAt(index).widget()
+            if isinstance(widget, QGroupBox):
+                right_order.append(widget.title())
+        assert right_order == ["CURRENT ROUTE", "COST", "BUDGET", "SYSTEM"]
+
+        left_order = []
+        for index in range(win.left_utility_layout.count()):
+            widget = win.left_utility_layout.itemAt(index).widget()
+            if isinstance(widget, QGroupBox):
+                left_order.append(widget.title())
+        assert left_order == ["API KEYS", "ACTIONS"]
+
+    def test_all_sidebar_sections_remain_visible_after_redistribution(self, win):
+        from PySide6.QtWidgets import QGroupBox
+
+        titles = set()
+        for sidebar in (win.left_panel, win.right_panel):
+            for group in sidebar.findChildren(QGroupBox):
+                if not group.isHidden():
+                    titles.add(group.title())
+        assert titles == {
+            "CURRENT ROUTE", "COST", "BUDGET", "SYSTEM", "API KEYS", "ACTIONS"
+        }
+
+    def test_right_inspector_order_tracks_request_lifecycle(self, win):
+        from PySide6.QtWidgets import QGroupBox
+
+        container = win.right_panel.findChild(QObject, "RightCardsContainer")
+        ordered = []
+        for index in range(container.layout().count()):
+            widget = container.layout().itemAt(index).widget()
+            if isinstance(widget, QGroupBox):
+                ordered.append(widget.title())
+        assert ordered == [
+            "CURRENT ROUTE", "COST", "BUDGET", "SYSTEM"
+        ]
+
+    def test_inspector_keeps_quick_actions_available(self, win):
+        from PySide6.QtWidgets import QGroupBox
+
+        actions = next(
+            group for group in win.left_panel.findChildren(QGroupBox)
+            if group.title() == "ACTIONS"
+        )
+        assert not actions.isHidden()
+        assert not win.realtime_monitor_btn.isHidden()
+        more_actions = {action.text() for action in win.header_more_btn.menu().actions()}
+        assert {"Cost history", "Run log", "Settings"} <= more_actions
 
     def test_live_cost_row_tracks_the_chat_prompt(self, win):
         win.select_agent("chat")
