@@ -388,6 +388,33 @@ class TestWiFiAgent:
         sys = _system(self.agent.build_messages(self.PROMPT))
         assert "authoris" in sys.lower() or "authorized" in sys.lower() or "pentest" in sys.lower()
 
+    def test_preflight_identifies_dual_interface_ready_state(self):
+        from agents.wifi_agent import build_connection_preflight
+        result = build_connection_preflight(
+            [{"device": "en0", "hardware_port": "Wi-Fi", "default_route": True,
+              "role": "Internet / control"}],
+            [{"name": "TL-WN722N", "monitor": True}],
+        )
+        assert result["level"] == "ready"
+        assert result["has_internet"] and result["has_usb"]
+        assert "monitor mode" in result["text"]
+
+    def test_preflight_warns_if_usb_would_be_only_connection(self):
+        from agents.wifi_agent import build_connection_preflight
+        result = build_connection_preflight([], [{"name": "AWUS036ACH"}])
+        assert result["level"] == "warning"
+        assert "without a network connection" in result["text"]
+        assert "did not change" in result["text"]
+
+    def test_hardware_port_parser_assigns_default_route(self):
+        from agents.wifi_agent import parse_hardware_ports
+        rows = parse_hardware_ports(
+            "Hardware Port: Wi-Fi\nDevice: en0\nEthernet Address: aa:bb\n\n"
+            "Hardware Port: USB LAN\nDevice: en5\n", "en0"
+        )
+        assert rows[0]["role"] == "Internet / control"
+        assert rows[1]["default_route"] is False
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # VpnAgent — advisor messages + deterministic config builder

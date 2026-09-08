@@ -28,7 +28,10 @@ from PySide6.QtWidgets import (
     QTextBrowser, QVBoxLayout, QWidget,
 )
 
-from agents.wifi_agent import AIRPORT, build_kali_commands, detect_usb_adapters
+from agents.wifi_agent import (
+    AIRPORT, build_connection_preflight, build_kali_commands,
+    detect_usb_adapters, network_interface_status,
+)
 from services.runtime_paths import user_data_base
 from ui.workers import SubprocessWorker
 from ui.panels.base import AgentPanel
@@ -137,6 +140,17 @@ class WifiPanel(AgentPanel):
         layout.addWidget(self.kali_group)
         self.kali_group.hide()
 
+        preflight_group = QGroupBox("Connection Preflight")
+        preflight_layout = QVBoxLayout(preflight_group)
+        self.preflight_box = QTextBrowser()
+        self.preflight_box.setObjectName("BeaconPreflight")
+        self.preflight_box.setMaximumHeight(150)
+        self.preflight_box.setPlaceholderText(
+            "Run the read-only preflight to identify internet/control and USB monitor roles."
+        )
+        preflight_layout.addWidget(self.preflight_box)
+        layout.addWidget(preflight_group)
+
         self.run_btn = QPushButton("Run")
         self.run_btn.setMinimumWidth(110)
         self.run_btn.setObjectName("PrimaryAction")
@@ -145,6 +159,10 @@ class WifiPanel(AgentPanel):
         self.detect_btn = QPushButton("Detect Adapters")
         self.detect_btn.setToolTip("Scan USB bus for connected Wi-Fi adapters")
         self.detect_btn.clicked.connect(self.detect_adapters)
+
+        self.preflight_btn = QPushButton("Run Preflight")
+        self.preflight_btn.setToolTip("Read interface and USB status without changing network modes")
+        self.preflight_btn.clicked.connect(self.run_preflight)
 
         self.stop_btn = QPushButton("Stop")
         self.stop_btn.setEnabled(False)
@@ -156,7 +174,7 @@ class WifiPanel(AgentPanel):
         provider_row_container = self.build_run_bar(
             self.run_btn,
             stop=self.stop_btn,
-            secondary=(self.detect_btn,),
+            secondary=(self.preflight_btn, self.detect_btn),
             context="Wireless",
         )
 
@@ -335,6 +353,27 @@ class WifiPanel(AgentPanel):
         self.status_label.setText(
             f"Detected: {adapter.get('name')} ({adapter.get('chipset')})")
 
+    def run_preflight(self) -> dict:
+        """Display interface roles and connectivity risk without changing state."""
+        self.preflight_btn.setEnabled(False)
+        self.status_label.setText("Reading connection status…")
+        try:
+            interfaces = network_interface_status()
+            adapters = detect_usb_adapters()
+            result = build_connection_preflight(interfaces, adapters)
+        except Exception as exc:
+            result = {
+                "level": "warning",
+                "text": "Connection preflight could not read macOS status. No settings were changed.\n"
+                        f"Details: {exc}",
+                "has_internet": False,
+                "has_usb": False,
+            }
+        self.preflight_box.setPlainText(result["text"])
+        self.preflight_btn.setEnabled(True)
+        self.status_label.setText("Connection preflight complete (read-only).")
+        return result
+
     # ── Running ─────────────────────────────────────────────────────────
     def run(self) -> None:
         mode = self.mode_box.currentText()
@@ -373,6 +412,7 @@ class WifiPanel(AgentPanel):
         self.scan_worker.start()
 
     def _run_kali_builder(self) -> None:
+        preflight = self.run_preflight()
         op = self.kali_op_box.currentText()
         adapter_name = self.kali_adapter_box.currentText()
         bssid = self.kali_bssid_input.text().strip()
@@ -381,6 +421,11 @@ class WifiPanel(AgentPanel):
 
         adapter = KALI_ADAPTERS.get(adapter_name, next(iter(KALI_ADAPTERS.values())))
         cmds = build_kali_commands(op, adapter, bssid, channel, essid)
+        if not preflight.get("has_internet"):
+            cmds = (
+                "# CONNECTION WARNING: no separate internet/control route was detected.\n"
+                "# Do not place your only connected adapter into monitor mode.\n\n" + cmds
+            )
 
         self.kali_cmd_box.setPlainText(cmds)
         self.tabs.setCurrentIndex(2)

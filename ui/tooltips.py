@@ -121,6 +121,18 @@ def seed_tooltips(app):
         "osint_heavy.stop_btn":         "Cancel the investigation.",
         "osint_heavy.save_btn":         "Save the full dossier to a .txt file.",
         "osint_heavy.threat_bar":       "Threat level on a 0–10 scale, extracted from the dossier.",
+        "osint_heavy.add_folder_btn":   "Choose a local folder Bloodhound is allowed to search.",
+        "osint_heavy.remove_folder_btn": "Remove selected folders from the search scope.",
+        "osint_heavy.file_name_filter": "Match all or part of a file name.",
+        "osint_heavy.file_extension_filter": "Limit results to extensions such as pdf, jpg, or docx.",
+        "osint_heavy.file_search_btn":  "Search selected folders locally using file metadata only.",
+        "osint_heavy.file_cancel_btn":  "Stop the local file search and keep results found so far.",
+        "osint_heavy.file_results":     "Read-only matches; double-click one to reveal its folder.",
+        "osint_heavy.file_source_box":  "Search this Mac or a machine you already access through SSH.",
+        "osint_heavy.remote_host_input": "Owned SSH host, IP address, or ~/.ssh/config alias.",
+        "osint_heavy.remote_user_input": "Account used by your existing SSH identity.",
+        "osint_heavy.remote_roots_input": "Comma-separated absolute folders allowed for remote search.",
+        "osint_heavy.open_ssh_btn":      "Open this registered destination in the system SSH terminal.",
     })
 
     # Bug Bounty (Bug Spray)

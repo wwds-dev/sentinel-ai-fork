@@ -8,7 +8,7 @@ Sentinel's built-in roster is intentionally limited to seven agents:
 |---|---|---|
 | Chat | `chat` | General conversation plus Writing, Coding, Summarize, and Rewrite tools |
 | Trace | `osint` | Focused open-source research and source-led investigation planning |
-| Bloodhound | `osint_heavy` | Deeper, multi-source OSINT collection and dossier synthesis |
+| Bloodhound | `osint_heavy` | Deep OSINT dossiers plus read-only file discovery in user-selected folders |
 | Beacon | `wifi` | Wi-Fi diagnostics and commands for networks the operator is authorised to test |
 | Bug Spray | `bug_bounty` | In-scope vulnerability analysis and submission-ready bug bounty reports |
 | Tunnel | `vpn` | Self-hosted WireGuard/OpenVPN design, configuration, and troubleshooting |
@@ -70,11 +70,34 @@ than Ollama is marked as a paid selection (an amber marker on the dropdown),
 so a cloud route is visible before you run it, not only after the cost is
 logged.
 
-Saved chats can be searched and filtered by agent. The right panel shows system resources, request status, usage, and budget information. Settings controls registered agents, tools, pricing, and provider permissions.
+Saved chats can be searched and filtered by agent. The two side rails split by what they carry rather than by left/right habit: the right rail is the live request inspector — Current Route, Cost, Budget, System, in that order, so the cards read top-to-bottom in the order a request actually happens — while API Keys and Actions (Cost history, Run log, Settings) sit in the left rail with the agent list, since those are global setup rather than per-request state. Settings controls registered agents, tools, pricing, and provider permissions.
+
+The in-app **Learning Centre** is available from **More (•••)**. It contains a
+guided Quick Start, full workspace and Settings reference, courses for all
+seven agents, privacy/cost guidance, troubleshooting, multi-agent workflows,
+practice exercises, current-interface screenshots, and the v3 advanced-tools
+roadmap. Training source files live in `docs/training/`; they are separate from
+the developer reference in `docs/agents/`.
+
+For a removable, self-contained macOS copy, see
+[`docs/portable_mode.md`](docs/portable_mode.md). Portable mode keeps settings,
+history, logs and API-key storage on the removable volume and never silently
+mixes them with the Lab checkout or Application Support.
+
+Bloodhound's **File Discovery** searches only locations you deliberately enter.
+It supports folders on this Mac and owned macOS/Linux machines reachable by
+SSH. Remote searches use SFTP with the SSH agent, `~/.ssh/config`, and strict
+`known_hosts` verification; Sentinel stores no password or private key. Search
+filters include full or partial name, extensions, size, and modified date.
+Results show name, path, type, size, and modified time. Searches read metadata
+only, never send file information to an AI provider, do not follow directory
+links, and stop at safety limits. They cannot change files. **Open SSH Terminal**
+hands an explicitly entered host to the operating system's normal SSH client
+for interactive administration outside Sentinel.
 
 ### Safety boundaries
 
-Beacon, Bug Spray, and Tunnel are intended for systems, networks, and programs the operator owns or is explicitly authorised to assess. Trace and Bloodhound should be used lawfully and with respect for privacy. Generated commands and findings require human review before execution or submission.
+Beacon, Bug Spray, and Tunnel are intended for systems, networks, and programs the operator owns or is explicitly authorised to assess. Trace and Bloodhound should be used lawfully and with respect for privacy. Bloodhound never scans a local or remote machine automatically: the operator must enter each host and folder and already possess valid SSH access. Generated commands and findings require human review before execution or submission.
 
 Forge writes an agent scaffold and inactive registry entries after review. Sentinel does not dynamically load it or add it to the sidebar; inspect, test, and deliberately integrate generated code before enabling it, especially when it adds tools or external access.
 
@@ -128,6 +151,7 @@ The current manual acceptance checklist is in `tests/manual_test_cases.md`. It c
 
 ## Further documentation
 
-Agent-specific guides live in `docs/agents/`: `chat.md`, `osint.md`, `osint_heavy.md`, `wifi.md`, `bug_bounty.md`, `vpn.md`, and `manager.md`.
+Agent-specific reference guides live in `docs/agents/`: `chat.md`, `osint.md`, `osint_heavy.md`, `wifi.md`, `bug_bounty.md`, `vpn.md`, and `manager.md`.
+User training and the course roadmap live in [`docs/training/`](docs/training/).
 
 Documents describing the workspace split or earlier architecture are historical records. They explain how features moved between projects; they do not define current Sentinel behaviour.

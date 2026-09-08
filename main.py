@@ -10,8 +10,22 @@ from pathlib import Path
 from typing import Optional
 from uuid import uuid4
 
-from services.runtime_paths import resource_base, user_data_base, ensure_seeded, is_frozen
-ensure_seeded()
+from services.runtime_paths import (
+    PortableRuntimeError, ensure_seeded, is_frozen, is_portable,
+    resource_base, user_data_base,
+)
+try:
+    ensure_seeded()
+except PortableRuntimeError as exc:
+    message = f"Sentinel Fork cannot use its portable storage.\n\n{exc}"
+    print(message, file=sys.stderr)
+    if sys.platform == "darwin":
+        subprocess.run(
+            ["osascript", "-e", 'display alert "Sentinel Fork cannot start" message '
+             + json.dumps(message) + " as critical"],
+            check=False,
+        )
+    raise SystemExit(2) from exc
 
 from dotenv import load_dotenv
 # API keys: user-data .env when frozen, project .env in dev. Real env vars still win.
@@ -1654,6 +1668,10 @@ class GodAI(QWidget):
         self.header_more_btn.setObjectName("ChipBtn")
         self.header_more_btn.setToolTip("More application tools")
         header_more_menu = QMenu(self.header_more_btn)
+        header_more_menu.addAction("Learning centre").triggered.connect(
+            self.show_learning_center
+        )
+        header_more_menu.addSeparator()
         header_more_menu.addAction("App documentation").triggered.connect(
             self.show_docs
         )
@@ -4116,6 +4134,11 @@ class GodAI(QWidget):
     def show_model_guide(self):
         from ui.dialogs import show_model_guide as _show_model_guide
         return _show_model_guide(self)
+
+    def show_learning_center(self):
+        from ui.learning_center import show_learning_center as _show_learning_center
+        return _show_learning_center(self)
+
     def show_docs(self, anchor: str = ""):
         dialog = QDialog(self)
         dialog.setWindowTitle("App documentation")
@@ -4252,6 +4275,11 @@ def _hand_off_to_running_instance() -> bool:
 
 if __name__ == "__main__":
     app = QApplication([])
+
+    # Portable window preferences remain on the removable volume too.
+    if is_portable():
+        QSettings.setDefaultFormat(QSettings.IniFormat)
+        QSettings.setPath(QSettings.IniFormat, QSettings.UserScope, str(CONFIG_DIR))
 
     # Second launch: focus the window that is already open and leave. The exit
     # code has to be 0 — the launcher raises an error dialog on anything else.

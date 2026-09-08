@@ -13,16 +13,21 @@ import re
 from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QTextCursor
+from PySide6.QtCore import QDate, Qt, QUrl
+from PySide6.QtGui import QDesktopServices, QTextCursor
 from PySide6.QtWidgets import (
-    QComboBox, QFileDialog, QGridLayout, QGroupBox, QHBoxLayout, QLabel,
-    QLineEdit, QMessageBox, QProgressBar, QPushButton, QSplitter,
-    QTextBrowser, QTextEdit, QVBoxLayout, QWidget,
+    QAbstractItemView, QCheckBox, QComboBox, QDateEdit, QFileDialog,
+    QGridLayout, QGroupBox, QHeaderView, QHBoxLayout, QLabel, QLineEdit,
+    QListWidget, QMessageBox, QProgressBar, QPushButton, QSplitter,
+    QTableWidget, QTableWidgetItem, QTextBrowser, QTextEdit, QVBoxLayout,
+    QWidget,
 )
 
+from services.local_file_search import FileSearchFilters, FileSearchReport, normalise_extensions
+from services.remote_file_search import validate_ssh_target
 from services.runtime_paths import user_data_base
 from ui.panels.base import AgentPanel
+from ui.workers import LocalFileSearchWorker, RemoteFileSearchWorker
 from ui.widgets import MenuComboBox, SectionView
 
 
@@ -117,6 +122,7 @@ class OsintHeavyPanel(AgentPanel):
         self._last_response = ""
         self._image_path = ""
         self._image_osint = ""
+        self._file_search_worker = None
         self._build()
         self.polish_workspace()
         self.hide()
@@ -220,6 +226,8 @@ class OsintHeavyPanel(AgentPanel):
         image_outer.addWidget(self.exif_display)
         layout.addWidget(image_group)
 
+        self._build_file_discovery(layout)
+
         # ── Results splitter: tabs left, indicators right ────────────────
         results_splitter = QSplitter(Qt.Horizontal)
 
@@ -309,6 +317,165 @@ class OsintHeavyPanel(AgentPanel):
         self.status_label.setStyleSheet("font-size: 12px; color: #888;")
         layout.addWidget(self.status_label)
 
+    def _build_file_discovery(self, layout: QVBoxLayout) -> None:
+        group = QGroupBox("File Discovery — selected locations only")
+        group.setObjectName("BloodhoundFileDiscoveryBox")
+        group.setCheckable(True)
+        group.setChecked(False)
+        outer = QVBoxLayout(group)
+        self.file_discovery_body = QWidget()
+        body = QVBoxLayout(self.file_discovery_body)
+        body.setContentsMargins(0, 4, 0, 0)
+        body.setSpacing(6)
+
+        source_row = QHBoxLayout()
+        source_row.addWidget(QLabel("Search location:"))
+        self.file_source_box = MenuComboBox()
+        self.file_source_box.addItems(["This Mac", "Remote SSH machine"])
+        source_row.addWidget(self.file_source_box)
+        source_row.addStretch()
+        body.addLayout(source_row)
+
+        self.remote_file_widget = QWidget()
+        remote = QGridLayout(self.remote_file_widget)
+        remote.setContentsMargins(0, 0, 0, 0)
+        remote.addWidget(QLabel("SSH host / IP / alias:"), 0, 0)
+        self.remote_host_input = QLineEdit()
+        self.remote_host_input.setPlaceholderText("server.example.com or 192.0.2.10")
+        remote.addWidget(self.remote_host_input, 0, 1)
+        remote.addWidget(QLabel("User:"), 0, 2)
+        self.remote_user_input = QLineEdit()
+        self.remote_user_input.setPlaceholderText("SSH username")
+        remote.addWidget(self.remote_user_input, 0, 3)
+        remote.addWidget(QLabel("Port:"), 0, 4)
+        self.remote_port_input = QLineEdit("22")
+        self.remote_port_input.setMaximumWidth(80)
+        remote.addWidget(self.remote_port_input, 0, 5)
+        remote.addWidget(QLabel("Remote folders:"), 1, 0)
+        self.remote_roots_input = QLineEdit()
+        self.remote_roots_input.setPlaceholderText("/home/user/Documents, /srv/archive")
+        remote.addWidget(self.remote_roots_input, 1, 1, 1, 4)
+        self.open_ssh_btn = QPushButton("Open SSH Terminal")
+        self.open_ssh_btn.clicked.connect(self.open_ssh_terminal)
+        remote.addWidget(self.open_ssh_btn, 1, 5)
+        remote_note = QLabel(
+            "Uses your SSH agent, ~/.ssh/config and known_hosts. Passwords and private keys are not stored."
+        )
+        remote_note.setStyleSheet("font-size: 11px; color: #777;")
+        remote.addWidget(remote_note, 2, 0, 1, 6)
+        self.remote_file_widget.setVisible(False)
+        body.addWidget(self.remote_file_widget)
+        self.file_source_box.currentTextChanged.connect(self._set_file_source)
+
+        folder_row = QHBoxLayout()
+        self.file_folders = QListWidget()
+        self.file_folders.setObjectName("BloodhoundSearchFolders")
+        self.file_folders.setMinimumHeight(54)
+        self.file_folders.setMaximumHeight(92)
+        self.file_folders.setToolTip("Only folders listed here will be searched.")
+        folder_row.addWidget(self.file_folders, 1)
+        folder_buttons = QVBoxLayout()
+        self.add_folder_btn = QPushButton("Add Folder…")
+        self.add_folder_btn.clicked.connect(self.add_search_folder)
+        folder_buttons.addWidget(self.add_folder_btn)
+        self.remove_folder_btn = QPushButton("Remove")
+        self.remove_folder_btn.clicked.connect(self.remove_search_folders)
+        folder_buttons.addWidget(self.remove_folder_btn)
+        folder_buttons.addStretch()
+        folder_row.addLayout(folder_buttons)
+        body.addLayout(folder_row)
+
+        filters = QGridLayout()
+        filters.addWidget(QLabel("File name:"), 0, 0)
+        self.file_name_filter = QLineEdit()
+        self.file_name_filter.setPlaceholderText("Full or partial name…")
+        filters.addWidget(self.file_name_filter, 0, 1)
+        self.file_name_mode = MenuComboBox()
+        self.file_name_mode.addItems(["Contains", "Exact"])
+        filters.addWidget(self.file_name_mode, 0, 2)
+        filters.addWidget(QLabel("Type / extension:"), 0, 3)
+        self.file_extension_filter = QLineEdit()
+        self.file_extension_filter.setPlaceholderText("pdf, jpg, docx…")
+        filters.addWidget(self.file_extension_filter, 0, 4)
+
+        filters.addWidget(QLabel("Size (MB):"), 1, 0)
+        self.file_min_size = QLineEdit()
+        self.file_min_size.setPlaceholderText("Minimum")
+        filters.addWidget(self.file_min_size, 1, 1)
+        self.file_max_size = QLineEdit()
+        self.file_max_size.setPlaceholderText("Maximum")
+        filters.addWidget(self.file_max_size, 1, 2)
+
+        self.file_after_enabled = QCheckBox("Modified after")
+        filters.addWidget(self.file_after_enabled, 1, 3)
+        self.file_after = QDateEdit(QDate.currentDate().addYears(-1))
+        self.file_after.setCalendarPopup(True)
+        self.file_after.setEnabled(False)
+        self.file_after_enabled.toggled.connect(self.file_after.setEnabled)
+        filters.addWidget(self.file_after, 1, 4)
+        self.file_before_enabled = QCheckBox("Before")
+        filters.addWidget(self.file_before_enabled, 2, 3)
+        self.file_before = QDateEdit(QDate.currentDate())
+        self.file_before.setCalendarPopup(True)
+        self.file_before.setEnabled(False)
+        self.file_before_enabled.toggled.connect(self.file_before.setEnabled)
+        filters.addWidget(self.file_before, 2, 4)
+        body.addLayout(filters)
+
+        actions = QHBoxLayout()
+        self.file_search_btn = QPushButton("Search Selected Folders")
+        self.file_search_btn.setObjectName("PrimaryAction")
+        self.file_search_btn.clicked.connect(self.start_file_search)
+        actions.addWidget(self.file_search_btn)
+        self.file_cancel_btn = QPushButton("Cancel")
+        self.file_cancel_btn.setObjectName("DangerAction")
+        self.file_cancel_btn.setEnabled(False)
+        self.file_cancel_btn.clicked.connect(self.cancel_file_search)
+        actions.addWidget(self.file_cancel_btn)
+        self.file_clear_btn = QPushButton("Clear Results")
+        self.file_clear_btn.clicked.connect(self.clear_file_results)
+        actions.addWidget(self.file_clear_btn)
+        actions.addStretch()
+        self.file_progress = QProgressBar()
+        self.file_progress.setRange(0, 1)
+        self.file_progress.setValue(0)
+        self.file_progress.setTextVisible(False)
+        self.file_progress.setFixedWidth(140)
+        actions.addWidget(self.file_progress)
+        self.file_status = QLabel("Choose folders to begin.")
+        actions.addWidget(self.file_status)
+        body.addLayout(actions)
+
+        self.file_results = QTableWidget(0, 5)
+        self.file_results.setObjectName("BloodhoundFileResults")
+        self.file_results.setHorizontalHeaderLabels(
+            ["Name", "Path", "Type", "Size", "Modified"]
+        )
+        self.file_results.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.file_results.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.file_results.setSortingEnabled(True)
+        self.file_results.verticalHeader().setVisible(False)
+        header = self.file_results.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(1, QHeaderView.Stretch)
+        header.setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(3, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(4, QHeaderView.ResizeToContents)
+        self.file_results.setMinimumHeight(150)
+        self.file_results.cellDoubleClicked.connect(self.reveal_file_result)
+        body.addWidget(self.file_results)
+        hint = QLabel(
+            "Read-only: Bloodhound checks file metadata locally. Nothing is uploaded. "
+            "Double-click a result to reveal it in its folder."
+        )
+        hint.setStyleSheet("font-size: 11px; color: #777;")
+        body.addWidget(hint)
+
+        outer.addWidget(self.file_discovery_body)
+        self.file_discovery_body.setVisible(False)
+        group.toggled.connect(self.file_discovery_body.setVisible)
+        layout.addWidget(group)
+
     # ── Running ─────────────────────────────────────────────────────────
     def investigate(self) -> None:
         target = self.target_input.text().strip()
@@ -381,6 +548,241 @@ class OsintHeavyPanel(AgentPanel):
         self.stop_worker()
         self.status_label.setText("Stopped.")
         self.set_busy(self.investigate_btn, self.stop_btn, False)
+
+    # ── Local file discovery ───────────────────────────────────────────
+    def _set_file_source(self, source: str) -> None:
+        remote = source == "Remote SSH machine"
+        self.remote_file_widget.setVisible(remote)
+        self.file_folders.setEnabled(not remote)
+        self.add_folder_btn.setEnabled(not remote)
+        self.remove_folder_btn.setEnabled(not remote)
+        self.file_status.setText(
+            "Enter an authenticated SSH machine and remote folders."
+            if remote else
+            (f"{self.file_folders.count()} folder(s) selected."
+             if self.file_folders.count() else "Choose folders to begin.")
+        )
+
+    def add_search_folder(self) -> None:
+        path = QFileDialog.getExistingDirectory(
+            self, "Choose a folder to search", str(Path.home()),
+            QFileDialog.ShowDirsOnly,
+        )
+        if not path:
+            return
+        existing = {
+            self.file_folders.item(i).text()
+            for i in range(self.file_folders.count())
+        }
+        normalised = str(Path(path).resolve())
+        if normalised not in existing:
+            self.file_folders.addItem(normalised)
+        self.file_status.setText(f"{self.file_folders.count()} folder(s) selected.")
+
+    def remove_search_folders(self) -> None:
+        for item in self.file_folders.selectedItems():
+            self.file_folders.takeItem(self.file_folders.row(item))
+        count = self.file_folders.count()
+        self.file_status.setText(
+            f"{count} folder(s) selected." if count else "Choose folders to begin."
+        )
+
+    @staticmethod
+    def _megabytes(value: str, label: str) -> int | None:
+        text = value.strip()
+        if not text:
+            return None
+        try:
+            number = float(text)
+        except ValueError as exc:
+            raise ValueError(f"{label} must be a number.") from exc
+        if number < 0:
+            raise ValueError(f"{label} cannot be negative.")
+        return int(number * 1024 * 1024)
+
+    def _file_filters(self) -> FileSearchFilters:
+        minimum = self._megabytes(self.file_min_size.text(), "Minimum size")
+        maximum = self._megabytes(self.file_max_size.text(), "Maximum size")
+        if minimum is not None and maximum is not None and minimum > maximum:
+            raise ValueError("Minimum size cannot be greater than maximum size.")
+        after = None
+        before = None
+        if self.file_after_enabled.isChecked():
+            date = self.file_after.date().toPython()
+            after = datetime.combine(date, datetime.min.time())
+        if self.file_before_enabled.isChecked():
+            date = self.file_before.date().toPython()
+            before = datetime.combine(date, datetime.max.time())
+        if after and before and after > before:
+            raise ValueError("The start date cannot be after the end date.")
+        return FileSearchFilters(
+            name=self.file_name_filter.text(),
+            exact_name=self.file_name_mode.currentText() == "Exact",
+            extensions=normalise_extensions(self.file_extension_filter.text()),
+            min_size=minimum,
+            max_size=maximum,
+            modified_after=after,
+            modified_before=before,
+        )
+
+    def start_file_search(self) -> None:
+        remote = self.file_source_box.currentText() == "Remote SSH machine"
+        if remote:
+            roots = [
+                value.strip()
+                for value in self.remote_roots_input.text().split(",")
+                if value.strip()
+            ]
+        else:
+            roots = [
+                self.file_folders.item(i).text()
+                for i in range(self.file_folders.count())
+            ]
+        if not roots:
+            QMessageBox.warning(
+                self,
+                "No Folders Selected",
+                "Enter at least one absolute remote folder."
+                if remote else "Choose at least one folder to search.",
+            )
+            return
+        try:
+            filters = self._file_filters()
+            if remote:
+                host = self.remote_host_input.text().strip()
+                username = self.remote_user_input.text().strip()
+                port = int(self.remote_port_input.text().strip())
+                validate_ssh_target(host, username, port)
+                if any(not root.startswith("/") for root in roots):
+                    raise ValueError("Every remote folder must be an absolute path.")
+        except ValueError as exc:
+            QMessageBox.warning(self, "Check Search Filters", str(exc))
+            return
+        self.clear_file_results()
+        self.file_progress.setRange(0, 0)
+        self.file_search_btn.setEnabled(False)
+        self.file_cancel_btn.setEnabled(True)
+        self.add_folder_btn.setEnabled(False)
+        self.remove_folder_btn.setEnabled(False)
+        self.file_status.setText("Searching locally…")
+        worker = (
+            RemoteFileSearchWorker(host, username, port, roots, filters)
+            if remote else LocalFileSearchWorker(roots, filters)
+        )
+        self._file_search_worker = worker
+        worker.progress_signal.connect(self._on_file_progress)
+        worker.finished_signal.connect(self._on_file_search_finished)
+        worker.error_signal.connect(self._on_file_search_error)
+        worker.start()
+
+    def open_ssh_terminal(self) -> None:
+        try:
+            host = self.remote_host_input.text().strip()
+            username = self.remote_user_input.text().strip()
+            port = int(self.remote_port_input.text().strip())
+            validate_ssh_target(host, username, port)
+        except ValueError as exc:
+            QMessageBox.warning(self, "Check SSH Details", str(exc))
+            return
+        url = QUrl()
+        url.setScheme("ssh")
+        url.setUserName(username)
+        url.setHost(host)
+        url.setPort(port)
+        if not QDesktopServices.openUrl(url):
+            QMessageBox.warning(
+                self,
+                "Could Not Open Terminal",
+                "No application is registered to open SSH links on this computer.",
+            )
+
+    def cancel_file_search(self) -> None:
+        if self._file_search_worker and self._file_search_worker.isRunning():
+            self._file_search_worker.cancel()
+            self.file_status.setText("Stopping…")
+            self.file_cancel_btn.setEnabled(False)
+
+    def _on_file_progress(self, checked: int, found: int) -> None:
+        self.file_status.setText(f"Checked {checked:,} items · found {found:,}")
+
+    def _finish_file_search_ui(self) -> None:
+        self.file_progress.setRange(0, 1)
+        self.file_progress.setValue(1)
+        self.file_search_btn.setEnabled(True)
+        self.file_cancel_btn.setEnabled(False)
+        self.add_folder_btn.setEnabled(True)
+        self.remove_folder_btn.setEnabled(True)
+        self._set_file_source(self.file_source_box.currentText())
+
+    def _on_file_search_finished(self, report: FileSearchReport) -> None:
+        self._finish_file_search_ui()
+        self._populate_file_results(report)
+        state = "Search cancelled" if report.cancelled else "Search complete"
+        if report.limit_reached:
+            state = "Safety limit reached"
+        summary = (
+            f"{state}: {len(report.matches):,} found; "
+            f"{report.entries_checked:,} items checked"
+        )
+        if report.errors:
+            summary += f"; {len(report.errors)} location error(s)"
+            QMessageBox.warning(
+                self,
+                "Some Locations Could Not Be Read",
+                "The search continued, but some locations were inaccessible:\n\n"
+                + "\n".join(report.errors[:12]),
+            )
+        if report.limit_reached:
+            summary += ". Narrow the folder or filters for more specific results."
+        self.file_status.setText(summary)
+
+    def _on_file_search_error(self, error: str) -> None:
+        self._finish_file_search_ui()
+        self.file_status.setText("Search could not be completed.")
+        QMessageBox.critical(self, "File Search Error", error)
+
+    @staticmethod
+    def _format_size(size: int) -> str:
+        if size < 1024:
+            return f"{size} B"
+        if size < 1024 * 1024:
+            return f"{size / 1024:.1f} KB"
+        if size < 1024 * 1024 * 1024:
+            return f"{size / (1024 * 1024):.1f} MB"
+        return f"{size / (1024 * 1024 * 1024):.2f} GB"
+
+    def _populate_file_results(self, report: FileSearchReport) -> None:
+        self.file_results.setSortingEnabled(False)
+        self.file_results.setRowCount(len(report.matches))
+        for row, match in enumerate(report.matches):
+            values = (
+                match.name,
+                match.path,
+                match.extension,
+                self._format_size(match.size),
+                match.modified.strftime("%Y-%m-%d %H:%M"),
+            )
+            for column, value in enumerate(values):
+                item = QTableWidgetItem(value)
+                if column == 3:
+                    item.setData(Qt.UserRole, match.size)
+                self.file_results.setItem(row, column, item)
+        self.file_results.setSortingEnabled(True)
+
+    def clear_file_results(self) -> None:
+        self.file_results.setRowCount(0)
+        self.file_progress.setRange(0, 1)
+        self.file_progress.setValue(0)
+
+    def reveal_file_result(self, row: int, _column: int) -> None:
+        item = self.file_results.item(row, 1)
+        if not item:
+            return
+        path = Path(item.text())
+        if not path.exists():
+            QMessageBox.warning(self, "File Not Found", "This file is no longer available.")
+            return
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(path.parent)))
 
     # ── The dossier ─────────────────────────────────────────────────────
     def save(self) -> None:

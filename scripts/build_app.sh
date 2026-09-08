@@ -17,6 +17,7 @@
 #
 #   ./scripts/build_app.sh            # build only (dist.noindex/Sentinel Fork.app)
 #   ./scripts/build_app.sh --install  # explicitly replace /Applications copy
+#   ./scripts/build_app.sh --skip-tests # for a caller that already ran its release checks
 #
 # IMPORTANT: the bundle freezes the CODE at build time. After editing main.py (or
 # anything else), re-run this script to refresh the installed app.
@@ -40,9 +41,21 @@ PY="${PROJECT_ROOT}/.venv/bin/python"
 
 cd "$PROJECT_ROOT"
 
+INSTALL=false
+SKIP_TESTS=false
+for arg in "$@"; do
+    case "$arg" in
+        --install) INSTALL=true ;;
+        --skip-tests) SKIP_TESTS=true ;;
+        *) echo "Unknown option: $arg" >&2; exit 2 ;;
+    esac
+done
+
 echo "▸ Building ${APP_BUNDLE} with PyInstaller (this takes ~1 min)…"
-echo "▸ Running release tests…"
-"$PY" -m pytest -q
+if [ "$SKIP_TESTS" = false ]; then
+    echo "▸ Running release tests…"
+    "$PY" -m pytest -q
+fi
 mkdir -p "$DIST_DIR"
 touch "${DIST_DIR}/.metadata_never_index"
 
@@ -60,7 +73,7 @@ done
 
 "$PY" -m PyInstaller --noconfirm --clean --distpath "$DIST_DIR" SentinelAI.spec
 
-if [ "${1:-}" != "--install" ]; then
+if [ "$INSTALL" = false ]; then
     echo "✓ Built: ${DIST_APP}"
     echo "  Not installed. Use --install only when you intend to replace the thin Lab launcher."
     exit 0

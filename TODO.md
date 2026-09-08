@@ -11,6 +11,14 @@ under **Detail** — this checklist is the summary view.
 
 ## v2 — current
 
+### Portable and Beacon workflow (completed)
+
+- [x] Add marker-based macOS USB portable mode with isolated writable state.
+- [x] Preserve portable user data during app upgrades and exclude real `.env` secrets.
+- [x] Detect unavailable, read-only and low-space portable volumes with clear errors.
+- [x] Add Beacon's read-only interface/adapter role preflight and dual-interface guidance.
+- [x] Document storage formats, architecture, Gatekeeper, VM passthrough, safe eject and backups.
+
 - [x] `P1` `design` `@ai` **Refactor Phase 4** — all six specialist verticals now live in `ui/panels/` behind the shared `AgentPanel` boundary. The separate run-id hardening remains tracked below. See `docs/refactor_plan.md`.
 - [x] `P1` `design` `@ai` **Refactor Phase 3** — `AgentHost` (`ui/host.py`) and the `AgentPanel` base (`ui/panels/base.py`), with the design decision settled: composition, not mixins. Six panels' hand-built provider/model rows collapsed to one `build_provider_row` call each, six `*_load_models` methods to one `load_models_into`, and a map of loader *method names* to a registry panels fill in as they build. `main.py` 5,520 → 5,378; 77 new tests, 20 of which construct a panel with no `GodAI` at all.
 - [x] `P1` `design` `@ai` **GUI overhaul — section renderer.** Shipped for Trace and now Bloodhound: `SectionCard`/`SectionView` in `ui/widgets.py`, tabbed text boxes replaced by cards with per-card copy, raw response collapsed behind a disclosure, and a separate streaming box so tokens still show live before there are sections to render. Remaining agents tracked below.
@@ -19,6 +27,7 @@ under **Detail** — this checklist is the summary view.
 - [x] `P3` `design` `@ai` **GUI overhaul — flat agent list.** The sidebar accordion was built for fifteen agents; there are six. Drop `CollapsibleSection` from the sidebar, keep it where panels still use it.
 - [x] `P1` `design` `@ai` **GUI overhaul — type and spacing scale.** Five sizes (four of which read as one) → three; six weights → two; documented in `ui/style.py` with the 15px section-title role reserved.
 - [x] `P1` `design` `@ai` **GUI overhaul — status rail figures.** `Meter`/`Bar` in `ui/widgets.py` drive system and budget; exact numbers moved to tooltips; budget bars fill with what is spent.
+- [x] `P1` `design` `@ai` **Sidebar rebalance — inspector vs. global setup.** The right rail was a flat stack (System, Routing, Cost, Budget, Actions, API Keys) with no particular order. Split by what changes with a request vs. what doesn't: the right rail now holds only live-request state, reordered to match the request lifecycle (Current Route → Cost → Budget → System, "Last run" folded into Cost), and API Keys/Actions moved to a new left-rail container (`left_utility_container`) alongside the agent list, since those are global setup, not per-request. Both rails share the same 220–270px width band now. `tests/test_ui_panels.py` covers the split (card order, that nothing dropped, and that Quick Actions/API Keys stayed reachable).
 - [x] `P1` `bug` `@ai` Key `_pending_requests` by run-id rather than agent name — done. `authorize_request`/`record_request`/`abandon_request`/`note_request_usage` all take an optional `request_id` (a `uuid4().hex` generated in `authorize_request`), with `_pending_request_key()` falling back to the agent name when no id is passed for backward compatibility. Verified: `tests/test_request_guard.py`'s `test_same_agent_runs_can_finish_out_of_order` starts two runs of the same agent and checks each resolves against its own context.
 - [x] `P2` `feature` `@ai` **Auto-route button, every agent.** Chat and all six specialist panels now have an "Auto-route" action next to their run controls that calls the router for a recommendation and applies it directly, instead of only showing a recommendation label to apply by hand.
 - [x] `P3` `design` `@ai` **Paid-route highlighting.** Any provider/model other than Ollama is flagged `paidSelection` and rendered amber (`ui/style.py`, `MenuComboBox.COST_ROLE`) so a cloud route is visible on the dropdown itself.
@@ -65,6 +74,11 @@ under **Detail** — this checklist is the summary view.
 
 ## v3 — later
 
+- [x] `P1` `feature` `docs` `@ai` **Learning Centre — complete curriculum.** Searchable in-app foundation, Quick Start, workspace tour, all shared controls and Settings, all seven agent courses, privacy/cost, troubleshooting, multi-agent workflows and advanced-tools guidance are shipped.
+- [x] `P2` `docs` `design` `@ai` **Learning Centre — current screenshots.** Eight current-interface images are captured from an isolated empty database with fictional/empty inputs and alt text. `scripts/capture_training_screenshots.py` makes the set reproducible after UI changes. Numbered graphical callouts remain optional polish.
+- [ ] `P2` `testing` `docs` `@ai` **Learning Centre — exercises and first-user validation.** Add beginner, intermediate and independent exercises per agent, then test Quick Start with people who have not used Sentinel before.
+- [ ] `P1` `infra` `security` `@ai` **v3 external-tool adapter framework.** Dependency detection, structured output, command previews, timeouts, cancellation, local audit records, privilege/scope gates and explicit cloud handoff consent.
+- [ ] `P2` `feature` `security` `@ai` **v3 staged specialist integrations.** Bloodhound metadata/rule matching and Tunnel diagnostics first; Trace public-source adapters next; then authorised Bug Spray assessment and passive Beacon analysis. Exclude denial-of-service, credential theft, stealth/persistence and uncontrolled exploitation.
 - [ ] `P2` `feature` `@ai` Streaming responses in the chat panel, instead of wait-then-dump
 - [ ] `P2` `feature` `@ai` Local model provider (Ollama) as a zero-cost fallback when the budget cap is hit
 - [ ] `P3` `infra` `@ai` One shared retry-with-backoff wrapper across providers, replacing per-client handling

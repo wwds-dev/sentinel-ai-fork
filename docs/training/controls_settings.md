@@ -1,0 +1,61 @@
+# Controls and settings
+
+**Goal:** understand Sentinel's shared controls and configuration. **Time:** 15 minutes.
+
+## Request controls
+
+| Control | Meaning |
+|---|---|
+| Provider | Where the model runs. Ollama is local; other choices are cloud services. |
+| Model | The specific model used by the selected provider. Availability depends on installation, key and provider account. |
+| Auto-route | Applies Sentinel's recommendation using task, privacy, availability and cost preferences. Review the result before running. |
+| Main action | Send, Investigate, Analyse, Ask Advisor or another agent-specific operation. |
+| Stop | Requests cancellation of the active worker. Partial results may remain. |
+| Paid marker | Amber identifies a route that may charge through a cloud API. It is a warning, not a price quote. |
+
+## Menus and guidance
+
+**Agent guide** documents the selected agent. **Tips** controls hover help.
+**Inspector** shows live operational information. The **•••** menu opens the
+Learning Centre, app documentation, model guide, Cost history, Run log and
+Settings.
+
+## Settings — General
+
+- **EUR/USD rate** converts provider USD pricing into displayed euro estimates.
+- **Default session budget** limits accumulated spend until the app/session is reset.
+- **Default daily budget** limits recorded spending for the day.
+
+Budgets are guardrails, not bank controls. Provider-side usage can differ from
+estimates, and cancelled requests may still incur a charge.
+
+## Settings — Agents
+
+Enable or disable registered agents and set an optional budget cap for each.
+A blank cap means no agent-specific limit; global session and daily limits
+still apply. Disabling an agent prevents authorised runs but does not erase its
+history or files.
+
+## Settings — Tools
+
+Enable or disable registered tools. Tools supply task-specific instructions,
+such as Writing or Coding inside Chat. The prompt preview helps identify the
+tool but is not an editor in this screen.
+
+## Settings — Pricing
+
+Pricing values are USD per one million input, cached-input and output tokens.
+Update them when provider prices change. Cached input can be cheaper when a
+provider reuses recent context. Incorrect values produce incorrect estimates,
+not changes to the provider's invoice.
+
+## Logs
+
+**Cost history** filters recorded requests and exports CSV. **Run log** shows
+agent, route, status, tokens, duration, cost and errors. Logs help explain what
+Sentinel did; they may contain sensitive task labels, so handle exports safely.
+
+## Completion check
+
+Explain the difference between a provider, model, tool, agent cap and global budget.
+

@@ -6,8 +6,8 @@
 
 ## What it does
 Two capabilities in one panel:
-1. **Live macOS diagnostics** — runs real subprocesses (the `airport` utility, `ping`, interface queries) and shows raw output.
-2. **Offensive tooling** — detects known USB Wi-Fi adapters and generates ready-to-run **Kali Linux** command sequences (aircrack-ng / hashcat) for authorised testing. An optional **AI Analysis** step feeds the raw scan output to an LLM for interpretation.
+1. **Live macOS diagnostics** — uses the Mac's built-in Wi-Fi for interface, nearby-network, signal and reachability checks. No external adapter is required.
+2. **Kali lab planning** — detects supported USB Wi-Fi adapters and generates reviewable **Kali Linux** command sequences for authorised testing. Actual monitor/injection work generally runs in Kali and requires a compatible external adapter, driver and USB passthrough when Kali is virtualised. Sentinel does not execute these sequences.
 
 ## Inputs (panel controls)
 | Control | Purpose |
@@ -18,6 +18,7 @@ Two capabilities in one panel:
 | Kali sub-form (hidden unless Kali mode) | Operation (`Handshake Capture` / `Deauth Attack` / `WPS Audit` / `PMKID Attack`), Adapter, BSSID, Channel, ESSID. |
 | AI interpretation | Optional collapsed section, off by default. Enable it to send subprocess output to the selected LLM. |
 | Detect Adapters | Scan USB for known adapters. |
+| Run Preflight | Read interfaces, default route and known USB adapters; assign suggested roles and show connection risks without changing anything. |
 | Run / Stop | Execute, or cancel while work is active. Results reveal Save and Clear controls. Use the shared Help button for docs. |
 
 ## Outputs
@@ -25,6 +26,7 @@ Tabs: **Raw Output** (subprocess text), **AI Analysis** (LLM interpretation), **
 
 ## How it works
 - `detect_usb_adapters()` parses `system_profiler SPUSBDataType -json` against `KNOWN_ADAPTERS` (VID/PID → chipset, monitor/inject support, Kali iface, driver notes).
+- `network_interface_status()` and `build_connection_preflight()` identify the routed internet/control interface and dedicated monitor adapter. They are read-only.
 - `build_kali_commands(operation, adapter, bssid, channel, essid)` returns a numbered, commented command block; refuses injection ops on adapters that can't inject.
 - Live modes run via `SubprocessWorker` (QThread). AI Analysis routes raw output through `ChatWorker` + `WiFiAgent.build_messages()`.
 
@@ -41,4 +43,4 @@ Tabs: **Raw Output** (subprocess text), **AI Analysis** (LLM interpretation), **
 - **Add a live mode**: add a Mode option and a subprocess command in `wifi_run()`.
 
 ## Requirements
-macOS `airport` binary (built-in path in `AIRPORT`). Kali commands assume a Kali box + compatible adapter (user's: TL-WN722N, AWUS036ACH, TL-WN725N V3). AI Analysis needs a provider key.
+macOS `airport` binary (built-in path in `AIRPORT`). Kali commands assume Kali plus a compatible external adapter (TL-WN722N, AWUS036ACH, or TL-WN725N V3). A single adapter in monitor mode cannot remain an ordinary managed Wi-Fi connection. Keep built-in Wi-Fi or Ethernet for internet/control and dedicate the USB adapter to Kali monitor mode. Passing USB through to a VM detaches it from macOS; success depends on the hypervisor, guest driver and chipset. AI Analysis needs a provider key.

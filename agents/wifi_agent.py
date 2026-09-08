@@ -1,3 +1,4 @@
+import re
 import subprocess
 
 KNOWN_ADAPTERS = {
@@ -94,6 +95,80 @@ def detect_usb_adapters() -> list[dict]:
         return found
     except Exception as e:
         return [{"error": str(e)}]
+
+
+def parse_hardware_ports(output: str, default_interface: str = "") -> list[dict]:
+    """Parse macOS networksetup output into display-safe interface records."""
+    records = []
+    current: dict[str, str | bool] = {}
+    for raw_line in output.splitlines() + [""]:
+        line = raw_line.strip()
+        if not line:
+            if current.get("device"):
+                device = str(current["device"])
+                current["default_route"] = device == default_interface
+                current["role"] = (
+                    "Internet / control" if device == default_interface
+                    else "Built-in diagnostics" if "wi-fi" in str(current.get("hardware_port", "")).lower()
+                    else "Available interface"
+                )
+                records.append(current)
+            current = {}
+        elif line.startswith("Hardware Port:"):
+            current["hardware_port"] = line.split(":", 1)[1].strip()
+        elif line.startswith("Device:"):
+            current["device"] = line.split(":", 1)[1].strip()
+    return records
+
+
+def network_interface_status() -> list[dict]:
+    """Read interface roles without changing mode, routes or connectivity."""
+    ports = subprocess.run(
+        ["networksetup", "-listallhardwareports"], capture_output=True, text=True, timeout=8
+    )
+    route = subprocess.run(
+        ["route", "-n", "get", "default"], capture_output=True, text=True, timeout=8
+    )
+    match = re.search(r"^\s*interface:\s*(\S+)", route.stdout, re.MULTILINE)
+    return parse_hardware_ports(ports.stdout, match.group(1) if match else "")
+
+
+def build_connection_preflight(interfaces: list[dict], adapters: list[dict]) -> dict:
+    """Assess the safe dual-interface arrangement; never modify the system."""
+    valid_adapters = [a for a in adapters if a and "error" not in a]
+    internet = [i for i in interfaces if i.get("default_route")]
+    lines = ["CONNECTION PREFLIGHT (read-only)", "Sentinel did not change any interface or mode.", ""]
+    if interfaces:
+        lines.append("Interfaces and planned roles:")
+        for item in interfaces:
+            lines.append(
+                f"• {item.get('device', '?')} — {item.get('hardware_port', 'Unknown')}: "
+                f"{item.get('role', 'Available interface')}"
+            )
+    else:
+        lines.append("• No macOS interface details were available.")
+    lines.append("")
+    if valid_adapters:
+        names = ", ".join(a.get("name", "Unknown USB adapter") for a in valid_adapters)
+        lines.append(f"USB monitor adapter detected: {names}")
+    else:
+        lines.append("USB monitor adapter: none of Sentinel's known models detected.")
+    if internet and valid_adapters:
+        level = "ready"
+        lines.append("Recommended arrangement is available: keep the routed interface for internet/control and pass the USB adapter to Kali for monitor mode.")
+    elif valid_adapters:
+        level = "warning"
+        lines.append("WARNING: No separate routed internet/control interface was detected. Monitor mode or VM passthrough could leave this machine without a network connection.")
+    else:
+        level = "info"
+        lines.append("Built-in Wi-Fi can still run Sentinel's macOS diagnostics. Kali monitor/injection work needs a supported external USB adapter.")
+    lines.extend([
+        "",
+        "A single adapter in monitor mode cannot also maintain an ordinary Wi-Fi connection.",
+        "In a Kali VM, attach the USB adapter to the guest; this detaches it from macOS. Driver and passthrough support depend on the adapter, hypervisor and Kali kernel.",
+        "Sentinel only prepares commands. Review them and make every mode/disconnection change yourself on an authorised network.",
+    ])
+    return {"level": level, "text": "\n".join(lines), "has_internet": bool(internet), "has_usb": bool(valid_adapters)}
 
 
 def _walk_usb(node, found: list):

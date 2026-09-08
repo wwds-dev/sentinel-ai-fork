@@ -73,16 +73,48 @@ Use a disposable test database and non-sensitive prompts. Do not send paid reque
 - [ ] The report includes lawful-use/privacy guidance and is logged under `osint_heavy`.
 - [ ] Stop cancels active work cleanly.
 
+3. Expand **Local File Discovery**, add a small test folder, and search by a
+   partial name, extension, size, and modified date.
+
+- [ ] Bloodhound searches only folders explicitly listed by the user.
+- [ ] Results show name, path, type, size, and modified time and can be sorted.
+- [ ] Cancel stops a large search without freezing the interface.
+- [ ] Inaccessible folders produce a clear warning while readable folders continue.
+- [ ] Reaching the safety limit asks the user to narrow the search.
+- [ ] Double-clicking a result reveals its containing folder and changes no files.
+
+4. Select **Remote SSH machine** and enter an owned test host already present in
+   `known_hosts`, an SSH-agent-backed user, and a small absolute remote folder.
+
+- [ ] Unknown or changed host keys are rejected instead of silently trusted.
+- [ ] The search uses SFTP and returns the same metadata columns and filters.
+- [ ] Authentication and offline errors are clear and do not expose credentials.
+- [ ] Open SSH Terminal hands the destination to the system SSH application.
+
 ## 5. Beacon (`wifi`)
 
 1. Select **Beacon** on a machine with no external Wi-Fi adapter attached.
-2. Run adapter detection and request diagnostic guidance for an owned test network.
+2. Run Connection Preflight and adapter detection, then request diagnostic guidance for an owned test network.
 
 - [ ] Adapter state is reported accurately and absence does not crash the panel.
 - [ ] Guidance separates local macOS diagnostics from Kali/aircrack-ng commands.
+- [ ] Preflight labels the default route as internet/control and performs no mode or connection changes.
+- [ ] With no separate routed interface, Kali planning visibly warns that monitor mode could remove internet access.
+- [ ] VM guidance explains USB passthrough detachment and guest-driver limitations.
 - [ ] Offensive commands include an explicit authorisation warning.
 - [ ] Generated commands identify placeholders and are not executed automatically.
 - [ ] The request is logged under `wifi`.
+
+### Portable USB acceptance
+
+1. Build to a writable test volume with `scripts/build_portable.sh`.
+2. Add fictional settings/history to `Sentinel Fork Data`, rebuild to the same destination, and launch again.
+
+- [ ] The app, marker, launcher and explicit data folder are present.
+- [ ] Existing data survives the upgrade and the source `.env` was not copied.
+- [ ] No portable run creates state in Application Support or the Lab checkout.
+- [ ] Read-only, unavailable and under-256-MiB volumes produce clear errors.
+- [ ] Quitting followed by Finder eject leaves the volume cleanly removable.
 
 ## 6. Bug Spray (`bug_bounty`)
 

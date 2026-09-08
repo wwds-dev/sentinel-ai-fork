@@ -86,6 +86,25 @@ These need nothing from the refactor and can land in any order.
 - **`chat` in Atelier** — decide whether a creative app wants its own general
   assistant, or none.
 
+## Sentinel v3 — guided capability expansion
+
+The v3 direction is a safe adapter layer around selected specialist tools,
+paired with an in-app Learning Centre. The adapter layer owns dependency
+checks, previews, authorised scope, privilege prompts, timeouts, cancellation,
+local logs and structured results. Agents remain the understandable front end.
+
+Suggested order:
+
+1. Finish the Learning Centre's six specialist courses and screenshot system.
+2. Land the shared external-tool adapter and audit format.
+3. Add Bloodhound metadata/rule matching and Tunnel diagnostics.
+4. Add Trace public-source integrations.
+5. Add authorised Bug Spray assessment and passive Beacon analysis.
+6. Teach reviewed multi-agent handoffs and Forge reporting.
+
+This direction deliberately excludes denial-of-service features, credential
+theft, stealth or persistence mechanisms, and uncontrolled exploitation.
+
 ## What this leaves Sentinel as
 
 After #1 and Atelier's split: `chat` · `osint` · `osint_heavy` · `wifi` ·

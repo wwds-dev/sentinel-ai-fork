@@ -16,13 +16,14 @@ every test here only reads widget state or calls one method on it.
 
 import os
 import sys
+from datetime import datetime
 from pathlib import Path
 
 import pytest
 from PySide6.QtCore import QObject, Signal, Qt
 from PySide6.QtGui import QTextCursor
 from PySide6.QtTest import QSignalSpy, QTest
-from PySide6.QtWidgets import QMessageBox
+from PySide6.QtWidgets import QAbstractItemView, QMessageBox
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -1825,6 +1826,48 @@ def hound(qapp, monkeypatch):
 
 class TestBloodhoundPanel:
 
+    def test_local_file_discovery_starts_collapsed_and_read_only(self, hound):
+        assert hound.file_discovery_body.isHidden() is True
+        assert hound.file_results.editTriggers() == QAbstractItemView.NoEditTriggers
+        assert hound.file_search_btn.text() == "Search Selected Folders"
+
+    def test_file_filters_convert_megabytes_and_extensions(self, hound):
+        hound.file_name_filter.setText("invoice")
+        hound.file_name_mode.setCurrentText("Exact")
+        hound.file_extension_filter.setText("PDF, docx")
+        hound.file_min_size.setText("1.5")
+        hound.file_max_size.setText("3")
+        filters = hound._file_filters()
+        assert filters.name == "invoice"
+        assert filters.exact_name is True
+        assert filters.extensions == (".pdf", ".docx")
+        assert filters.min_size == int(1.5 * 1024 * 1024)
+        assert filters.max_size == 3 * 1024 * 1024
+
+    def test_file_results_show_path_type_size_and_modified_date(self, hound):
+        from services.local_file_search import FileMatch, FileSearchReport
+
+        report = FileSearchReport(matches=[FileMatch(
+            name="evidence.pdf",
+            path="/tmp/evidence.pdf",
+            extension=".pdf",
+            size=2048,
+            modified=datetime(2026, 9, 7, 12, 30),
+        )])
+        hound._populate_file_results(report)
+        assert hound.file_results.item(0, 0).text() == "evidence.pdf"
+        assert hound.file_results.item(0, 1).text() == "/tmp/evidence.pdf"
+        assert hound.file_results.item(0, 2).text() == ".pdf"
+        assert hound.file_results.item(0, 3).text() == "2.0 KB"
+        assert hound.file_results.item(0, 4).text() == "2026-09-07 12:30"
+
+    def test_remote_mode_shows_ssh_fields_and_disables_local_folder_picker(self, hound):
+        hound.file_discovery_body.show()
+        hound.file_source_box.setCurrentText("Remote SSH machine")
+        assert hound.remote_file_widget.isHidden() is False
+        assert hound.file_folders.isEnabled() is False
+        assert hound.add_folder_btn.isEnabled() is False
+
     def test_it_builds_hidden_with_seven_tabs(self, hound):
         assert hound.isHidden() is True
         assert hound.tabs.count() == 7
@@ -2077,6 +2120,8 @@ class TestBeaconPanel:
     def test_it_builds_hidden_with_the_kali_form_collapsed(self, beacon):
         assert beacon.isHidden() is True
         assert beacon.kali_group.isHidden() is True
+        assert beacon.preflight_btn.text() == "Run Preflight"
+        assert beacon.preflight_box.objectName() == "BeaconPreflight"
 
     def test_switching_to_kali_reveals_the_form_and_disables_ai(self, beacon):
         beacon.mode_box.setCurrentText("Kali Command Builder")

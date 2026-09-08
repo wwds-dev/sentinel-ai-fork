@@ -10,6 +10,9 @@ import time
 
 from PySide6.QtCore import QThread, Signal
 
+from services.local_file_search import FileSearchFilters, FileSearchReport, search_files
+from services.remote_file_search import search_remote_files
+
 
 class DomainLookupWorker(QThread):
     """Run consented domain/IP public-source checks off the UI thread."""
@@ -219,3 +222,78 @@ class ModelPullWorker(QThread):
             self.finished_signal.emit(self._model)
         except Exception as e:
             self.error_signal.emit(str(e))
+
+
+class LocalFileSearchWorker(QThread):
+    """Search user-selected folders without blocking the interface."""
+
+    progress_signal = Signal(int, int)
+    finished_signal = Signal(object)
+    error_signal = Signal(str)
+
+    def __init__(self, roots: list[str], filters: FileSearchFilters):
+        super().__init__()
+        self._roots = roots
+        self._filters = filters
+        self._cancel_requested = False
+
+    def cancel(self) -> None:
+        self._cancel_requested = True
+
+    def run(self) -> None:
+        try:
+            report: FileSearchReport = search_files(
+                self._roots,
+                self._filters,
+                should_cancel=lambda: self._cancel_requested,
+                on_progress=lambda checked, found: self.progress_signal.emit(
+                    checked, found
+                ),
+            )
+            self.finished_signal.emit(report)
+        except Exception as exc:
+            self.error_signal.emit(str(exc))
+
+
+class RemoteFileSearchWorker(QThread):
+    """Search an authenticated SSH host through its read-only SFTP channel."""
+
+    progress_signal = Signal(int, int)
+    finished_signal = Signal(object)
+    error_signal = Signal(str)
+
+    def __init__(
+        self,
+        host: str,
+        username: str,
+        port: int,
+        roots: list[str],
+        filters: FileSearchFilters,
+    ):
+        super().__init__()
+        self._host = host
+        self._username = username
+        self._port = port
+        self._roots = roots
+        self._filters = filters
+        self._cancel_requested = False
+
+    def cancel(self) -> None:
+        self._cancel_requested = True
+
+    def run(self) -> None:
+        try:
+            report = search_remote_files(
+                self._host,
+                self._username,
+                self._port,
+                self._roots,
+                self._filters,
+                should_cancel=lambda: self._cancel_requested,
+                on_progress=lambda checked, found: self.progress_signal.emit(
+                    checked, found
+                ),
+            )
+            self.finished_signal.emit(report)
+        except Exception as exc:
+            self.error_signal.emit(str(exc))

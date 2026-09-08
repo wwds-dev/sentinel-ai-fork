@@ -28,3 +28,4 @@ dnspython          # DNS record resolution for domain_lookup provider
 PySide6             # desktop GUI
 google-genai         # Gemini provider
 psutil               # resource monitor
+paramiko>=3.4,<4      # authenticated read-only SFTP search for Bloodhound
