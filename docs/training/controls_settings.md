@@ -55,7 +55,20 @@ not changes to the provider's invoice.
 agent, route, status, tokens, duration, cost and errors. Logs help explain what
 Sentinel did; they may contain sensitive task labels, so handle exports safely.
 
+### Portable Emergency Reset
+
+When Sentinel is running from a supported portable build, the General tab also
+shows **Emergency Reset**. It is intentionally absent from development and
+ordinary installed mode. The reset requires typing `ERASE SENTINEL DATA`, then
+accepting a separate final warning. It stops running Sentinel tasks, deletes the
+complete `Sentinel Fork Data` contents—including `.env` API keys—and quits.
+
+It does not format the USB drive, delete neighboring files or remove exports
+saved elsewhere. It also cannot remove records held by macOS, networks or model
+providers. See [Portable USB mode](portable.md) before using it.
+
 ## Completion check
 
-Explain the difference between a provider, model, tool, agent cap and global budget.
-
+Explain the difference between a provider, model, tool, agent cap and global
+budget. In portable mode, also explain exactly what Emergency Reset does and
+which external records it cannot remove.

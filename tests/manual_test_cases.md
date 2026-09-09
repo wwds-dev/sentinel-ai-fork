@@ -115,6 +115,9 @@ Use a disposable test database and non-sensitive prompts. Do not send paid reque
 - [ ] No portable run creates state in Application Support or the Lab checkout.
 - [ ] Read-only, unavailable and under-256-MiB volumes produce clear errors.
 - [ ] Quitting followed by Finder eject leaves the volume cleanly removable.
+- [ ] Emergency Reset is hidden in normal/dev mode and visible only in portable mode.
+- [ ] A wrong confirmation phrase or second-stage cancellation changes nothing.
+- [ ] A confirmed reset removes the portable database, histories, logs, settings and `.env`, preserves unrelated USB files, quits, and does not recreate window preferences.
 
 ## 6. Bug Spray (`bug_bounty`)
 

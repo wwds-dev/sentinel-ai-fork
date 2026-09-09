@@ -75,7 +75,7 @@ def build_learning_center(app) -> QDialog:
     title = QLabel("Learning Centre")
     title.setObjectName("AgentTitle")
     outer.addWidget(title)
-    outer.addWidget(QLabel("Short, practical lessons for using Sentinel safely and effectively."))
+    outer.addWidget(QLabel("Detailed, practical training for using Sentinel safely and effectively."))
 
     search_row = QHBoxLayout()
     search_box = QLineEdit()

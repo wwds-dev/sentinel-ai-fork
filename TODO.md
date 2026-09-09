@@ -18,6 +18,7 @@ under **Detail** — this checklist is the summary view.
 - [x] Detect unavailable, read-only and low-space portable volumes with clear errors.
 - [x] Add Beacon's read-only interface/adapter role preflight and dual-interface guidance.
 - [x] Document storage formats, architecture, Gatekeeper, VM passthrough, safe eject and backups.
+- [x] Add a portable-only, double-confirmed Emergency Reset scoped to Sentinel-owned data, including API keys.
 
 - [x] `P1` `design` `@ai` **Refactor Phase 4** — all six specialist verticals now live in `ui/panels/` behind the shared `AgentPanel` boundary. The separate run-id hardening remains tracked below. See `docs/refactor_plan.md`.
 - [x] `P1` `design` `@ai` **Refactor Phase 3** — `AgentHost` (`ui/host.py`) and the `AgentPanel` base (`ui/panels/base.py`), with the design decision settled: composition, not mixins. Six panels' hand-built provider/model rows collapsed to one `build_provider_row` call each, six `*_load_models` methods to one `load_models_into`, and a map of loader *method names* to a registry panels fill in as they build. `main.py` 5,520 → 5,378; 77 new tests, 20 of which construct a panel with no `GodAI` at all.

@@ -24,6 +24,12 @@ To update, run the same build command against the same destination. It replaces 
 
 Quit Sentinel and wait for scans, model requests and saves to finish. Then eject the volume in Finder before unplugging it. Unsafe removal can corrupt SQLite history or settings.
 
+## Emergency Reset
+
+**Settings → General → Emergency Reset** is a last-resort privacy reset available only in portable mode. It requires typing `ERASE SENTINEL DATA` and approving a second warning. It erases Sentinel's portable chats, history, database, logs, settings, reports stored in the data folder and `.env` API keys, then quits. It does not format the drive, touch unrelated files, or delete reports you deliberately exported elsewhere.
+
+This is not an amnesic or forensic-erasure feature. Flash media can retain remapped blocks, and macOS, networks and model providers may keep their own records. Use encrypted APFS from the beginning when strong data-at-rest protection matters.
+
 ## Moving between Macs
 
 A native build matches the CPU architecture on which it was made unless it was explicitly built universal. Intel builds may need Rosetta on Apple silicon. A second Mac may apply Gatekeeper quarantine: use Finder's **Open** context menu and Privacy & Security only for a build you trust. Never clear quarantine on an unknown app. USB storage may launch and save more slowly than an internal disk.

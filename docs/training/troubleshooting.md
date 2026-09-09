@@ -15,6 +15,8 @@
 | Unknown SSH host key | The machine is not trusted in `known_hosts` | Verify the fingerprint independently before adding it with normal SSH tools |
 | Stop appears ineffective | A provider/process may already be finishing | Wait briefly and check Run log; cancellation cannot recall data already sent |
 | Portable volume unavailable/read-only/low-space | The USB drive was ejected, mounted without write access, or has under 256 MiB free | Stop, reconnect or repair the volume, free space, then restart; Sentinel will not redirect portable data elsewhere |
+| Emergency Reset is missing | Sentinel is running from the Lab checkout or a normal installed build | The reset is intentionally shown only in a marked portable distribution |
+| Emergency Reset was cancelled | The exact phrase or second confirmation was not accepted | Nothing was erased; repeat only after backing up anything you need |
 
 ## Preserve evidence
 
@@ -28,3 +30,8 @@ process cannot load changed Python code.
 When asking for help, provide the visible error, reproduction steps, selected
 agent/provider/model, whether the task works locally, and the relevant Run log
 entry. Remove API keys, passwords and private target information first.
+
+Emergency Reset cannot recall requests already sent to a provider or delete
+provider, DNS, router, macOS, crash, swap or security logs. Contact the relevant
+service administrator when those records require handling under an applicable
+retention or deletion policy.

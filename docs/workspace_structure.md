@@ -153,3 +153,16 @@ Every one of these has already bitten once in this workspace:
   an agent means moving its row, not just the seed entry.
 - Lab Hub's `launcher.py` matches installed bundles by display name, so a
   renamed bundle needs its `ExternalApp.name` updated in the same commit.
+## Portable runtime boundary
+
+The canonical editable source remains `lab/active/sentinel_fork`. A portable
+release is a generated PyInstaller distribution, not another source workspace.
+When a `.sentinel-portable` marker is present beside the app, all writable
+Sentinel state resolves to the sibling `Sentinel Fork Data` folder. The normal
+Application Support directory and Lab checkout are not used for portable
+settings, database/history, chats, logs or `.env` keys.
+
+The portable-only Emergency Reset is constrained to that validated data folder,
+requires two confirmations and then quits. It does not format the volume or
+attempt to remove operating-system, network or provider records. See
+[`portable_mode.md`](portable_mode.md) for the operational procedure.

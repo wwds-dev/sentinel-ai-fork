@@ -45,6 +45,15 @@ Ideas not yet committed to. Status: `IDEA` · `CONSIDERING` · `PLANNED` · `DON
 | Learning Centre foundation — searchable Quick Start, Chat, agent workflows and advanced-tools lessons | Sep 2026 |
 | Exhaustive Learning Centre — workspace/Settings reference, seven agent courses, privacy, troubleshooting, expanded workflows and eight current screenshots | Sep 2026 |
 
+## Portable privacy boundaries
+
+- Keep **Emergency Reset** limited to the validated `Sentinel Fork Data`
+  directory. Do not expand it into whole-drive formatting or macOS log removal.
+- Consider encrypted APFS provisioning and a guided backup/restore verifier for
+  stronger data-at-rest protection without making trace-free claims.
+- A future status page could list which Sentinel-owned categories will be
+  removed before confirmation and verify afterward that the data folder is empty.
+
 ## Rejected
 
 | Suggestion | Why |

@@ -117,3 +117,12 @@ Steps 1–3 are safe today and independent. Steps 4–7 want a clear run — the
 one continuous piece of work, and stopping halfway leaves `main.py` in a state
 where half the panels are modules and half are not. Steps 8–11 are mechanical
 once 4–7 are done.
+
+## Portable privacy controls delivered
+
+The supported macOS portable distribution now isolates all application state on
+the removable volume and includes a double-confirmed Emergency Reset. The reset
+is intentionally scoped to Sentinel-owned data and does not promise amnesic or
+forensic deletion. Future portable work should focus on encrypted-volume
+onboarding, backup verification and architecture-specific release clarity—not
+operating-system anti-forensics.

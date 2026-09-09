@@ -1,7 +1,9 @@
 # Sentinel Learning Centre
 
-The Learning Centre contains short, task-based lessons for people using the
-application, rather than developer reference material. Open it from Sentinel's
+The Learning Centre contains detailed, task-based training for people using the
+application, rather than developer reference material. It covers every agent,
+shared controls, settings, privacy/cost decisions, portable operation,
+troubleshooting and combined-agent workflows. Open it from Sentinel's
 **More (•••) → Learning Centre** menu.
 
 ![Learning Centre lesson browser](docs/training/images/learning-centre.png)

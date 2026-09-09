@@ -4305,6 +4305,7 @@ if __name__ == "__main__":
     instance_server.newConnection.connect(_raise_existing_window)
 
     app.aboutToQuit.connect(
-        lambda: settings.setValue(WINDOW_SETTINGS_KEY, window.saveGeometry())
+        lambda: None if getattr(window, "_portable_reset_committed", False)
+        else settings.setValue(WINDOW_SETTINGS_KEY, window.saveGeometry())
     )
     app.exec()

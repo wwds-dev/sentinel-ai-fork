@@ -82,7 +82,11 @@ the developer reference in `docs/agents/`.
 For a removable, self-contained macOS copy, see
 [`docs/portable_mode.md`](docs/portable_mode.md). Portable mode keeps settings,
 history, logs and API-key storage on the removable volume and never silently
-mixes them with the Lab checkout or Application Support.
+mixes them with the Lab checkout or Application Support. Its portable-only
+**Settings → General → Emergency Reset** can erase Sentinel-owned data and API
+keys after two confirmations. It is a privacy reset, not a Tails-style amnesic
+session or forensic wipe: macOS, network equipment and providers may retain
+separate records, and files deliberately exported elsewhere are not removed.
 
 Bloodhound's **File Discovery** searches only locations you deliberately enter.
 It supports folders on this Mac and owned macOS/Linux machines reachable by

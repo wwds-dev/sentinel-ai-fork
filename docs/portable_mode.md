@@ -24,3 +24,9 @@ The folder contains `Sentinel Fork.app`, `.sentinel-portable`, `Start Sentinel F
 Start with `Start Sentinel Fork.command`, or open the app directly while it remains beside the marker. The app validates that the volume exists, is writable and has enough free space. Failure is explicit; it never silently falls back to the Mac's normal data folder.
 
 Quit Sentinel, wait for all activity to stop, and use Finder's **Eject** before removing the drive. Removing it while running can corrupt SQLite history or settings. Back up the entire `Sentinel Fork Data` folder regularly, especially before upgrades. Treat its `.env`, chat history and logs as sensitive; use encrypted APFS storage when appropriate.
+
+## Emergency Reset
+
+In portable mode, open **Settings → General → Emergency Reset**. The control requires the exact phrase `ERASE SENTINEL DATA` and a second confirmation. It stops active Sentinel work, permanently deletes the contents of `Sentinel Fork Data`—including chats, history, settings, logs, reports stored there, database and `.env` API keys—and quits without writing window preferences back. Files you deliberately exported elsewhere are outside this boundary and are not deleted.
+
+The reset is narrowly guarded: it works only beside a valid portable marker and never formats the USB drive or deletes files outside Sentinel's data folder. Flash storage may remap blocks, so ordinary file deletion is not a reliable forensic secure erase. macOS metadata, crash/system logs, swap, routers, DNS services and AI providers may retain separate records. For disposal-level assurance, use an encrypted APFS volume from the start and erase its encryption key or reformat the volume with Disk Utility after independently backing up any unrelated files.

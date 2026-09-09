@@ -6,10 +6,11 @@ parent and to read the handful of members it needs — and shows the dialog. The
 bodies are moved verbatim; only the receiver was renamed from `self` to `app`.
 """
 
+from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import (
-    QCheckBox, QComboBox, QDialog, QFileDialog, QGridLayout, QHBoxLayout,
-    QLabel, QLineEdit, QMessageBox, QPushButton, QTabWidget, QTextBrowser,
-    QVBoxLayout, QWidget,
+    QApplication, QCheckBox, QComboBox, QDialog, QFileDialog, QGridLayout,
+    QHBoxLayout, QInputDialog, QLabel, QLineEdit, QMessageBox, QPushButton,
+    QTabWidget, QTextBrowser, QVBoxLayout, QWidget,
 )
 
 from services.anthropic_client import AnthropicClientWrapper
@@ -19,6 +20,7 @@ from services.gemini_client import GeminiClientWrapper
 from services.kimi_client import KimiClientWrapper
 from services.openai_client import OpenAIClientWrapper
 from services.registry import Registry
+from services.runtime_paths import PortableRuntimeError, is_portable
 from services.validator import Validator
 from ui.style import polish_combo_box
 from ui.widgets import MenuComboBox
@@ -310,7 +312,28 @@ def show_settings(app):
     daily_input = QLineEdit(get_setting("daily_budget_eur", str(app.daily_budget_eur)))
     gl.addWidget(daily_input, 2, 1)
 
-    gl.setRowStretch(3, 1)
+    reset_heading = QLabel("Portable emergency reset")
+    reset_heading.setStyleSheet("font-weight: 600; color: #ff6b6b;")
+    reset_description = QLabel(
+        "Permanently erase Sentinel's portable chats, history, logs, settings, "
+        "locally stored reports and API keys. This does not erase macOS, network or provider records."
+    )
+    reset_description.setWordWrap(True)
+    emergency_reset_btn = QPushButton("Emergency Reset…")
+    emergency_reset_btn.setObjectName("EmergencyPortableReset")
+    emergency_reset_btn.setToolTip(
+        "Portable only: double-confirm deletion of Sentinel-owned data and API keys; "
+        "does not format the drive or erase external records."
+    )
+    emergency_reset_btn.setStyleSheet("color: #ff6b6b; border-color: #7a3030;")
+    reset_heading.setVisible(is_portable())
+    reset_description.setVisible(is_portable())
+    emergency_reset_btn.setVisible(is_portable())
+    gl.addWidget(reset_heading, 3, 0, 1, 2)
+    gl.addWidget(reset_description, 4, 0, 1, 2)
+    gl.addWidget(emergency_reset_btn, 5, 0, 1, 2)
+
+    gl.setRowStretch(6, 1)
     tabs.addTab(general_tab, "General")
 
     # ── Tab 2: Agents ─────────────────────────────────────────────
@@ -414,6 +437,49 @@ def show_settings(app):
     pl.addLayout(pricing_grid)
     pl.addStretch()
     tabs.addTab(pricing_tab, "Pricing")
+
+    def emergency_reset():
+        phrase, accepted = QInputDialog.getText(
+            dialog,
+            "Emergency Reset",
+            "This permanently deletes all Sentinel data and API keys stored in its portable data folder.\n"
+            "It cannot remove traces retained by macOS, networks, or AI providers.\n\n"
+            "Type ERASE SENTINEL DATA to continue:",
+        )
+        if not accepted or phrase != "ERASE SENTINEL DATA":
+            return
+        answer = QMessageBox.question(
+            dialog,
+            "Final confirmation",
+            "Erase the complete Sentinel Fork Data folder contents and quit now?\n\n"
+            "This cannot be undone.",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if answer != QMessageBox.Yes:
+            return
+        try:
+            if getattr(app, "chat_worker", None) is not None and app.chat_worker.isRunning():
+                app.stop_chat_worker()
+            for panel in getattr(app, "panels", {}).values():
+                if panel.is_running():
+                    panel.stop()
+            from services.portable_reset import erase_portable_user_data
+            erase_portable_user_data()
+        except (OSError, PortableRuntimeError) as exc:
+            QMessageBox.critical(dialog, "Reset refused", str(exc))
+            return
+        app._portable_reset_committed = True
+        QMessageBox.information(
+            dialog,
+            "Portable data erased",
+            "Sentinel's portable data and API keys were erased. The application will quit.\n\n"
+            "This does not guarantee that macOS, network equipment, or providers retained no records.",
+        )
+        dialog.accept()
+        QTimer.singleShot(0, QApplication.instance().quit)
+
+    emergency_reset_btn.clicked.connect(emergency_reset)
 
     # ── Save handler ──────────────────────────────────────────────
     def save_all():
