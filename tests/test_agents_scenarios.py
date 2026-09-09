@@ -28,9 +28,9 @@ from agents.manager_agent      import ManagerAgent
 from agents.chat_agent         import ChatAgent
 from agents.osint_agent        import OSINTAgent
 from agents.osint_heavy_agent  import OsintHeavyAgent
-from agents.bug_bounty_agent   import BugBountyAgent
+from bug_spray.sentinel_chat_agent import BugBountyAgent
 from agents.wifi_agent         import WiFiAgent
-from agents.vpn_agent          import VpnAgent, build_configs as build_vpn_configs
+from vpn_agent.sentinel_chat_agent import VpnAgent, build_configs as build_vpn_configs
 
 
 # ─────────────────────────────────────────────────────────────────────────────

@@ -85,17 +85,22 @@ def test_sidebar_derives_from_the_catalog():
 
 
 def test_every_roster_entry_has_an_agent_implementation():
-    expected_modules = {
-        "chat": "chat_agent.py",
-        "manager": "manager_agent.py",
-        "osint": "osint_agent.py",
-        "osint_heavy": "osint_heavy_agent.py",
-        "wifi": "wifi_agent.py",
-        "bug_bounty": "bug_bounty_agent.py",
-        "vpn": "vpn_agent.py",
+    # Chat/Trace/Bloodhound/Beacon/Forge each live under agents/<name>/ as
+    # their own repo (package-ified as __init__.py). Bug Spray and Tunnel
+    # already have their own standalone-app repo (bug_spray/, vpn_agent/),
+    # so their in-app chat-agent class lives there instead of under agents/
+    # — no separate agents/bug_bounty_agent.py or agents/vpn_agent.py.
+    expected_paths = {
+        "chat": ROOT / "agents" / "chat_agent" / "__init__.py",
+        "manager": ROOT / "agents" / "manager_agent" / "__init__.py",
+        "osint": ROOT / "agents" / "osint_agent" / "__init__.py",
+        "osint_heavy": ROOT / "agents" / "osint_heavy_agent" / "__init__.py",
+        "wifi": ROOT / "agents" / "wifi_agent" / "__init__.py",
+        "bug_bounty": ROOT / "bug_spray" / "sentinel_chat_agent.py",
+        "vpn": ROOT / "vpn_agent" / "sentinel_chat_agent.py",
     }
 
-    missing = [name for name, module in expected_modules.items() if not (ROOT / "agents" / module).is_file()]
+    missing = [name for name, path in expected_paths.items() if not path.is_file()]
     assert not missing, f"roster entries without implementations: {missing}"
 
 

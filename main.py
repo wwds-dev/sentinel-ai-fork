@@ -65,10 +65,10 @@ from services.run_logger import RunLogger
 
 from agents.chat_agent import ChatAgent
 from agents.osint_agent import OSINTAgent
-from agents.bug_bounty_agent import BugBountyAgent
+from bug_spray.sentinel_chat_agent import BugBountyAgent
 from agents.wifi_agent import WiFiAgent
 from agents.osint_heavy_agent import OsintHeavyAgent
-from agents.vpn_agent import VpnAgent
+from vpn_agent.sentinel_chat_agent import VpnAgent
 from services.agent_factory import AgentFactory
 from services.agent_catalog import BUILTIN_AGENTS, BUILTIN_AGENT_ORDER
 from services.provider_catalog import CLOUD_PROVIDERS

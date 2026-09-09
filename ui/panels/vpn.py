@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (
     QMessageBox, QPushButton, QTabWidget, QTextBrowser, QVBoxLayout,
 )
 
-from agents.vpn_agent import build_configs
+from vpn_agent.sentinel_chat_agent import build_configs
 from ui.panels.base import AgentPanel
 from ui.widgets import MenuComboBox
 
