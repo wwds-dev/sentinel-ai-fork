@@ -1,0 +1,3 @@
+[submodule "vpn_agent"]
+	path = vpn_agent
+	url = https://github.com/Netrunner3000/vpn_agent.git
