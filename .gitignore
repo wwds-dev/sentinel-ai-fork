@@ -39,7 +39,7 @@ data/logs/*.jsonl
 data/usage_log.json
 
 # Nested companion project (its own git repo, moved in under the sentinel family)
-/bug_spray/
+/agents/bug_spray/
 
 
 # Nested companion repos: agent classes split into their own repos

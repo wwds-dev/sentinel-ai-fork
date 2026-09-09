@@ -96,8 +96,8 @@ def test_every_roster_entry_has_an_agent_implementation():
         "osint": ROOT / "agents" / "osint_agent" / "__init__.py",
         "osint_heavy": ROOT / "agents" / "osint_heavy_agent" / "__init__.py",
         "wifi": ROOT / "agents" / "wifi_agent" / "__init__.py",
-        "bug_bounty": ROOT / "bug_spray" / "sentinel_chat_agent.py",
-        "vpn": ROOT / "vpn_agent" / "sentinel_chat_agent.py",
+        "bug_bounty": ROOT / "agents" / "bug_spray" / "sentinel_chat_agent.py",
+        "vpn": ROOT / "agents" / "vpn_agent" / "sentinel_chat_agent.py",
     }
 
     missing = [name for name, path in expected_paths.items() if not path.is_file()]
