@@ -41,3 +41,11 @@ data/usage_log.json
 # Nested companion project (its own git repo, moved in under the sentinel family)
 /bug_spray/
 
+
+# Nested companion repos: agent classes split into their own repos
+# (gitignored here until each has a GitHub remote and becomes a proper submodule)
+/agents/chat_agent/
+/agents/osint_agent/
+/agents/osint_heavy_agent/
+/agents/wifi_agent/
+/agents/manager_agent/
