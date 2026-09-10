@@ -4213,10 +4213,8 @@ class GodAI(QWidget):
                 self.chat_worker.cancel()
                 self.chat_worker.terminate()
                 self.chat_worker.wait(1000)
-            for panel in self.panels.values():
-                shutdown = getattr(panel, "shutdown", None)
-                if callable(shutdown):
-                    shutdown()
+            from ui.dialogs import shutdown_panels
+            shutdown_panels(self)
         except Exception as exc:
             self._note_failure("shutdown: stop background work", exc)
         event.accept()
@@ -4226,14 +4224,46 @@ WINDOW_SETTINGS_KEY = "mainWindow/geometry"
 
 
 def _activate_native_app():
-    """Ask macOS to foreground the Python GUI process, when AppKit is present."""
+    """Foreground the Python GUI process itself.
+
+    Qt's raise_()/activateWindow() only order windows within this app. macOS
+    will not let a background process take focus from whatever is frontmost
+    without -[NSApplication activateIgnoringOtherApps:], so handing off from a
+    second launch raised the window *behind* whatever the user was looking at,
+    which reads as the launch having done nothing.
+
+    Reached through the Objective-C runtime with ctypes rather than pyobjc:
+    this is the project's only AppKit call and pyobjc is not a dependency. The
+    previous version imported AppKit inside a try/except, so with that package
+    absent — it was never in requirements.txt — this silently did nothing.
+    """
     if sys.platform != "darwin":
         return
     try:
-        from AppKit import NSApplication
-        NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
-    except (ImportError, AttributeError):
-        # Qt's activation request below is the portable fallback.
+        import ctypes
+        import ctypes.util
+
+        objc = ctypes.cdll.LoadLibrary(ctypes.util.find_library("objc"))
+        objc.objc_getClass.restype = ctypes.c_void_p
+        objc.objc_getClass.argtypes = [ctypes.c_char_p]
+        objc.sel_registerName.restype = ctypes.c_void_p
+        objc.sel_registerName.argtypes = [ctypes.c_char_p]
+
+        # objc_msgSend needs one prototype per signature, so cast per call.
+        send_id = ctypes.cast(
+            objc.objc_msgSend,
+            ctypes.CFUNCTYPE(ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p))
+        send_bool = ctypes.cast(
+            objc.objc_msgSend,
+            ctypes.CFUNCTYPE(None, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_bool))
+
+        ns_app = send_id(objc.objc_getClass(b"NSApplication"),
+                         objc.sel_registerName(b"sharedApplication"))
+        if ns_app:
+            send_bool(ns_app,
+                      objc.sel_registerName(b"activateIgnoringOtherApps:"), True)
+    except Exception:
+        # Qt's activation request stays as the portable fallback.
         pass
 
 
