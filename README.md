@@ -11,7 +11,7 @@ Sentinel's built-in roster is intentionally limited to seven agents:
 | Bloodhound | `osint_heavy` | Deep OSINT dossiers plus read-only file discovery in user-selected folders |
 | Beacon | `wifi` | Wi-Fi diagnostics and commands for networks the operator is authorised to test |
 | Bug Spray | `bug_bounty` | In-scope vulnerability analysis and submission-ready bug bounty reports |
-| Tunnel | `vpn` | Self-hosted WireGuard/OpenVPN design, configuration, and troubleshooting |
+| Tunnel | `vpn` | Profile-aware VPN checks, safe action previews, and self-hosted WireGuard/OpenVPN design |
 | Forge | `manager` | Creates and reviews specifications for new agents and tools |
 
 Writing and Coding are Chat tools, not standalone agents. Creative publishing, audiobook, health, investing, and sports-betting workflows are not part of the current Sentinel product.
@@ -99,6 +99,19 @@ links, and stop at safety limits. They cannot change files. **Open SSH Terminal*
 hands an explicitly entered host to the operating system's normal SSH client
 for interactive administration outside Sentinel.
 
+Tunnel's **Connection Check** is local and read-only by default. It reports
+installed WireGuard/OpenVPN tools, detected tunnels, recent WireGuard handshake
+and transfer totals when the `wg` status tool permits them, the current default
+route, and configured DNS servers. A selected companion VPN Agent profile can
+be compared with the snapshot to explain interface, endpoint, port, handshake,
+and routing findings. Endpoint and port are checked for usable profile values,
+but the live peer endpoint is deliberately not queried or verified. Connect,
+Disconnect, and Restart are available as safe
+previews only: Sentinel shows effects, checks, and proposed commands but cannot
+execute them. It never requests private key material. Public-IP and latency
+checks are optional, name the external destinations, and require a separate
+confirmation; none of these paths uses an AI model or incurs model cost.
+
 ### Safety boundaries
 
 Beacon, Bug Spray, and Tunnel are intended for systems, networks, and programs the operator owns or is explicitly authorised to assess. Trace and Bloodhound should be used lawfully and with respect for privacy. Bloodhound never scans a local or remote machine automatically: the operator must enter each host and folder and already possess valid SSH access. Generated commands and findings require human review before execution or submission.
@@ -110,7 +123,14 @@ Forge writes an agent scaffold and inactive registry entries after review. Senti
 The main runtime is organised around:
 
 - `main.py` — application window, Chat workflow, navigation, shared request controls
-- `agents/` — built-in agent prompts and message builders
+- `agents/` — the Chat, Trace, Bloodhound, Beacon, and Forge package repos
+  (`agents/chat_agent/`, `agents/osint_agent/`, `agents/osint_heavy_agent/`,
+  `agents/wifi_agent/`, and `agents/manager_agent/`)
+- `bug_spray/` — Bug Spray's standalone companion repo and the in-app
+  `bug_bounty` message builder
+- `agents/vpn_agent/` — Tunnel's standalone companion repo and the in-app `vpn`
+  message/configuration implementation; Sentinel imports it rather than keeping
+  a second copy
 - `ui/panels/` — specialist panels for Trace, Bloodhound, Beacon, Bug Spray, Tunnel, and Forge
 - `services/agent_catalog.py` — canonical built-in roster and metadata
 - `services/registry.py` and `services/validator.py` — permissions and tool/provider checks; `registry.py` also has a `projects` table with full CRUD (`docs/projects_roadmap.md`, Stage 2) that nothing in the UI reads or writes yet
@@ -152,6 +172,9 @@ pytest
 ```
 
 The current manual acceptance checklist is in `tests/manual_test_cases.md`. It covers all seven built-in agents and verifies that Writing and Coding remain Chat tools rather than sidebar agents.
+Tunnel's local-only and external-opt-in boundaries are covered by
+`tests/test_vpn_diagnostics.py` and the Tunnel panel tests in
+`tests/test_ui_panels.py`.
 
 ## Further documentation
 

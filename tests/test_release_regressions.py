@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 import sqlite3
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
 class _TextValue:
@@ -132,3 +136,9 @@ def test_existing_usage_cloud_flags_are_repaired_without_touching_unknown_backen
         "qwen": 1,
         "legacy-provider": 0,
     }
+
+
+def test_frozen_bundle_includes_tunnel_profile_seed():
+    spec = (ROOT / "SentinelAI.spec").read_text(encoding="utf-8")
+
+    assert "agents/vpn_agent/config/vpn_profiles.json" in spec

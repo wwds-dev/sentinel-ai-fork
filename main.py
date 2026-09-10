@@ -4213,6 +4213,10 @@ class GodAI(QWidget):
                 self.chat_worker.cancel()
                 self.chat_worker.terminate()
                 self.chat_worker.wait(1000)
+            for panel in self.panels.values():
+                shutdown = getattr(panel, "shutdown", None)
+                if callable(shutdown):
+                    shutdown()
         except Exception as exc:
             self._note_failure("shutdown: stop background work", exc)
         event.accept()

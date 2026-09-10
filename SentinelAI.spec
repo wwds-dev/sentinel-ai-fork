@@ -31,6 +31,7 @@ for pkg in ("google.genai", "tiktoken", "anthropic", "openai", "certifi"):
 # Read-only resources seeded into the writable user-data dir on first launch.
 datas += [
     ("config", "config"),
+    ("agents/vpn_agent/config/vpn_profiles.json", "agents/vpn_agent/config"),
     ("README.md", "."),
     (".env.example", "."),
     ("docs/agents", "docs/agents"),   # per-agent capability sheets (Docs button)

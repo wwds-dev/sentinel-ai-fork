@@ -462,7 +462,10 @@ def show_settings(app):
             if getattr(app, "chat_worker", None) is not None and app.chat_worker.isRunning():
                 app.stop_chat_worker()
             for panel in getattr(app, "panels", {}).values():
-                if panel.is_running():
+                shutdown = getattr(panel, "shutdown", None)
+                if callable(shutdown):
+                    shutdown()
+                elif panel.is_running():
                     panel.stop()
             from services.portable_reset import erase_portable_user_data
             erase_portable_user_data()

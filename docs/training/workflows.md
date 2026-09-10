@@ -40,10 +40,12 @@ personal data.
 
 1. **Beacon** checks the current interface, reachability and visible Wi-Fi
    conditions on an authorised network.
-2. **Tunnel** designs the correct remote-VPS or home-LAN topology and renders a
-   configuration locally.
-3. Apply changes outside Sentinel with a recovery path.
-4. Return non-secret diagnostic output to **Chat** for a plain-language checklist.
+2. **Tunnel** runs its local-only Connection Check, then designs the correct
+   remote-VPS or home-LAN topology and renders a configuration locally.
+3. Review the route, DNS and handshake observations separately; they prove
+   different things.
+4. Apply changes outside Sentinel with a recovery path.
+5. Return only a non-secret diagnostic card to **Chat** for a plain-language checklist.
 
 Never place VPN private keys in Chat or an AI-backed diagnostic request.
 

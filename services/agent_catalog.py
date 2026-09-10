@@ -64,9 +64,9 @@ BUILTIN_AGENTS = {
     "vpn": {
         "label": "Tunnel",
         "icon": "⇄",
-        "subtitle": "Self-hosted VPN design & kill switch",
-        "tooltip": "Self-hosted VPN design, deployment, and troubleshooting.",
-        "description": "Self-hosted VPN design, configuration, and troubleshooting.",
+        "subtitle": "Profile-aware VPN checks & design",
+        "tooltip": "Profile-aware connection checks, safe action previews, and self-hosted VPN design.",
+        "description": "Profile-aware VPN status, safe action previews, self-hosted design, configuration, and troubleshooting.",
         "allowed_tools": None,
         "budget_limit_eur": None,
     },

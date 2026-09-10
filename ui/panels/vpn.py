@@ -2,33 +2,42 @@
 
 Fifth vertical moved out of `main.py` (phase 4, `docs/refactor_plan.md`).
 
-The panel has two halves that must not be confused: **Ask Advisor** is a paid
-request and goes through the guard; **Build Config** renders WireGuard files
-from the form with `build_configs` and never touches a provider.
+The panel keeps four paths visibly separate: **Connection Check** is read-only,
+**Action Preview** cannot execute, **Ask Advisor** is a paid request that goes
+through the guard, and **Build Config** renders WireGuard files locally.
 """
 
 from __future__ import annotations
 
 from PySide6.QtGui import QTextCursor
 from PySide6.QtWidgets import (
-    QComboBox, QGridLayout, QGroupBox, QHBoxLayout, QLabel, QLineEdit,
+    QCheckBox, QComboBox, QGridLayout, QGroupBox, QHBoxLayout, QLabel, QLineEdit,
     QMessageBox, QPushButton, QTabWidget, QTextBrowser, QVBoxLayout,
 )
 
 from agents.vpn_agent.sentinel_chat_agent import build_configs
+from services.vpn_diagnostics import (
+    VpnDiagnosticsReport,
+    build_vpn_action_preview,
+    load_vpn_profile_catalog,
+)
 from ui.panels.base import AgentPanel
-from ui.widgets import MenuComboBox
+from ui.widgets import MenuComboBox, SectionView
+from ui.workers import VpnDiagnosticsWorker
 
 
 class VpnPanel(AgentPanel):
     """Advise on, and generate, a self-hosted VPN."""
 
     agent_key = "vpn"
+    diagnostics_worker_class = VpnDiagnosticsWorker
 
     def __init__(self, host, parent=None):
         super().__init__(host, parent)
         self.setObjectName("VPNPanel")
         self._last_response = ""
+        self._last_diagnostics_report = None
+        self._diagnostics_worker = None
         self._build()
         self.polish_workspace()
         self.hide()
@@ -82,6 +91,69 @@ class VpnPanel(AgentPanel):
 
         layout.addWidget(setup_group)
 
+        # ── Read-only connection check ─────────────────────────────────
+        diagnostics_group = QGroupBox("Connection Check")
+        diagnostics_group.setObjectName("VPNDiagnosticsGroup")
+        diagnostics_layout = QVBoxLayout(diagnostics_group)
+
+        diagnostics_note = QLabel(
+            "Inspect installed VPN tools, active tunnels, the default route, and "
+            "configured DNS. This check never connects, disconnects, or changes settings."
+        )
+        diagnostics_note.setWordWrap(True)
+        diagnostics_layout.addWidget(diagnostics_note)
+
+        profile_row = QHBoxLayout()
+        profile_row.addWidget(QLabel("Compare profile:"))
+        self.profile_box = MenuComboBox()
+        self.profile_box.setMinimumWidth(180)
+        self.profile_box.setToolTip(
+            "Compare the local connection snapshot with a VPN Agent profile. "
+            "Choosing a profile here does not activate or modify it."
+        )
+        profile_row.addWidget(self.profile_box, 1)
+        self.profile_refresh_btn = QPushButton("Reload")
+        self.profile_refresh_btn.setToolTip("Reload the VPN Agent profile list from disk.")
+        self.profile_refresh_btn.clicked.connect(self.reload_profiles)
+        profile_row.addWidget(self.profile_refresh_btn)
+        diagnostics_layout.addLayout(profile_row)
+
+        diagnostics_row = QHBoxLayout()
+        self.external_checks_box = QCheckBox("Include public IP and latency")
+        self.external_checks_box.setToolTip(
+            "Optional: contacts api.ipify.org and tests connectivity to 1.1.1.1. "
+            "Tunnel asks again before starting."
+        )
+        diagnostics_row.addWidget(self.external_checks_box)
+        diagnostics_row.addStretch()
+
+        self.diagnostics_stop_btn = QPushButton("Stop Check")
+        self.diagnostics_stop_btn.setObjectName("DangerAction")
+        self.diagnostics_stop_btn.setVisible(False)
+        self.diagnostics_stop_btn.setEnabled(False)
+        self.diagnostics_stop_btn.clicked.connect(self.stop_diagnostics)
+        diagnostics_row.addWidget(self.diagnostics_stop_btn)
+
+        self.diagnostics_btn = QPushButton("Check Connection")
+        self.diagnostics_btn.clicked.connect(self.run_diagnostics)
+        diagnostics_row.addWidget(self.diagnostics_btn)
+        diagnostics_layout.addLayout(diagnostics_row)
+        layout.addWidget(diagnostics_group)
+
+        preview_group = QGroupBox("Safe Action Preview")
+        preview_layout = QHBoxLayout(preview_group)
+        preview_note = QLabel("Shows what would happen; never runs the command.")
+        preview_note.setWordWrap(True)
+        preview_layout.addWidget(preview_note, 1)
+        self.action_box = MenuComboBox()
+        self.action_box.addItems(["Connect", "Disconnect", "Restart"])
+        self.action_box.setToolTip("Choose the change you want to inspect.")
+        preview_layout.addWidget(self.action_box)
+        self.preview_action_btn = QPushButton("Preview")
+        self.preview_action_btn.clicked.connect(self.preview_action)
+        preview_layout.addWidget(self.preview_action_btn)
+        layout.addWidget(preview_group)
+
         # Configuration generation is deterministic and offline; keep it apart
         # from the model-backed troubleshooting advisor below.
         builder_row = QHBoxLayout()
@@ -129,6 +201,9 @@ class VpnPanel(AgentPanel):
         # ── Results tabs ─────────────────────────────────────────────────
         self.tabs = QTabWidget()
 
+        self.diagnostics_view = SectionView()
+        self.tabs.addTab(self.diagnostics_view, "Diagnostics")
+
         self.advisor_box = QTextBrowser()
         self.advisor_box.setOpenExternalLinks(False)
         self.tabs.addTab(self.advisor_box, "Advisor")
@@ -136,6 +211,9 @@ class VpnPanel(AgentPanel):
         self.config_box = QTextBrowser()
         self.config_box.setOpenExternalLinks(False)
         self.tabs.addTab(self.config_box, "Config && Commands")
+
+        self.action_view = SectionView()
+        self.tabs.addTab(self.action_view, "Action Preview")
 
         self.advisor_box.setPlaceholderText(
             "Troubleshooting advice will appear after you select Ask Advisor."
@@ -157,6 +235,8 @@ class VpnPanel(AgentPanel):
         bottom_row.addWidget(self.clear_btn)
         layout.addLayout(bottom_row)
 
+        self.reload_profiles()
+
     # ── The advisor (paid) ──────────────────────────────────────────────
     def context_prefix(self) -> str:
         """The deployment setup, phrased as context the advisor reasons from."""
@@ -173,6 +253,11 @@ class VpnPanel(AgentPanel):
     def run(self) -> None:
         question = self.question_input.text().strip()
 
+        if self._diagnostics_running():
+            QMessageBox.information(
+                self, "Connection Check Running", "Stop the connection check before asking the advisor."
+            )
+            return
         if not question:
             QMessageBox.warning(self, "Missing Input", "Enter a question for the advisor.")
             return
@@ -219,9 +304,145 @@ class VpnPanel(AgentPanel):
         self.set_busy(self.run_btn, self.stop_btn, False)
 
     def stop(self) -> None:
-        self.stop_worker()
-        self.status_label.setText("Stopped.")
+        stopped = False
+        if super().is_running():
+            self.worker.cancel()
+            stopped = True
+        if self._diagnostics_running():
+            self.stop_diagnostics()
+            stopped = True
+        if stopped:
+            self.status_label.setText("Stopped.")
         self.set_busy(self.run_btn, self.stop_btn, False)
+
+    # ── Read-only diagnostics ───────────────────────────────────────────
+    def _diagnostics_running(self) -> bool:
+        return (
+            self._diagnostics_worker is not None
+            and self._diagnostics_worker.isRunning()
+        )
+
+    def is_running(self) -> bool:
+        return super().is_running() or self._diagnostics_running()
+
+    def reload_profiles(self) -> None:
+        """Refresh the profile picker without changing VPN Agent state."""
+        catalog = load_vpn_profile_catalog()
+        previous = self.profile_box.currentText()
+        self.profile_box.clear()
+        self.profile_box.addItem("No profile comparison", None)
+        for profile in catalog.profiles:
+            name = str(profile.get("name") or "Unnamed")
+            self.profile_box.addItem(name, dict(profile))
+
+        preferred = previous if self.profile_box.findText(previous) >= 0 else catalog.active_profile
+        if preferred and self.profile_box.findText(preferred) >= 0:
+            self.profile_box.setCurrentText(preferred)
+        if catalog.error:
+            self.profile_box.setToolTip(
+                f"VPN profiles could not be loaded from {catalog.source}: {catalog.error}"
+            )
+
+    def selected_profile(self) -> dict | None:
+        profile = self.profile_box.currentData()
+        return dict(profile) if isinstance(profile, dict) else None
+
+    def run_diagnostics(self) -> None:
+        if super().is_running():
+            QMessageBox.information(
+                self, "Advisor Running", "Stop the advisor before checking the connection."
+            )
+            return
+        if self._diagnostics_running():
+            return
+
+        include_external = self.external_checks_box.isChecked()
+        if include_external:
+            answer = QMessageBox.question(
+                self,
+                "Allow External Connectivity Checks?",
+                "This optional check contacts api.ipify.org to read your public IP "
+                "and tests latency to 1.1.1.1. No AI provider is used. Continue?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if answer != QMessageBox.Yes:
+                return
+
+        self.diagnostics_view.clear()
+        self.tabs.setCurrentWidget(self.diagnostics_view)
+        self.status_label.setText(
+            "Checking locally and externally…" if include_external else "Checking locally…"
+        )
+        self.diagnostics_btn.setVisible(False)
+        self.diagnostics_btn.setEnabled(False)
+        self.diagnostics_stop_btn.setVisible(True)
+        self.diagnostics_stop_btn.setEnabled(True)
+
+        worker = self.diagnostics_worker_class(
+            include_external=include_external,
+            selected_profile=self.selected_profile(),
+        )
+        self._diagnostics_worker = worker
+        worker.finished_signal.connect(self._on_diagnostics_finished)
+        worker.error_signal.connect(self._on_diagnostics_error)
+        worker.start()
+
+    def _finish_diagnostics_ui(self) -> None:
+        self.diagnostics_btn.setVisible(True)
+        self.diagnostics_btn.setEnabled(True)
+        self.diagnostics_stop_btn.setVisible(False)
+        self.diagnostics_stop_btn.setEnabled(False)
+
+    def _on_diagnostics_finished(self, report: VpnDiagnosticsReport) -> None:
+        self._finish_diagnostics_ui()
+        self._last_diagnostics_report = report
+        self.diagnostics_view.show_sections(report.sections(), raw=report.as_text())
+        self.tabs.setCurrentWidget(self.diagnostics_view)
+        self.status_label.setText("Connection check stopped." if report.cancelled else "Connection check complete.")
+
+    def _on_diagnostics_error(self, error: str) -> None:
+        self._finish_diagnostics_ui()
+        self.diagnostics_view.show_sections(
+            [("Connection check could not finish", error, False)], raw=error
+        )
+        self.tabs.setCurrentWidget(self.diagnostics_view)
+        self.status_label.setText("Connection check error.")
+
+    def stop_diagnostics(self) -> None:
+        if self._diagnostics_running():
+            self._diagnostics_worker.cancel()
+            self.status_label.setText("Stopping connection check…")
+            self.diagnostics_stop_btn.setEnabled(False)
+
+    def shutdown(self, timeout_ms: int = 2000) -> None:
+        """Cancel and join Tunnel workers before their widgets are destroyed."""
+        workers = [self.worker, self._diagnostics_worker]
+        for worker in workers:
+            if worker is not None and worker.isRunning():
+                worker.cancel()
+        for worker in workers:
+            if worker is None or not worker.isRunning() or not hasattr(worker, "wait"):
+                continue
+            if not worker.wait(timeout_ms) and hasattr(worker, "terminate"):
+                # Every diagnostic command is bounded, but application shutdown
+                # must not destroy a live QThread if an OS call ignores cancellation.
+                worker.terminate()
+                worker.wait(500)
+
+    # ── Deliberately non-executing action preview ─────────────────────
+    def preview_action(self) -> None:
+        preview = build_vpn_action_preview(
+            self.action_box.currentText(),
+            self.selected_profile(),
+            self._last_diagnostics_report,
+        )
+        self.action_view.show_sections(preview.sections(), raw=preview.as_text())
+        self.tabs.setCurrentWidget(self.action_view)
+        self.status_label.setText(
+            "Action preview ready — nothing executed."
+            if preview.valid else "Action preview unavailable."
+        )
 
     # ── The config builder (offline) ────────────────────────────────────
     def build_config(self) -> None:
@@ -239,8 +460,11 @@ class VpnPanel(AgentPanel):
         self.status_label.setText("Config rendered.")
 
     def clear(self) -> None:
+        self.diagnostics_view.clear()
         self.advisor_box.clear()
         self.config_box.clear()
+        self.action_view.clear()
         self.question_input.clear()
         self.status_label.setText("Idle")
         self._last_response = ""
+        self._last_diagnostics_report = None

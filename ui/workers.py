@@ -12,6 +12,7 @@ from PySide6.QtCore import QThread, Signal
 
 from services.local_file_search import FileSearchFilters, FileSearchReport, search_files
 from services.remote_file_search import search_remote_files
+from services.vpn_diagnostics import collect_vpn_diagnostics
 
 
 class DomainLookupWorker(QThread):
@@ -293,6 +294,33 @@ class RemoteFileSearchWorker(QThread):
                 on_progress=lambda checked, found: self.progress_signal.emit(
                     checked, found
                 ),
+            )
+            self.finished_signal.emit(report)
+        except Exception as exc:
+            self.error_signal.emit(str(exc))
+
+
+class VpnDiagnosticsWorker(QThread):
+    """Collect Tunnel's read-only local snapshot off the interface thread."""
+
+    finished_signal = Signal(object)
+    error_signal = Signal(str)
+
+    def __init__(self, include_external: bool = False, selected_profile=None):
+        super().__init__()
+        self._include_external = include_external
+        self._selected_profile = dict(selected_profile) if selected_profile else None
+        self._cancel_requested = False
+
+    def cancel(self) -> None:
+        self._cancel_requested = True
+
+    def run(self) -> None:
+        try:
+            report = collect_vpn_diagnostics(
+                include_external=self._include_external,
+                selected_profile=self._selected_profile,
+                should_cancel=lambda: self._cancel_requested,
             )
             self.finished_signal.emit(report)
         except Exception as exc:

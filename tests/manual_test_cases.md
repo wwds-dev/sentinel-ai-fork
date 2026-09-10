@@ -133,8 +133,44 @@ Use a disposable test database and non-sensitive prompts. Do not send paid reque
 
 ## 7. Tunnel (`vpn`)
 
-1. Select **Tunnel** and test both remote VPS and owned-LAN/native modes with placeholder values.
-2. Generate a plan or configuration without deploying it.
+1. Select **Tunnel** with no VPN active and run **Check Connection** while
+   **Include public IP and latency** is off.
+
+- [ ] The result has structured cards for summary, installed tools, detected tunnels, local route/DNS, and interpretation.
+- [ ] No provider permission or model-cost confirmation appears.
+- [ ] The check does not request an administrator password or change network state.
+- [ ] Missing `wg`, `wg-quick`, OpenVPN, or route access is reported without crashing.
+- [ ] Stop requests cancellation and leaves the panel usable.
+
+2. Select a saved profile and run the local check again.
+
+- [ ] The active VPN Agent profile is preselected when it exists; choosing it in Sentinel does not modify the profile file.
+- [ ] The comparison card shows the profile name, interface, endpoint and port without displaying keys.
+- [ ] Matching interfaces, handshakes and routes are described as ready; mismatches produce plain-language next steps.
+- [ ] Endpoint/port findings state that saved values are present but the live peer endpoint is not verified.
+- [ ] A different default interface is described as potentially normal for a split tunnel rather than an automatic failure.
+- [ ] Closing Sentinel or committing Portable Emergency Reset during a check cancels and joins the Tunnel worker before the app exits or erases data.
+
+3. Enable **Include public IP and latency**, decline its confirmation, and run again.
+
+- [ ] The confirmation names `api.ipify.org` and `1.1.1.1`.
+- [ ] Declining starts no worker and contacts no external destination.
+
+4. On a VPN you own, accept the optional check and compare results before and
+   after connecting.
+
+- [ ] WireGuard status shows peer count, handshake age, and aggregate transfer totals without displaying key material.
+- [ ] Results clearly state that an active interface or configured DNS list is not proof that all traffic is protected.
+
+5. Preview Connect, Disconnect and Restart for the selected profile.
+
+- [ ] Each preview names the selected profile and interface, expected effects, checks and proposed commands.
+- [ ] Previewing requests no provider authorization, admin password, subprocess, or network-state change.
+- [ ] A missing or unsafe interface produces no command.
+- [ ] Disconnect warns that ordinary traffic may resume when no kill switch is active.
+
+6. Test both remote VPS and owned-LAN/native modes with placeholder values.
+7. Generate a plan or configuration without deploying it.
 
 - [ ] Remote and native modes explain their different traffic and exit-IP behaviour.
 - [ ] Native mode defaults to appropriate split-tunnel guidance unless explicitly changed.

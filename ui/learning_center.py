@@ -40,7 +40,7 @@ LEARNING_TOPICS = (
     LearningTopic("Bloodhound", "bloodhound.md", "Dossiers, images, and file discovery."),
     LearningTopic("Beacon", "beacon.md", "Authorised Wi-Fi diagnostics and lab workflows."),
     LearningTopic("Bug Spray", "bug_spray.md", "Authorised website assessment and reporting."),
-    LearningTopic("Tunnel", "tunnel.md", "Personal VPN design and troubleshooting."),
+    LearningTopic("Tunnel", "tunnel.md", "Profile-aware VPN checks, safe previews, design, and troubleshooting."),
     LearningTopic("Forge", "forge.md", "Create and review agent scaffolds."),
     LearningTopic("Agent workflows", "workflows.md", "Combine agents to complete larger goals."),
     LearningTopic("Privacy & cost", "privacy_cost.md", "Choose routes and protect sensitive data."),

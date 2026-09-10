@@ -22,7 +22,7 @@ Ideas not yet committed to. Status: `IDEA` · `CONSIDERING` · `PLANNED` · `DON
 | 11 | Add intermediate and independent exercises to the existing practical course for every agent | docs/feature | M | PLANNED |
 | 12 | Add optional numbered graphical callouts to the reproducible, current screenshot set | docs/design | M | CONSIDERING |
 | 14 | Build a common adapter layer for selected Kali tools: availability checks, previews, scope gates, cancellation, logs and structured results | infra/security | XL | PLANNED |
-| 15 | Bloodhound adapters for ExifTool/YARA and Tunnel adapters for WireGuard/OpenVPN diagnostics | feature/security | L | CONSIDERING |
+| 15 | Bloodhound adapters for ExifTool/YARA and private-key-free WireGuard/OpenVPN config parsing beyond Tunnel's delivered profile comparison | feature/security | L | CONSIDERING |
 | 16 | Trace public-source adapters, followed by authorised Bug Spray and passive Beacon integrations | feature/security | XL | CONSIDERING |
 
 ## Done
@@ -44,6 +44,8 @@ Ideas not yet committed to. Status: `IDEA` · `CONSIDERING` · `PLANNED` · `DON
 | Chat composer overhaul — Enter-to-send/Shift+Enter, taller input, per-message timestamps, "Conversation" relabeling | Sep 2026 |
 | Learning Centre foundation — searchable Quick Start, Chat, agent workflows and advanced-tools lessons | Sep 2026 |
 | Exhaustive Learning Centre — workspace/Settings reference, seven agent courses, privacy, troubleshooting, expanded workflows and eight current screenshots | Sep 2026 |
+| Tunnel Connection Check — read-only tools/tunnels/route/DNS cards with separately confirmed public-IP and latency checks; 16 focused tests | Sep 2026 |
+| Tunnel profile comparison and safe action previews — secret-field filtering, profile/protocol-aware findings and remediation with no execution path; 26 focused tests | Sep 2026 |
 
 ## Portable privacy boundaries
 

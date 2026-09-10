@@ -922,6 +922,43 @@ class FakeWorker(QObject):
         self.cancelled = True
 
 
+class FakeVpnDiagnosticsWorker(QObject):
+    """A Tunnel diagnostics worker with all system and network reads removed."""
+
+    finished_signal = Signal(object)
+    error_signal = Signal(str)
+    instances = []
+
+    def __init__(self, include_external=False, selected_profile=None):
+        super().__init__()
+        self.include_external = include_external
+        self.selected_profile = selected_profile
+        self.started = False
+        self.cancelled = False
+        self.running = True
+        self.waited = False
+        self.terminated = False
+        FakeVpnDiagnosticsWorker.instances.append(self)
+
+    def start(self):
+        self.started = True
+
+    def isRunning(self):
+        return self.running
+
+    def cancel(self):
+        self.cancelled = True
+
+    def wait(self, _timeout_ms):
+        self.waited = True
+        self.running = False
+        return True
+
+    def terminate(self):
+        self.terminated = True
+        self.running = False
+
+
 class DemoPanel(AgentPanel):
     agent_key = "demo"
     default_provider = "deepseek"
@@ -2015,12 +2052,28 @@ class FakeVpnAgent:
 
 @pytest.fixture
 def tunnel(qapp, monkeypatch):
+    import ui.panels.vpn as vpn_mod
     from ui.panels.vpn import VpnPanel
+    from services.vpn_diagnostics import VpnProfileCatalog
     from PySide6.QtWidgets import QMessageBox
 
     monkeypatch.setattr(QMessageBox, "warning", staticmethod(lambda *a, **k: None))
     monkeypatch.setattr(VpnPanel, "worker_class", FakeWorker)
+    monkeypatch.setattr(VpnPanel, "diagnostics_worker_class", FakeVpnDiagnosticsWorker)
+    monkeypatch.setattr(
+        vpn_mod,
+        "load_vpn_profile_catalog",
+        lambda: VpnProfileCatalog(
+            profiles=({
+                "name": "Travel VPS", "endpoint": "vpn.example.test",
+                "port": 51820, "interface": "wg3",
+            },),
+            active_profile="Travel VPS",
+            source="test profiles",
+        ),
+    )
     FakeWorker.instances.clear()
+    FakeVpnDiagnosticsWorker.instances.clear()
 
     host = FakeHost()
     host.agent_instances["vpn"] = FakeVpnAgent()
@@ -2031,9 +2084,13 @@ def tunnel(qapp, monkeypatch):
 
 class TestTunnelPanel:
 
-    def test_it_builds_hidden_with_two_result_tabs(self, tunnel):
+    def test_it_builds_hidden_with_four_result_tabs(self, tunnel):
         assert tunnel.isHidden() is True
-        assert tunnel.tabs.count() == 2
+        assert tunnel.tabs.count() == 4
+        assert tunnel.tabs.tabText(0) == "Diagnostics"
+        assert tunnel.tabs.tabText(3) == "Action Preview"
+        assert tunnel.external_checks_box.isChecked() is False
+        assert tunnel.profile_box.currentText() == "Travel VPS"
 
     def test_an_empty_question_never_reaches_the_guard(self, tunnel):
         tunnel.question_input.clear()
@@ -2075,8 +2132,78 @@ class TestTunnelPanel:
         tunnel.build_config()
         text = tunnel.config_box.toPlainText()
         assert "203.0.113.9" in text
-        assert tunnel.tabs.currentIndex() == 1
+        assert tunnel.tabs.currentWidget() is tunnel.config_box
         assert [c for c in tunnel.host.calls if c[0] == "authorize"] == []
+
+    def test_local_connection_check_uses_no_model_or_external_permission(self, tunnel):
+        tunnel.run_diagnostics()
+        worker = FakeVpnDiagnosticsWorker.instances[-1]
+        assert worker.started is True
+        assert worker.include_external is False
+        assert worker.selected_profile["name"] == "Travel VPS"
+        assert [c for c in tunnel.host.calls if c[0] == "authorize"] == []
+
+    def test_action_preview_is_offline_and_never_executes(self, tunnel):
+        tunnel.action_box.setCurrentText("Disconnect")
+        tunnel.preview_action()
+
+        assert tunnel.tabs.currentWidget() is tunnel.action_view
+        assert "sudo wg-quick down wg3" in tunnel.action_view._raw
+        assert "nothing executed" in tunnel.status_label.text().lower()
+        assert [c for c in tunnel.host.calls if c[0] == "authorize"] == []
+
+    def test_connection_result_is_rendered_as_sections(self, tunnel):
+        from services.vpn_diagnostics import VpnDiagnosticsReport
+
+        tunnel.run_diagnostics()
+        worker = FakeVpnDiagnosticsWorker.instances[-1]
+        worker.running = False
+        worker.finished_signal.emit(VpnDiagnosticsReport(
+            checked_at="2026-09-09 12:00:00 IST",
+            tools={"wg status tool": "installed"},
+            active_tunnels=["utun7"],
+            tunnel_stats={
+                "utun7": {
+                    "peers": 1,
+                    "latest_handshake": 0,
+                    "received": 2048,
+                    "sent": 4096,
+                }
+            },
+            route={"interface": "utun7", "gateway": "10.0.0.1", "error": ""},
+            dns_servers=["10.0.0.53"],
+            openvpn_running=False,
+        ))
+        assert tunnel.tabs.currentWidget() is tunnel.diagnostics_view
+        assert "utun7" in tunnel.diagnostics_view._raw
+        assert tunnel.status_label.text() == "Connection check complete."
+
+    def test_external_checks_need_a_second_confirmation(self, tunnel, monkeypatch):
+        from PySide6.QtWidgets import QMessageBox
+
+        tunnel.external_checks_box.setChecked(True)
+        monkeypatch.setattr(
+            QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.No)
+        )
+        tunnel.run_diagnostics()
+        assert FakeVpnDiagnosticsWorker.instances == []
+
+    def test_stop_cancels_a_connection_check(self, tunnel):
+        tunnel.run_diagnostics()
+        worker = FakeVpnDiagnosticsWorker.instances[-1]
+        tunnel.stop()
+        assert worker.cancelled is True
+        assert tunnel.status_label.text() == "Stopped."
+
+    def test_shutdown_joins_a_connection_check(self, tunnel):
+        tunnel.run_diagnostics()
+        worker = FakeVpnDiagnosticsWorker.instances[-1]
+
+        tunnel.shutdown()
+
+        assert worker.cancelled is True
+        assert worker.waited is True
+        assert worker.terminated is False
 
     def test_stop_restores_the_controls(self, tunnel):
         tunnel.run()

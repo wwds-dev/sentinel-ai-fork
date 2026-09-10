@@ -97,7 +97,9 @@ Suggested order:
 
 1. Finish the Learning Centre's six specialist courses and screenshot system.
 2. Land the shared external-tool adapter and audit format.
-3. Add Bloodhound metadata/rule matching and Tunnel diagnostics.
+3. Add Bloodhound metadata/rule matching. Tunnel's read-only selected-profile
+   comparison and safe action previews are delivered; deeper local config
+   parsing and gated execution remain future work.
 4. Add Trace public-source integrations.
 5. Add authorised Bug Spray assessment and passive Beacon analysis.
 6. Teach reviewed multi-agent handoffs and Forge reporting.

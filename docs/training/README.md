@@ -44,3 +44,10 @@ alternative text, and record the interface version they show.
 The eight-screen screenshot set is reproducible with
 `scripts/capture_training_screenshots.py`. Re-capture it after a material UI
 change instead of keeping misleading historical images.
+Pass one or more screen keys (for example,
+`scripts/capture_training_screenshots.py vpn`) to refresh only the affected
+lesson and avoid unrelated image churn.
+
+The focused Tunnel capture writes both `tunnel.png` and the deterministic
+`tunnel-action-preview.png`; it uses the sample profile catalog, never live VPN
+profile names.
