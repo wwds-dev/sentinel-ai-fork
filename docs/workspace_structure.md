@@ -25,7 +25,7 @@ Already exists. Gains its own tabs for:
 
 - **Oracle** — long-term investment monitoring
 - **Playmaker** — the betting tool, never a standalone project. NFL shipped
-  (`sonar/sports.py`, odds arithmetic + 33 tests); the sport registry is the
+  (`sonar/playmaker/`, odds arithmetic + 33 tests); the sport registry is the
   extension point for the rest
 
 ### Create & Publish — creative and publishing

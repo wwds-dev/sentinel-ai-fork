@@ -26,6 +26,16 @@ from ui.style import polish_combo_box
 from ui.widgets import MenuComboBox
 
 
+def shutdown_panels(app) -> None:
+    """Stop panel work and join workers that provide a shutdown contract."""
+    for panel in getattr(app, "panels", {}).values():
+        shutdown = getattr(panel, "shutdown", None)
+        if callable(shutdown):
+            shutdown()
+        elif panel.is_running():
+            panel.stop()
+
+
 def show_cost_history(app):
     entries = app.usage_tracker.load_log()
 
@@ -461,12 +471,7 @@ def show_settings(app):
         try:
             if getattr(app, "chat_worker", None) is not None and app.chat_worker.isRunning():
                 app.stop_chat_worker()
-            for panel in getattr(app, "panels", {}).values():
-                shutdown = getattr(panel, "shutdown", None)
-                if callable(shutdown):
-                    shutdown()
-                elif panel.is_running():
-                    panel.stop()
+            shutdown_panels(app)
             from services.portable_reset import erase_portable_user_data
             erase_portable_user_data()
         except (OSError, PortableRuntimeError) as exc:

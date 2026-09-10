@@ -48,6 +48,8 @@ Tabs: **Diagnostics** (structured connection and profile-comparison cards), **Ad
 - `load_vpn_profile_catalog()` reads the live companion profile file when present and otherwise reads its bundled seed. It never seeds, edits, or changes the active profile, and only carries the non-secret name, endpoint, port, interface, notes, and protocol fields into Sentinel.
 - `collect_vpn_diagnostics(include_external=False, selected_profile=...)` coordinates the companion app's status helpers in a background worker. It compares the selected interface and handshake/route expectations with observed state, while checking that the saved endpoint and port are usable profile values. It does not query or verify the live peer endpoint. The default path performs only local reads. External IP/latency calls cannot run unless the user selects the option and confirms it.
 - `build_vpn_action_preview(action, profile, report)` validates the interface and returns sections and copyable commands. It has no subprocess or privileged execution path.
+- `VpnPanel.shutdown()` cancels an active diagnostics worker and waits for it to finish before the panel is destroyed. Normal app close and Portable Emergency Reset both use the same shutdown path, preventing an in-flight check from outliving the UI.
+- Packaged builds include the non-secret starter profile catalog. If no live companion profile file exists, Tunnel can still open with the same safe baseline instead of depending on source-tree files.
 
 ## Under the hood — files & functions
 | Location | Role |
@@ -57,13 +59,25 @@ Tabs: **Diagnostics** (structured connection and profile-comparison cards), **Ad
 | `services/vpn_diagnostics.py` | Sentinel-specific read-only orchestration, selected-profile comparison, recommendations, and non-executing action previews. |
 | `ui/workers.py: VpnDiagnosticsWorker` | Keeps system and optional network checks off the UI thread and supports cancellation. |
 | `ui/panels/vpn.py` | Workflow chooser, panel, results, and request lifecycle. |
+| `ui/dialogs.py: shutdown_panels()` and `main.py: closeEvent()` | Share orderly worker shutdown between Portable Emergency Reset and normal app close. |
 | `services/database.py: _seed_default_agents()` | Registers the `vpn` agent row. |
+| `SentinelAI.spec` | Bundles the starter profile catalog into frozen releases. |
 
 ## Extend it
 - **Real keys**: swap the placeholder key material for locally-generated X25519 keys (the standalone VPN Agent does this via `cryptography`); keep them out of chat logs.
 - **More topologies**: add site-to-site or multi-peer variants to `build_configs()`.
 - **Deeper diagnostics**: parse a selected local WireGuard/OpenVPN configuration to compare intended routes and DNS values without reading private keys.
 - **Controlled execution**: if execution is added later, keep preview, explicit confirmation, administrator authorization, rollback and post-change verification as separate gates.
+
+## Verification state
+
+- 26 focused Tunnel tests cover diagnostics, profile filtering/comparison,
+  action-preview validation, cancellation and shutdown behavior.
+- The Learning Centre screenshots are generated from isolated sample state; the
+  capture script never reads or displays the user's real profile names.
+- Source and packaged-app paths are both covered: the companion remains the
+  implementation owner, while Sentinel carries only the bundled non-secret
+  starter catalog needed when no live companion state exists.
 
 ## Diagnostic boundaries
 

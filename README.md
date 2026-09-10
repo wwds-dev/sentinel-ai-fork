@@ -106,11 +106,14 @@ route, and configured DNS servers. A selected companion VPN Agent profile can
 be compared with the snapshot to explain interface, endpoint, port, handshake,
 and routing findings. Endpoint and port are checked for usable profile values,
 but the live peer endpoint is deliberately not queried or verified. Connect,
-Disconnect, and Restart are available as safe
-previews only: Sentinel shows effects, checks, and proposed commands but cannot
-execute them. It never requests private key material. Public-IP and latency
+Disconnect, and Restart are available as safe previews only: Sentinel shows
+effects, checks, and proposed commands but cannot execute them. It never
+requests private key material. Public-IP and latency
 checks are optional, name the external destinations, and require a separate
 confirmation; none of these paths uses an AI model or incurs model cost.
+Normal app close and Portable Emergency Reset cancel and finish an active check
+before the UI is torn down. Packaged builds include a non-secret starter profile
+catalog so Tunnel does not depend on source-tree files.
 
 ### Safety boundaries
 

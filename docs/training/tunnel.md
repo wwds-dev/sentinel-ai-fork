@@ -23,10 +23,10 @@ Tunnel then reports:
 - peer count, most recent WireGuard handshake, and transfer totals when the
   local `wg` status tool allows those reads;
 - the current default network interface and gateway;
-- the DNS servers configured on this Mac.
+- the DNS servers configured on this Mac;
 - whether the selected profile's interface is active, whether it has a recent
-  handshake, whether its saved endpoint and port look usable, and whether the default
-  route matches the interface.
+  handshake, whether its saved endpoint and port look usable, and whether the
+  default route matches the interface.
 
 The default check is entirely local and read-only. It does not ask for an admin
 password, connect or disconnect a tunnel, alter a route, touch the firewall, or
@@ -67,11 +67,11 @@ save a selection, or expose key material. Select **No profile comparison** when
 you only want a machine-wide snapshot.
 
 Only non-secret profile fields enter Sentinel's report; key-like and unknown
-fields are discarded. The comparison is intentionally cautious. An interface match plus a recent
-handshake is strong evidence that the chosen WireGuard profile is communicating.
-A present endpoint and valid port only mean the saved profile values look usable;
-Tunnel deliberately does not query the live peer endpoint or claim that the
-active interface is connected to that exact server.
+fields are discarded. The comparison is intentionally cautious. An interface
+match plus a recent handshake is strong evidence that the chosen WireGuard
+profile is communicating. A present endpoint and valid port only mean the saved
+profile values look usable; Tunnel deliberately does not query the live peer
+endpoint or claim that the active interface is connected to that exact server.
 A different default interface is not automatically a failure because split
 tunnels legitimately keep the ordinary default route. For a full tunnel, a
 route mismatch is a reason to inspect `AllowedIPs` and optionally compare the
@@ -97,10 +97,16 @@ Choose Connect, Disconnect, or Restart and select **Preview**. Tunnel shows:
 - proposed `wg-quick` commands in a copyable card.
 
 WireGuard is the only protocol currently supported by action previews. OpenVPN
-and unknown protocols produce no command. The preview has no execution path. It does not open a shell, request an admin
-password, or change a tunnel, route, DNS setting, or firewall rule. A missing or
-unsafe interface name produces no command. After any manual change, return to
-Connection Check and collect a fresh snapshot rather than relying on old status.
+and unknown protocols produce no command. The preview has no execution path: it
+does not open a shell, request an admin password, or change a tunnel, route, DNS
+setting, or firewall rule. A missing or unsafe interface name produces no
+command. After any manual change, return to Connection Check and collect a fresh
+snapshot rather than relying on old status.
+
+If Sentinel is closed or Portable Emergency Reset is used during a check, the
+app first cancels and finishes the background worker before closing or erasing
+Sentinel-owned portable data. This avoids leaving the check running after its
+screen has gone away.
 
 ![Tunnel action preview](docs/training/images/tunnel-action-preview.png)
 

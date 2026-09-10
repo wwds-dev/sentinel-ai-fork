@@ -142,3 +142,26 @@ def test_frozen_bundle_includes_tunnel_profile_seed():
     spec = (ROOT / "SentinelAI.spec").read_text(encoding="utf-8")
 
     assert "agents/vpn_agent/config/vpn_profiles.json" in spec
+
+
+def test_shared_panel_shutdown_prefers_join_contract_and_stops_fallbacks():
+    from ui.dialogs import shutdown_panels
+
+    calls = []
+
+    class Joinable:
+        def shutdown(self):
+            calls.append("joined")
+
+    class Stoppable:
+        def is_running(self):
+            return True
+
+        def stop(self):
+            calls.append("stopped")
+
+    app = SimpleNamespace(panels={"tunnel": Joinable(), "other": Stoppable()})
+
+    shutdown_panels(app)
+
+    assert calls == ["joined", "stopped"]
