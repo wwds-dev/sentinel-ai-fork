@@ -4,11 +4,12 @@
 
 ![Tunnel workspace](docs/training/images/tunnel.png)
 
-Tunnel is for infrastructure you own or administer. It has four distinct
+Tunnel is for infrastructure you own or administer. It has five distinct
 paths: **Connection Check** reads current status, **Safe Action Preview** shows
 but cannot run a proposed change, the **Advisor** uses an AI model, and **Build
-Config** is deterministic and offline. A status check or preview does not send
-anything to a model and does not count against an AI budget.
+Config** and **Config Inspection** are deterministic and offline. A status
+check, preview, or inspection does not send anything to a model and does not
+count against an AI budget.
 
 ## Connection Check
 
@@ -110,6 +111,25 @@ screen has gone away.
 
 ![Tunnel action preview](docs/training/images/tunnel-action-preview.png)
 
+## Config Inspection
+
+Select **Inspect config…** and choose a WireGuard `.conf` file when you want to
+understand its intended behavior before using it. Tunnel shows interface
+addresses, DNS values, peer count, endpoints, `AllowedIPs`, and whether the file
+describes a full or split tunnel. If you already ran Connection Check, it also
+compares that intent with the current route and DNS snapshot.
+
+The parser has a strict privacy boundary: `PrivateKey` and `PresharedKey` values
+are discarded as each line is read. The result contains only a non-secret
+summary; the original file is not copied into the result, an AI prompt, Saved
+Chats, or the run log. The inspection is local, bounded to a 1 MiB text file,
+does not resolve the endpoint, and cannot connect or change the VPN.
+
+Treat comparisons as evidence, not proof. On macOS the WireGuard app may expose
+a friendly profile as a `utun` interface. A full-tunnel route mismatch can also
+mean the tunnel is simply stopped. Re-run Connection Check after a deliberate
+manual change before drawing a conclusion.
+
 ## Deployment choices
 
 **Remote (VPS)** routes traffic through a rented server and can change the
@@ -164,6 +184,8 @@ that separates observations, likely explanations, and what remains unverified.
 - Store private keys only in the VPN Agent's protected state location.
 - Use the local check before the Advisor; send only the non-secret card needed
   to explain the problem.
+- Inspect a configuration locally before importing it, and never paste the
+  original file or private-key lines into an AI prompt.
 - Treat an Action Preview as a review artifact. Confirm the target, keep recovery
   access available, and make the change through your normal trusted VPN tool.
 - Treat an active tunnel, public-IP change, DNS configuration, and kill-switch

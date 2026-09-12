@@ -567,6 +567,7 @@ class SectionView(QWidget):
             item = self._column.takeAt(0)
             widget = item.widget()
             if widget is not None:
+                widget.hide()
                 widget.deleteLater()
         self._raw = ""
         self._raw_btn.setVisible(False)
@@ -581,6 +582,10 @@ class SectionView(QWidget):
             item = self._column.takeAt(0)
             widget = item.widget()
             if widget is not None:
+                # `deleteLater()` alone leaves the old placeholder/card painted
+                # until Qt processes deferred deletes, so it can show through a
+                # freshly populated result view for one frame (or in a grab()).
+                widget.hide()
                 widget.deleteLater()
 
         shown = 0

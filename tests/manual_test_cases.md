@@ -1,4 +1,4 @@
-# Sentinel Fork — Manual Acceptance Checklist
+# Sentinel — Manual Acceptance Checklist
 
 Use a disposable test database and non-sensitive prompts. Do not send paid requests unless the matching provider permission is enabled and the cost confirmation is understood. Security tests must use systems and networks you own or are explicitly authorised to assess.
 
@@ -108,7 +108,7 @@ Use a disposable test database and non-sensitive prompts. Do not send paid reque
 ### Portable USB acceptance
 
 1. Build to a writable test volume with `scripts/build_portable.sh`.
-2. Add fictional settings/history to `Sentinel Fork Data`, rebuild to the same destination, and launch again.
+2. Add fictional settings/history to `Sentinel Data`, rebuild to the same destination, and launch again.
 
 - [ ] The app, marker, launcher and explicit data folder are present.
 - [ ] Existing data survives the upgrade and the source `.env` was not copied.

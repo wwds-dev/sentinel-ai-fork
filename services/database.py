@@ -9,7 +9,7 @@ from services.agent_catalog import BUILTIN_AGENTS, RETIRED_BUILTIN_AGENTS
 from services.provider_catalog import CLOUD_PROVIDERS
 from services.tool_catalog import BUILTIN_TOOLS
 
-# Writable base: project root in dev, ~/Library/Application Support/Sentinel Fork when frozen.
+# Writable base: project root in dev, ~/Library/Application Support/Sentinel when frozen.
 BASE_DIR = user_data_base()
 DB_PATH = BASE_DIR / "data" / "sentinel.db"
 SCHEMA_VERSION = 3
@@ -151,7 +151,7 @@ def init_db() -> None:
         conn.close()
         raise RuntimeError(
             f"Database schema version {installed_version} is newer than this "
-            f"Sentinel Fork build supports ({SCHEMA_VERSION})."
+            f"Sentinel build supports ({SCHEMA_VERSION})."
         )
     if not is_new and installed_version < SCHEMA_VERSION:
         _backup_before_migration(conn, installed_version)
@@ -323,6 +323,14 @@ def _migrate_schema_v3(conn: sqlite3.Connection) -> None:
 
 def _sync_usage_cloud_flags(conn: sqlite3.Connection) -> None:
     """Repair the derived local/cloud flag for current provider identifiers."""
+    columns = {
+        row[1] for row in conn.execute("PRAGMA table_info(usage)")
+    }
+    # Some early v1 development databases legitimately predate these derived
+    # fields. Their additive v2/v3 migrations preserve the rows; there is
+    # simply nothing to repair until both columns exist.
+    if not {"backend", "cloud"}.issubset(columns):
+        return
     conn.execute("UPDATE usage SET cloud = 0 WHERE backend = 'ollama'")
     placeholders = ",".join("?" for _ in CLOUD_PROVIDERS)
     conn.execute(

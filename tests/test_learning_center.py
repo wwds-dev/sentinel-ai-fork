@@ -32,7 +32,7 @@ def test_learning_topics_have_unique_titles_and_files():
 
 def test_release_bundle_includes_training_resources():
     root = Path(__file__).resolve().parents[1]
-    spec = (root / "SentinelAI.spec").read_text(encoding="utf-8")
+    spec = (root / "Sentinel.spec").read_text(encoding="utf-8")
     assert '("docs/training", "docs/training")' in spec
 
 

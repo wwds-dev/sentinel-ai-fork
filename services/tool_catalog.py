@@ -1,4 +1,4 @@
-"""Canonical product-owned defaults for Sentinel Fork's built-in Chat tools."""
+"""Canonical product-owned defaults for Sentinel's built-in Chat tools."""
 
 BUILTIN_TOOLS = {
     "General Chat": {

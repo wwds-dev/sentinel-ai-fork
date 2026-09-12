@@ -1,4 +1,4 @@
-"""Searchable, file-backed Learning Centre for Sentinel Fork."""
+"""Searchable, file-backed Learning Centre for Sentinel."""
 
 from __future__ import annotations
 
@@ -58,7 +58,7 @@ def load_learning_topic(resource_root: Path, topic: LearningTopic) -> str:
         return (
             f"# {topic.title}\n\n"
             "This lesson is not available in the current installation. "
-            "Update or reinstall Sentinel Fork to restore its training files."
+            "Update or reinstall Sentinel to restore its training files."
         )
 
 

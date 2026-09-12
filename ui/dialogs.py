@@ -461,7 +461,7 @@ def show_settings(app):
         answer = QMessageBox.question(
             dialog,
             "Final confirmation",
-            "Erase the complete Sentinel Fork Data folder contents and quit now?\n\n"
+            "Erase the complete Sentinel Data folder contents and quit now?\n\n"
             "This cannot be undone.",
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.No,

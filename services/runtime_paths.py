@@ -8,14 +8,20 @@ import tempfile
 from pathlib import Path
 from typing import Mapping
 
-APP_NAME = "Sentinel Fork"
+APP_NAME = "Sentinel"
+LEGACY_APP_NAMES = ("Sentinel Fork",)
 PORTABLE_ENV = "SENTINEL_PORTABLE_ROOT"
 PORTABLE_MARKER = ".sentinel-portable"
-PORTABLE_DATA_DIR = "Sentinel Fork Data"
+PORTABLE_DATA_DIR = "Sentinel Data"
+LEGACY_PORTABLE_DATA_DIRS = ("Sentinel Fork Data",)
 MIN_PORTABLE_FREE_BYTES = 256 * 1024 * 1024
 
 
-class PortableRuntimeError(RuntimeError):
+class RuntimeDataError(RuntimeError):
+    """Sentinel cannot safely resolve or migrate its writable state."""
+
+
+class PortableRuntimeError(RuntimeDataError):
     """A portable volume cannot safely hold Sentinel's writable state."""
 
 
@@ -53,6 +59,27 @@ def portable_data_base(root: Path) -> Path:
     return root / PORTABLE_DATA_DIR
 
 
+def _migrate_legacy_directory(
+    parent: Path, current_name: str, legacy_names: tuple[str, ...]
+) -> Path:
+    """Rename one legacy state directory when the new location is still absent."""
+    current = parent / current_name
+    if current.exists():
+        return current
+    for legacy_name in legacy_names:
+        legacy = parent / legacy_name
+        if legacy.exists():
+            try:
+                legacy.rename(current)
+            except OSError as exc:
+                raise RuntimeDataError(
+                    f"Sentinel could not migrate its data folder from '{legacy.name}' "
+                    f"to '{current.name}'. Close other copies and check folder permissions."
+                ) from exc
+            break
+    return current
+
+
 def validate_portable_volume(
     root: Path, min_free_bytes: int = MIN_PORTABLE_FREE_BYTES, *, probe: bool = True
 ) -> Path:
@@ -62,8 +89,10 @@ def validate_portable_volume(
         raise PortableRuntimeError(
             f"Portable volume is unavailable or has been ejected: {root}"
         )
-    data = portable_data_base(root)
     try:
+        data = _migrate_legacy_directory(
+            root, PORTABLE_DATA_DIR, LEGACY_PORTABLE_DATA_DIRS
+        )
         data.mkdir(parents=True, exist_ok=True)
         free = shutil.disk_usage(root).free
         if free < min_free_bytes:
@@ -76,8 +105,10 @@ def validate_portable_volume(
             fd, name = tempfile.mkstemp(prefix=".sentinel-write-test-", dir=data)
             os.close(fd)
             Path(name).unlink()
-    except PortableRuntimeError:
-        raise
+    except RuntimeDataError as exc:
+        if isinstance(exc, PortableRuntimeError):
+            raise
+        raise PortableRuntimeError(str(exc)) from exc
     except OSError as exc:
         raise PortableRuntimeError(
             f"Portable data folder is read-only or unavailable: {data} ({exc})"
@@ -94,7 +125,9 @@ def user_data_base() -> Path:
     if root is not None:
         return validate_portable_volume(root)
     if is_frozen():
-        data = Path.home() / "Library" / "Application Support" / APP_NAME
+        parent = Path.home() / "Library" / "Application Support"
+        parent.mkdir(parents=True, exist_ok=True)
+        data = _migrate_legacy_directory(parent, APP_NAME, LEGACY_APP_NAMES)
         data.mkdir(parents=True, exist_ok=True)
         return data
     return Path(__file__).resolve().parent.parent

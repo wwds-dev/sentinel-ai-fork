@@ -1,15 +1,8 @@
-# Sentinel Fork — Suggestions
+# Sentinel — Suggestions
 
 Ideas not yet committed to. Status: `IDEA` · `CONSIDERING` · `PLANNED` · `DONE` · `REJECTED`
 
 ---
-
-## v2 — in the current arc
-
-| # | Suggestion | Category | Effort | Status |
-|---|---|---|---|---|
-| 5 | Budget card layout — the €1 session / €5 daily figures deserve a progress bar, not two labels | design | S | CONSIDERING |
-| 6 | Per-agent cost breakdown in the cost dialog, so it's visible which agent is eating the daily cap | feature | M | IDEA |
 
 ## v3 — bigger swings
 
@@ -22,8 +15,11 @@ Ideas not yet committed to. Status: `IDEA` · `CONSIDERING` · `PLANNED` · `DON
 | 11 | Add intermediate and independent exercises to the existing practical course for every agent | docs/feature | M | PLANNED |
 | 12 | Add optional numbered graphical callouts to the reproducible, current screenshot set | docs/design | M | CONSIDERING |
 | 14 | Build a common adapter layer for selected Kali tools: availability checks, previews, scope gates, cancellation, logs and structured results | infra/security | XL | PLANNED |
-| 15 | Bloodhound adapters for ExifTool/YARA and private-key-free WireGuard/OpenVPN config parsing beyond Tunnel's delivered profile comparison | feature/security | L | CONSIDERING |
+| 15 | Bloodhound adapters for ExifTool/YARA and optional OpenVPN config inspection alongside Tunnel's delivered private-key-free WireGuard parser | feature/security | L | CONSIDERING |
 | 16 | Trace public-source adapters, followed by authorised Bug Spray and passive Beacon integrations | feature/security | XL | CONSIDERING |
+| 17 | Per-agent cost breakdown in cost history, so a daily-cap spike can be traced to its source | feature | M | IDEA |
+| 18 | Chat Project instructions, defaults, budgets and management after grouping has been tested in normal use | feature | L | CONSIDERING |
+| 19 | Gated WireGuard actions and local key/recovery lifecycle, building on Tunnel's read-only config inspection | feature/security | XL | PLANNED |
 
 ## Done
 
@@ -46,10 +42,15 @@ Ideas not yet committed to. Status: `IDEA` · `CONSIDERING` · `PLANNED` · `DON
 | Exhaustive Learning Centre — workspace/Settings reference, seven agent courses, privacy, troubleshooting, expanded workflows and eight current screenshots | Sep 2026 |
 | Tunnel Connection Check — read-only tools/tunnels/route/DNS cards with separately confirmed public-IP and latency checks; 16 focused tests | Sep 2026 |
 | Tunnel profile comparison and safe action previews — secret-field filtering, profile/protocol-aware findings and remediation with no execution path; 26 focused tests | Sep 2026 |
+| Tunnel private-key-free WireGuard config inspection and live-intent comparison | Sep 2026 |
+| Budget card spend meters with editing kept in Settings | Sep 2026 |
+| Structured result cards for Trace, Bloodhound, Beacon, Bug Spray and Forge | Sep 2026 |
+| Chat Projects grouping, assignment and spend attribution | Sep 2026 |
+| Sentinel product rename and legacy Sentinel Fork data migration, without touching Sentinel AI | Sep 2026 |
 
 ## Portable privacy boundaries
 
-- Keep **Emergency Reset** limited to the validated `Sentinel Fork Data`
+- Keep **Emergency Reset** limited to the validated `Sentinel Data`
   directory. Do not expand it into whole-drive formatting or macOS log removal.
 - Consider encrypted APFS provisioning and a guided backup/restore verifier for
   stronger data-at-rest protection without making trace-free claims.

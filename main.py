@@ -11,17 +11,17 @@ from typing import Optional
 from uuid import uuid4
 
 from services.runtime_paths import (
-    PortableRuntimeError, ensure_seeded, is_frozen, is_portable,
+    RuntimeDataError, ensure_seeded, is_frozen, is_portable,
     resource_base, user_data_base,
 )
 try:
     ensure_seeded()
-except PortableRuntimeError as exc:
-    message = f"Sentinel Fork cannot use its portable storage.\n\n{exc}"
+except RuntimeDataError as exc:
+    message = f"Sentinel cannot use its data storage.\n\n{exc}"
     print(message, file=sys.stderr)
     if sys.platform == "darwin":
         subprocess.run(
-            ["osascript", "-e", 'display alert "Sentinel Fork cannot start" message '
+            ["osascript", "-e", 'display alert "Sentinel cannot start" message '
              + json.dumps(message) + " as critical"],
             check=False,
         )
@@ -80,7 +80,7 @@ from services.model_recommendations import (
 )
 
 
-# Writable base = project root in dev, ~/Library/Application Support/Sentinel Fork when frozen.
+# Writable base = project root in dev, ~/Library/Application Support/Sentinel when frozen.
 BASE_DIR = user_data_base()
 # Read-only bundled resources (README, config defaults) = project root in dev, bundle when frozen.
 RESOURCE_DIR = resource_base()
@@ -101,6 +101,7 @@ CHATS_DIR = DATA_DIR / "chats"
 ALL_AGENTS_FILTER = "All agents"
 ALL_PROJECTS_FILTER = "All projects"
 UNFILED_PROJECT_FILTER = "Unfiled"
+NO_ACTIVE_PROJECT = "No project"
 
 SETTINGS_FILE = CONFIG_DIR / "settings.json"
 COMMANDS_FILE = CONFIG_DIR / "commands.json"
@@ -165,7 +166,7 @@ class GodAI(QWidget):
     def __init__(self):
         super().__init__()
 
-        self.setWindowTitle("Sentinel Fork")
+        self.setWindowTitle("Sentinel")
         self.resize(1400, 900)
         # The run bar is a single row so the cost can sit right-aligned as the
         # design has it; a wrapping bar cannot right-align. That costs width, so
@@ -263,6 +264,7 @@ class GodAI(QWidget):
         ).lower() not in ("0", "false", "off", "no")
 
         self.build_ui()
+        self.refresh_project_controls()
         self._install_workspace_shortcuts()
         self._polish_tab_widgets()
         self._seed_tooltips()
@@ -1356,7 +1358,7 @@ class GodAI(QWidget):
         left_layout.setContentsMargins(0, 12, 0, 10)
         left_layout.setSpacing(4)
 
-        fork_brand = QLabel("SENTINEL FORK")
+        fork_brand = QLabel("SENTINEL")
         fork_brand.setStyleSheet(
             "color: #5d6862; font-family: Menlo, Monaco, monospace; "
             "font-size: 10px; font-weight: 500; letter-spacing: 1.8px; "
@@ -1461,6 +1463,28 @@ class GodAI(QWidget):
         )
         saved_layout.addWidget(saved_header)
 
+        project_filter_row = QHBoxLayout()
+        project_filter_row.setSpacing(4)
+        self.history_project_filter = MenuComboBox()
+        self.history_project_filter.addItem(
+            ALL_PROJECTS_FILTER, ALL_PROJECTS_FILTER
+        )
+        self.history_project_filter.currentIndexChanged.connect(
+            self.load_history_list
+        )
+        self.history_project_filter.setToolTip(
+            "Show chats from every project, one project, or only unfiled chats."
+        )
+        project_filter_row.addWidget(self.history_project_filter, 1)
+
+        self.new_project_btn = QPushButton("+")
+        self.new_project_btn.setObjectName("ChipBtn")
+        self.new_project_btn.setFixedWidth(34)
+        self.new_project_btn.setToolTip("Create a chat project")
+        self.new_project_btn.clicked.connect(self.create_chat_project)
+        project_filter_row.addWidget(self.new_project_btn)
+        saved_layout.addLayout(project_filter_row)
+
         # Narrow the list to one agent. Populated from the chats that exist, so
         # it only ever offers agents you have actually used.
         self.history_agent_filter = MenuComboBox()
@@ -1475,6 +1499,10 @@ class GodAI(QWidget):
 
         self.history_list = QListWidget()
         self.history_list.itemClicked.connect(self.open_selected_chat)
+        self.history_list.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.history_list.customContextMenuRequested.connect(
+            self.show_history_context_menu
+        )
         # Double-click renames: chat_title_from_data already prefers a stored
         # "title" over the truncated first prompt, it was just never written.
         self.history_list.itemDoubleClicked.connect(self.rename_selected_chat)
@@ -1692,10 +1720,6 @@ class GodAI(QWidget):
         self.header_more_btn.setMenu(header_more_menu)
         header_row.addWidget(self.header_more_btn)
 
-        self.agent_status_pill = QLabel("●  READY")
-        self.agent_status_pill.setObjectName("StatusPill")
-        self.agent_status_pill.hide()
-
         center_layout.addLayout(header_row)
 
 
@@ -1728,6 +1752,18 @@ class GodAI(QWidget):
         runbar = QHBoxLayout(runbar_container)
         runbar.setContentsMargins(10, 8, 10, 8)
         runbar.setSpacing(8)
+
+        self.active_project_box = MenuComboBox()
+        self.active_project_box.setObjectName("ProjectPick")
+        self.active_project_box.addItem(NO_ACTIVE_PROJECT, None)
+        self.active_project_box.setMinimumWidth(120)
+        self.active_project_box.setToolTip(
+            "New Chat responses are filed in this project."
+        )
+        self.active_project_box.currentIndexChanged.connect(
+            self._active_project_changed
+        )
+        runbar.addWidget(self.active_project_box)
 
         self.tool_box = MenuComboBox()
         self.tool_box.setObjectName("ToolChip")
@@ -2548,9 +2584,6 @@ class GodAI(QWidget):
                 if idx >= 0:
                     self.model_box.setCurrentIndex(idx)
 
-            self.update_live_cost_estimate()
-            self._mark_paid_route_choices(self.provider_box, self.model_box)
-
         except Exception as e:
             # Model discovery is setup metadata, not conversation output. Keep
             # the Chat canvas clean and expose the diagnostic through the model
@@ -2558,7 +2591,13 @@ class GodAI(QWidget):
             if provider == "ollama" and self.model_box.count() == 0:
                 self.model_box.addItems(list(OllamaClient.KNOWN_MODELS))
             self._note_failure("chat: load models", e, self.model_box)
-            
+
+        # Route cost styling reflects the selected provider even when model
+        # discovery is offline or fails. Otherwise a previous cloud selection
+        # leaves Ollama painted as paid until the next successful refresh.
+        self.update_live_cost_estimate()
+        self._mark_paid_route_choices(self.provider_box, self.model_box)
+
     def save_provider_model_preference(self):
         if not hasattr(self, "provider_box") or not hasattr(self, "model_box"):
             return
@@ -2623,9 +2662,6 @@ class GodAI(QWidget):
             self.agent_title_label.setText(metadata.get("label", agent_name.capitalize()))
         if hasattr(self, "agent_subtitle_label"):
             self.agent_subtitle_label.setText(metadata.get("subtitle", ""))
-        if hasattr(self, "agent_status_pill"):
-            self.agent_status_pill.setText("●  READY")
-            self.agent_status_pill.setStyleSheet("")
         is_manager = agent_name == "manager"
         is_osint = agent_name == "osint"
         is_osint_heavy = agent_name == "osint_heavy"
@@ -3037,6 +3073,7 @@ class GodAI(QWidget):
             self.pending_backend = final_backend
             self.pending_model = final_model
             self.pending_command = command_name
+            self.pending_project = self.active_project_id
             prior = list(self.current_messages) if selected_agent == "chat" else []
             fresh = self._normalise_chat_messages(messages)
             if prior and fresh and fresh[0].get("role") == "system":
@@ -3479,6 +3516,7 @@ class GodAI(QWidget):
             prompt_text=self.pending_prompt,
             response_text=response,
             usage=self.pending_usage,
+            project=self.pending_project,
         )
 
         self.last_request_cost = usage_entry.get("cost_eur", usage_entry.get("estimated_cost", 0.0))
@@ -3506,6 +3544,7 @@ class GodAI(QWidget):
             command=self.pending_command,
             messages=self.current_messages,
             response=response,
+            project=self.pending_project,
         )
 
         self.load_history_list()
@@ -3678,8 +3717,145 @@ class GodAI(QWidget):
         except Exception:
             return path.stem
 
+    @staticmethod
+    def _combo_index_for_data(combo: QComboBox, value) -> int:
+        for index in range(combo.count()):
+            if combo.itemData(index) == value:
+                return index
+        return -1
+
+    def refresh_project_controls(self) -> None:
+        """Reload both project selectors without losing either selection."""
+        try:
+            projects = self.registry.list_projects()
+        except Exception as exc:
+            self._note_failure("chat projects: load", exc)
+            projects = []
+        self._chat_projects = {
+            project["id"]: project for project in projects if project.get("id")
+        }
+
+        if self.active_project_id not in self._chat_projects:
+            self.active_project_id = None
+
+        if hasattr(self, "active_project_box"):
+            box = self.active_project_box
+            box.blockSignals(True)
+            box.clear()
+            box.addItem(NO_ACTIVE_PROJECT, None)
+            for project in projects:
+                box.addItem(project["name"], project["id"])
+            active_index = self._combo_index_for_data(box, self.active_project_id)
+            box.setCurrentIndex(max(0, active_index))
+            box.blockSignals(False)
+
+        if hasattr(self, "history_project_filter"):
+            box = self.history_project_filter
+            wanted = box.currentData()
+            box.blockSignals(True)
+            box.clear()
+            box.addItem(ALL_PROJECTS_FILTER, ALL_PROJECTS_FILTER)
+            box.addItem(UNFILED_PROJECT_FILTER, UNFILED_PROJECT_FILTER)
+            for project in projects:
+                box.addItem(project["name"], project["id"])
+            wanted_index = self._combo_index_for_data(box, wanted)
+            box.setCurrentIndex(max(0, wanted_index))
+            box.blockSignals(False)
+
+    def _set_active_project(self, project_id: str | None) -> None:
+        project_id = project_id if project_id in getattr(
+            self, "_chat_projects", {}
+        ) else None
+        self.active_project_id = project_id
+        if not hasattr(self, "active_project_box"):
+            return
+        index = self._combo_index_for_data(self.active_project_box, project_id)
+        self.active_project_box.setCurrentIndex(max(0, index))
+
+    def _active_project_changed(self, _index: int) -> None:
+        self.active_project_id = self.active_project_box.currentData()
+        project = getattr(self, "_chat_projects", {}).get(self.active_project_id)
+        if project:
+            self.active_project_box.setToolTip(
+                f"New Chat responses are filed in {project['name']}."
+            )
+        else:
+            self.active_project_box.setToolTip(
+                "New Chat responses are saved without a project."
+            )
+
+    def create_chat_project(self) -> None:
+        name, accepted = QInputDialog.getText(
+            self, "New Project", "Project name:"
+        )
+        name = name.strip()
+        if not accepted or not name:
+            return
+        try:
+            project = self.registry.upsert_project({"name": name})
+            self.refresh_project_controls()
+            self._set_active_project(project["id"])
+        except (OSError, ValueError) as exc:
+            QMessageBox.warning(
+                self, "Project Not Created", f"Could not create the project:\n{exc}"
+            )
+
+    def _assign_chat_to_project(self, filepath: str, project_id: str | None) -> None:
+        """Assign one durable chat record; ``None`` returns it to Unfiled."""
+        data = self.history.load_chat(filepath)
+        if project_id:
+            if project_id not in getattr(self, "_chat_projects", {}):
+                raise ValueError("That project is no longer available.")
+            data["project"] = project_id
+        else:
+            data.pop("project", None)
+        with open(filepath, "w", encoding="utf-8") as handle:
+            json.dump(data, handle, indent=2, ensure_ascii=False)
+        self.load_history_list()
+
+    def assign_selected_chat_to_project(self) -> None:
+        item = self.history_list.currentItem()
+        if not item:
+            QMessageBox.information(
+                self, "No Selection", "Select a saved chat first."
+            )
+            return
+        choices = [(UNFILED_PROJECT_FILTER, None)] + [
+            (project["name"], project["id"])
+            for project in getattr(self, "_chat_projects", {}).values()
+        ]
+        labels = [label for label, _project_id in choices]
+        selected, accepted = QInputDialog.getItem(
+            self, "Assign Chat", "Project:", labels, 0, False
+        )
+        if not accepted:
+            return
+        project_id = choices[labels.index(selected)][1]
+        try:
+            self._assign_chat_to_project(item.data(Qt.UserRole), project_id)
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            QMessageBox.warning(
+                self, "Assignment Failed", f"Could not update the saved chat:\n{exc}"
+            )
+
+    def show_history_context_menu(self, position: QPoint) -> None:
+        item = self.history_list.itemAt(position)
+        if item is None:
+            return
+        self.history_list.setCurrentItem(item)
+        menu = QMenu(self.history_list)
+        menu.addAction("Assign to project…").triggered.connect(
+            self.assign_selected_chat_to_project
+        )
+        menu.addAction("Rename…").triggered.connect(
+            lambda: self.rename_selected_chat(item)
+        )
+        menu.addSeparator()
+        menu.addAction("Delete").triggered.connect(self.delete_selected_chat)
+        menu.exec(self.history_list.mapToGlobal(position))
+
     def load_history_list(self):
-        """Fill the Saved Chats list, honouring the search box and agent filter.
+        """Fill Saved Chats; project, agent and search filters all intersect.
 
         Every file is read once here and reused for both the filter options and
         the rows, so adding the filter costs no extra disk reads.
@@ -3698,15 +3874,31 @@ class GodAI(QWidget):
             self._refresh_history_agent_filter(loaded)
             wanted = (self.history_agent_filter.currentText()
                       if hasattr(self, "history_agent_filter") else ALL_AGENTS_FILTER)
+            wanted_project = (
+                self.history_project_filter.currentData()
+                if hasattr(self, "history_project_filter")
+                else ALL_PROJECTS_FILTER
+            )
 
             for file, data in loaded:
                 if wanted != ALL_AGENTS_FILTER and data.get("agent", "chat") != wanted:
+                    continue
+                chat_project = data.get("project")
+                if (wanted_project == UNFILED_PROJECT_FILTER and chat_project):
+                    continue
+                if (wanted_project not in (
+                        ALL_PROJECTS_FILTER, UNFILED_PROJECT_FILTER
+                    ) and chat_project != wanted_project):
                     continue
                 title = self.chat_title_from_data(file, data)
                 if query and query not in title.lower():
                     continue
                 item = QListWidgetItem(title)
                 item.setData(Qt.UserRole, str(file))
+                project = getattr(self, "_chat_projects", {}).get(chat_project)
+                item.setToolTip(
+                    f"Project: {project['name']}" if project else "Project: Unfiled"
+                )
                 self.history_list.addItem(item)
         except Exception as exc:
             self._note_failure("saved chats: load list", exc)
@@ -3902,6 +4094,7 @@ class GodAI(QWidget):
             agent_name = data.get("agent", "chat")
             if self.agent_box.findText(agent_name) >= 0:
                 self.select_agent(agent_name)
+            self._set_active_project(data.get("project"))
 
         except Exception as e:
             QMessageBox.warning(self, "Error", f"Could not open saved chat:\n{e}")
@@ -4219,7 +4412,7 @@ class GodAI(QWidget):
             self._note_failure("shutdown: stop background work", exc)
         event.accept()
 
-SINGLE_INSTANCE_KEY = "sentinel-fork.single-instance.v2"
+SINGLE_INSTANCE_KEY = "sentinel.single-instance.v2"
 WINDOW_SETTINGS_KEY = "mainWindow/geometry"
 
 
@@ -4325,7 +4518,7 @@ if __name__ == "__main__":
     instance_server.listen(SINGLE_INSTANCE_KEY)
 
     window = GodAI()
-    settings = QSettings("Sentinel", "Sentinel Fork")
+    settings = QSettings("Sentinel", "Sentinel")
     saved_geometry = settings.value(WINDOW_SETTINGS_KEY)
     if saved_geometry is not None:
         window.restoreGeometry(saved_geometry)

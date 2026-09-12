@@ -17,12 +17,12 @@ from PySide6.QtCore import QProcess, Qt
 from PySide6.QtGui import QTextCursor
 from PySide6.QtWidgets import (
     QComboBox, QFileDialog, QGridLayout, QGroupBox, QHBoxLayout, QLabel,
-    QLineEdit, QPushButton, QSplitter, QTabWidget, QTextBrowser, QTextEdit,
+    QLineEdit, QPushButton, QSplitter, QTextBrowser, QTextEdit,
     QVBoxLayout, QWidget,
 )
 
 from ui.panels.base import AgentPanel
-from ui.widgets import MenuComboBox
+from ui.widgets import MenuComboBox, SectionView
 
 SEVERITY_COLOURS = {
     "Critical": "#ff3333", "High": "#ff7722", "Medium": "#f0c040",
@@ -148,34 +148,20 @@ class BugBountyPanel(AgentPanel):
         # ── Results: tabs + sidebar ──────────────────────────────────────
         results_splitter = QSplitter(Qt.Horizontal)
 
-        self.tabs = QTabWidget()
+        output_widget = QWidget()
+        output_layout = QVBoxLayout(output_widget)
+        output_layout.setContentsMargins(0, 0, 0, 0)
 
-        self.report_box = QTextBrowser()
-        self.report_box.setOpenExternalLinks(False)
-        self.tabs.addTab(self.report_box, "Full Report")
+        # A complete answer is rendered as cards. While tokens are arriving,
+        # the raw stream temporarily takes their place.
+        self.stream_box = QTextBrowser()
+        self.stream_box.setOpenExternalLinks(False)
+        self.stream_box.setVisible(False)
+        output_layout.addWidget(self.stream_box, 1)
 
-        self.vuln_box = QTextBrowser()
-        self.tabs.addTab(self.vuln_box, "Vulnerability")
-
-        self.poc_box = QTextBrowser()
-        self.tabs.addTab(self.poc_box, "PoC Draft")
-
-        self.remediation_box = QTextBrowser()
-        self.tabs.addTab(self.remediation_box, "Remediation")
-
-        self.submission_box = QTextBrowser()
-        self.tabs.addTab(self.submission_box, "Submission")
-
-        for box, message in (
-            (self.report_box, "The complete triage report will appear after analysis."),
-            (self.vuln_box, "Vulnerability details will appear here."),
-            (self.poc_box, "A proof-of-concept draft will appear here."),
-            (self.remediation_box, "Recommended remediation will appear here."),
-            (self.submission_box, "A submission-ready report will appear here."),
-        ):
-            box.setPlaceholderText(message)
-
-        results_splitter.addWidget(self.tabs)
+        self.sections = SectionView()
+        output_layout.addWidget(self.sections, 1)
+        results_splitter.addWidget(output_widget)
 
         # Sidebar indicators
         indicators_widget = QWidget()
@@ -293,18 +279,13 @@ class BugBountyPanel(AgentPanel):
             target, program, scope_type, findings, nmap_output)
 
         self._last_response = ""
-        self.report_box.clear()
-        self.vuln_box.clear()
-        self.poc_box.clear()
-        self.remediation_box.clear()
-        self.submission_box.clear()
+        self._clear_results()
         self.severity_label.setText("—")
         self.cvss_label.setText("—")
         self.bounty_label.setText("—")
         self.save_btn.setEnabled(False)
         self.status_label.setText("Analysing…")
         self.set_busy(self.analyse_btn, self.stop_btn, True)
-        self.tabs.setCurrentIndex(0)
 
         prompt = target or "bug_bounty"
         if not self.authorize(prompt):
@@ -323,22 +304,27 @@ class BugBountyPanel(AgentPanel):
 
     def _on_token(self, token: str) -> None:
         self._last_response += token
-        self.report_box.setPlainText(self._last_response)
-        self.report_box.moveCursor(QTextCursor.End)
+        self.sections.setVisible(False)
+        self.stream_box.setVisible(True)
+        self.stream_box.setPlainText(self._last_response)
+        self.stream_box.moveCursor(QTextCursor.End)
 
     def _on_finished(self, full_response: str) -> None:
         self.record(full_response)
         self._last_response = full_response
-        self._populate_tabs(full_response)
+        self.stream_box.setVisible(False)
+        self.sections.setVisible(True)
+        self._populate_sections(full_response)
         self._update_indicators(full_response)
         self.status_label.setText("Analysis complete.")
         self.set_busy(self.analyse_btn, self.stop_btn, False)
         self.save_btn.setEnabled(True)
-        self.tabs.setCurrentIndex(0)
 
     def _on_error(self, error: str) -> None:
         self.abandon()
-        self.report_box.setPlainText(f"[Error] {error}")
+        self.sections.setVisible(False)
+        self.stream_box.setVisible(True)
+        self.stream_box.setPlainText(f"[Error] {error}")
         self.status_label.setText("Error.")
         self.set_busy(self.analyse_btn, self.stop_btn, False)
 
@@ -348,20 +334,38 @@ class BugBountyPanel(AgentPanel):
         self.set_busy(self.analyse_btn, self.stop_btn, False)
 
     # ── Report ──────────────────────────────────────────────────────────
-    def _populate_tabs(self, text: str) -> None:
-        def extract(pattern):
-            m = re.search(pattern, text, re.IGNORECASE | re.DOTALL)
-            return m.group(1).strip() if m else ""
+    def _populate_sections(self, text: str) -> None:
+        sections = self.parse_sections(text)
+        self.sections.show_sections(
+            [
+                ("Vulnerability report", sections["vulnerability"]),
+                ("Proof of concept", sections["poc"], True),
+                ("Remediation", sections["remediation"]),
+                ("Submission draft", sections["submission"]),
+            ],
+            raw=text,
+        )
 
-        vuln = extract(r"(?:##\s*VULNERABILITY\s*REPORT|##\s*Vulnerability Details?)(.*?)(?=##|$)")
-        poc = extract(r"(?:##\s*Proof of Concept|PoC\s*Draft?)(.*?)(?=##|$)")
-        rem = extract(r"(?:##\s*Remediation)(.*?)(?=##|$)")
-        sub = extract(r"(?:##\s*SUBMISSION\s*DRAFT|Submission\s*Draft?)(.*?)(?=##|$)")
-
-        self.vuln_box.setPlainText(vuln or text)
-        self.poc_box.setPlainText(poc)
-        self.remediation_box.setPlainText(rem)
-        self.submission_box.setPlainText(sub)
+    @staticmethod
+    def parse_sections(text: str) -> dict[str, str]:
+        """Split the existing report format into cards; absent sections stay empty."""
+        patterns = {
+            "vulnerability": (
+                r"(?:##\s*VULNERABILITY\s*REPORT|##\s*Vulnerability Details?)"
+                r"(.*?)(?=##|$)"
+            ),
+            "poc": r"(?:##\s*Proof of Concept|PoC\s*Draft?)(.*?)(?=##|$)",
+            "remediation": r"(?:##\s*Remediation)(.*?)(?=##|$)",
+            "submission": (
+                r"(?:##\s*SUBMISSION\s*DRAFT|Submission\s*Draft?)"
+                r"(.*?)(?=##|$)"
+            ),
+        }
+        result = {}
+        for key, pattern in patterns.items():
+            match = re.search(pattern, text, re.IGNORECASE | re.DOTALL)
+            result[key] = match.group(1).strip() if match else ""
+        return result
 
     def _update_indicators(self, text: str) -> None:
         sev_m = re.search(
@@ -411,9 +415,7 @@ class BugBountyPanel(AgentPanel):
         self.findings_input.clear()
         self.nmap_output.clear()
         self.nmap_cmd_input.clear()
-        for box in (self.report_box, self.vuln_box, self.poc_box,
-                    self.remediation_box, self.submission_box):
-            box.clear()
+        self._clear_results()
         self.severity_label.setText("—")
         self.severity_label.setStyleSheet(
             "font-size: 20px; font-weight: bold; color: #ff5555;")
@@ -423,3 +425,9 @@ class BugBountyPanel(AgentPanel):
         self.status_label.setText("")
         self.save_btn.setEnabled(False)
         self._last_response = ""
+
+    def _clear_results(self) -> None:
+        self.sections.clear()
+        self.stream_box.clear()
+        self.stream_box.setVisible(False)
+        self.sections.setVisible(True)

@@ -409,18 +409,6 @@ GLOBAL_STYLESHEET = """
             padding: 0 0 4px 1px;
         }
 
-        /* ── Status pill (top-right) ──────────────────────────────── */
-        QLabel#StatusPill { /* pill */
-            background-color: #151816;
-            border: 1px solid #262d29;
-            border-radius: 10px;
-            padding: 4px 12px;
-            color: #3cff88;
-            font-size: 11px;
-            font-weight: 500;
-            letter-spacing: 1px;
-        }
-
         /* ── Small "chip" buttons (Docs, Model Guide etc.) ────────── */
         QPushButton#ChipBtn {
             background-color: #151816;

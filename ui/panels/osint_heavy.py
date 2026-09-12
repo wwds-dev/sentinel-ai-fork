@@ -196,7 +196,7 @@ class OsintHeavyPanel(AgentPanel):
         image_group.setObjectName("OSINTHeavyImageBox")
         image_outer = QVBoxLayout(image_group)
         image_outer.setSpacing(4)
-        image_outer.setContentsMargins(6, 4, 6, 4)
+        image_outer.setContentsMargins(8, 4, 8, 4)
         image_top_row = QHBoxLayout()
         self.image_label = QLabel("No image selected")
         self.image_label.setStyleSheet("color: #666; font-style: italic;")
@@ -224,6 +224,11 @@ class OsintHeavyPanel(AgentPanel):
             "font-family: monospace; font-size: 11px; color: #aaa;"
         )
         image_outer.addWidget(self.exif_display)
+        self.image_details = QTextBrowser()
+        self.image_details.setOpenExternalLinks(True)
+        self.image_details.setMaximumHeight(190)
+        self.image_details.setVisible(False)
+        image_outer.addWidget(self.image_details)
         layout.addWidget(image_group)
 
         self._build_file_discovery(layout)
@@ -878,21 +883,22 @@ class OsintHeavyPanel(AgentPanel):
         self.set_image(path)
 
     def set_image(self, path: str) -> None:
-        """Attach an image: its EXIF joins the prompt and fills the Image tab."""
+        """Attach an image: its EXIF joins the prompt and opens local image details."""
         self._image_path = path
         self.image_label.setText(Path(path).name)
         self.image_label.setStyleSheet("color: #dd88ff; font-style: normal;")
         self.exif_display.setPlainText(exif_summary(path))
-        self._populate_image_tab(path)
+        self._populate_image_details(path)
 
     def clear_image(self) -> None:
         self._image_path = ""
         self.image_label.setText("No image selected")
         self.image_label.setStyleSheet("color: #666; font-style: italic;")
         self.exif_display.clear()
-        self.image_tab.clear()
+        self.image_details.clear()
+        self.image_details.setVisible(False)
 
-    def _populate_image_tab(self, path: str) -> None:
+    def _populate_image_details(self, path: str) -> None:
         exif = extract_exif(path)
         fname = Path(path).name
         gps_block = ""
@@ -943,5 +949,5 @@ class OsintHeavyPanel(AgentPanel):
             + "<br><p style='color:#555;font-size:11px;'>For authorised investigative use only.</p>"
             "</body></html>"
         )
-        self.image_tab.setHtml(html)
-        self.tabs.setCurrentIndex(self.tabs.indexOf(self.image_tab))
+        self.image_details.setHtml(html)
+        self.image_details.setVisible(True)

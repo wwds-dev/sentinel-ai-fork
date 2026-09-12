@@ -1,8 +1,9 @@
-# Chat Projects — Stage 2 roadmap
+# Chat Projects — V2 grouping and later context roadmap
 
-Stage 1 (a tidier Saved Chats list) is **done**: agent filter, search, and
-rename. This document is the plan for Stage 2 — turning a group of chats into a
-**context bundle**, which is the part that actually earns its keep.
+Stage 1 (a tidier Saved Chats list) and V2 project grouping are **done**. Chat
+has an active project, History can filter and assign conversations, and usage
+is attributed to that project. The remaining work here turns grouping into a
+behavior-changing **context bundle**, so it is deliberately deferred to V3.
 
 The distinction matters. Stage 1 makes the list easier to read. Stage 2 means
 you stop re-establishing the same context every time you open an agent: a
@@ -62,20 +63,26 @@ existing one converge.
 
 ## Tasks
 
-### 2.1 — Storage and registry  *(no UI)*
-- [ ] `projects` table in `services/database.py` + migration
-- [ ] `Registry.list_projects()` / `get_project()` / `upsert_project()` /
+### 2.1 — Storage and registry  *(complete)*
+- [x] `projects` table in `services/database.py` + migration
+- [x] `Registry.list_projects()` / `get_project()` / `upsert_project()` /
       `archive_project()`
-- [ ] `HistoryStore.save_chat(..., project=None)` writes the field
-- [ ] Tests: round-trip a project, and confirm a chat with no `project` still
+- [x] `HistoryStore.save_chat(..., project=None)` writes the field
+- [x] Tests: round-trip a project, and confirm a chat with no `project` still
       loads (the backward-compatibility guarantee)
 
 ### 2.2 — Project selector in the sidebar
-- [ ] Combo above the agent filter: *All projects · <projects> · Unfiled*
-- [ ] Filter the list by project, combining with the existing agent filter and
+- [x] Combo above the agent filter: *All projects · <projects> · Unfiled*
+- [x] Filter the list by project, combining with the existing agent filter and
       search (all three must intersect, not override each other)
-- [ ] "Assign to project…" on the right-click menu of a saved chat
-- [ ] New chats inherit the currently selected project
+- [x] "Assign to project…" on the right-click menu of a saved chat
+- [x] New chats inherit the currently selected project
+
+Chat also has an always-visible active-project picker in its run bar. The `+`
+beside the History project filter creates a project, and opening a filed chat
+restores that project as the active destination. Project selection is captured
+when a request starts, so changing the picker while a response is running cannot
+misfile that response.
 
 ### 2.3 — Instructions injection  *(the core of Stage 2)*
 - [ ] Prepend `project.instructions` to the system message in
@@ -107,11 +114,11 @@ existing one converge.
 
 ---
 
-## Sequencing
+## V3 sequencing
 
-2.1 → 2.2 gives working grouping with no behaviour change and is safe to ship
-alone. 2.3 is where the feature becomes worth having. 2.4–2.6 are refinements
-and can land in any order.
+2.1 → 2.2 shipped in V2 as working grouping with no prompt-behaviour change.
+2.3 is the first V3 step because instructions affect content and billed tokens;
+2.4–2.6 can then land in any order.
 
 Stop after 2.2 if it turns out grouping was the whole itch — that is a real
 possibility worth testing before building the rest.

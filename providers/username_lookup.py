@@ -48,7 +48,7 @@ def lookup(username: str, *, on_progress=None, should_stop=None) -> dict:
                 "size": 30,
             },
             timeout=10,
-            headers={"User-Agent": "SentinelAI-OSINT/1.0"},
+            headers={"User-Agent": "Sentinel-OSINT/2.0"},
         )
 
         if resp.status_code == 200:

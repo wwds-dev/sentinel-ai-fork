@@ -162,7 +162,7 @@ class FakeRunLogger:
         self.finished.append(dict(kw, run_id=run_id, status=status))
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture(scope="session")
 def app():
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     from PySide6.QtWidgets import QApplication

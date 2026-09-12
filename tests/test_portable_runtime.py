@@ -10,11 +10,11 @@ def test_explicit_portable_root_uses_dedicated_data_folder(tmp_path):
         {runtime_paths.PORTABLE_ENV: str(tmp_path)}
     )
     assert root == tmp_path.resolve()
-    assert runtime_paths.portable_data_base(root) == tmp_path / "Sentinel Fork Data"
+    assert runtime_paths.portable_data_base(root) == tmp_path / "Sentinel Data"
 
 
 def test_marked_frozen_bundle_is_detected(monkeypatch, tmp_path):
-    executable = tmp_path / "Sentinel Fork.app" / "Contents" / "MacOS" / "Sentinel Fork"
+    executable = tmp_path / "Sentinel.app" / "Contents" / "MacOS" / "Sentinel"
     executable.parent.mkdir(parents=True)
     executable.touch()
     (tmp_path / runtime_paths.PORTABLE_MARKER).touch()
@@ -42,3 +42,31 @@ def test_portable_builder_never_references_source_env_contents():
     assert 'cp "${PROJECT_ROOT}/.env.example"' in script
     assert 'cp "${PROJECT_ROOT}/.env"' not in script
     assert '${APP_NAME} Data' in script
+
+
+def test_portable_state_is_renamed_from_the_legacy_folder(tmp_path):
+    legacy = tmp_path / "Sentinel Fork Data"
+    legacy.mkdir()
+    (legacy / "keep.txt").write_text("user state", encoding="utf-8")
+
+    current = runtime_paths.validate_portable_volume(
+        tmp_path, min_free_bytes=0, probe=False
+    )
+
+    assert current == tmp_path / "Sentinel Data"
+    assert (current / "keep.txt").read_text(encoding="utf-8") == "user state"
+    assert not legacy.exists()
+
+
+def test_normal_state_is_renamed_from_the_legacy_folder(tmp_path):
+    legacy = tmp_path / "Sentinel Fork"
+    legacy.mkdir()
+    (legacy / "sentinel.db").write_bytes(b"database")
+
+    current = runtime_paths._migrate_legacy_directory(
+        tmp_path, runtime_paths.APP_NAME, runtime_paths.LEGACY_APP_NAMES
+    )
+
+    assert current == tmp_path / "Sentinel"
+    assert (current / "sentinel.db").read_bytes() == b"database"
+    assert not legacy.exists()

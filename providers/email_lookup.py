@@ -32,7 +32,7 @@ def _hibp(email: str) -> dict:
         }
     headers = {
         "hibp-api-key": HIBP_KEY,
-        "User-Agent": "SentinelAI-OSINT/1.0",
+        "User-Agent": "Sentinel-OSINT/2.0",
     }
     try:
         r = requests.get(
@@ -76,7 +76,7 @@ def _breachdirectory(email: str) -> dict:
         r = requests.get(
             "https://breachdirectory.org/api",
             params={"func": "auto", "term": email},
-            headers={"User-Agent": "SentinelAI-OSINT/1.0"},
+            headers={"User-Agent": "Sentinel-OSINT/2.0"},
             timeout=10,
         )
         if r.status_code == 200:
@@ -100,7 +100,7 @@ def _emailrep(email: str) -> dict:
         resp = requests.get(
             f"https://emailrep.io/{email}",
             timeout=10,
-            headers={"User-Agent": "SentinelAI-OSINT/1.0", "Accept": "application/json"},
+            headers={"User-Agent": "Sentinel-OSINT/2.0", "Accept": "application/json"},
         )
         if resp.status_code == 200:
             data = resp.json()

@@ -74,7 +74,7 @@ def lookup(company: str, *, on_progress=None, should_stop=None) -> dict:
             timeout=12,
             headers={
                 "Accept": "application/vnd.api+json",
-                "User-Agent": "SentinelAI-OSINT/1.0",
+                "User-Agent": "Sentinel-OSINT/2.0",
             },
         )
         if response.status_code == 200:

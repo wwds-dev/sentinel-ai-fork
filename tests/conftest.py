@@ -2,12 +2,25 @@
 
 from __future__ import annotations
 
+import os
 import shutil
 import tempfile
 from pathlib import Path
 
+import pytest
+
 
 _TEST_ROOT: Path | None = None
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _session_qapplication():
+    """Keep one Qt application alive across modules that construct widgets."""
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtWidgets import QApplication
+
+    application = QApplication.instance() or QApplication([])
+    yield application
 
 
 def pytest_configure(config):

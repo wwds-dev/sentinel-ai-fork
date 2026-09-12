@@ -261,3 +261,55 @@ def test_openvpn_profile_never_receives_wireguard_commands(monkeypatch):
     assert unknown.valid is False
     assert unknown.commands == ()
     assert "not supported" in unknown.error
+
+
+def test_config_inspection_discards_keys_and_compares_route_and_dns(tmp_path):
+    private = "PRIVATE-MUST-NOT-REACH-SENTINEL"
+    config = tmp_path / "travel.conf"
+    config.write_text(f"""
+[Interface]
+PrivateKey = {private}
+Address = 10.7.0.2/32
+DNS = 10.0.0.53
+[Peer]
+Endpoint = vpn.example.test:51820
+AllowedIPs = 0.0.0.0/0
+""", encoding="utf-8")
+    report = diagnostics.VpnDiagnosticsReport(
+        checked_at="now",
+        tools={},
+        active_tunnels=["utun7"],
+        tunnel_stats={},
+        route={"interface": "utun7", "gateway": "10.0.0.1"},
+        dns_servers=["10.0.0.53"],
+        openvpn_running=False,
+        selected_profile={
+            "endpoint": "vpn.example.test", "port": 51820, "interface": "utun7"
+        },
+    )
+
+    inspection = diagnostics.inspect_wireguard_config(config, report)
+    rendered = inspection.as_text()
+
+    assert private not in rendered
+    assert inspection.summary.secrets_discarded == 1
+    assert "Full-tunnel route is plausible" in rendered
+    assert "Configured DNS is visible" in rendered
+    assert "Profile endpoint matches" in rendered
+
+
+def test_config_inspection_without_snapshot_stays_offline_and_actionable(tmp_path):
+    config = tmp_path / "home.conf"
+    config.write_text("""
+[Interface]
+Address = 10.7.0.2/32
+[Peer]
+AllowedIPs = 192.168.1.0/24
+Endpoint = vpn.example.test:51820
+""", encoding="utf-8")
+
+    inspection = diagnostics.inspect_wireguard_config(config)
+
+    assert inspection.summary.route_mode == "Split tunnel"
+    assert "No current snapshot" in inspection.as_text()
+    assert "Run Connection Check" in inspection.as_text()

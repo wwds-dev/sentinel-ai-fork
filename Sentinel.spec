@@ -1,8 +1,8 @@
 # -*- mode: python ; coding: utf-8 -*-
-"""PyInstaller spec for Sentinel Fork — self-contained macOS .app bundle.
+"""PyInstaller spec for Sentinel — self-contained macOS .app bundle.
 
-Build:   .venv/bin/pyinstaller --noconfirm SentinelAI.spec
-Output:  dist.noindex/Sentinel Fork.app (when built through scripts/build_app.sh)
+Build:   .venv/bin/pyinstaller --noconfirm Sentinel.spec
+Output:  dist.noindex/Sentinel.app (when built through scripts/build_app.sh)
 """
 from PyInstaller.utils.hooks import collect_all, collect_submodules
 
@@ -62,7 +62,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name="Sentinel Fork",
+    name="Sentinel",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -82,18 +82,18 @@ coll = COLLECT(
     strip=False,
     upx=False,
     upx_exclude=[],
-    name="Sentinel Fork",
+    name="Sentinel",
 )
 
 app = BUNDLE(
     coll,
-    name="Sentinel Fork.app",
+    name="Sentinel.app",
     icon="assets/icon.icns",
-    bundle_identifier="com.netrunner3000.sentinel.fork",
+    bundle_identifier="com.netrunner3000.sentinel",
     info_plist={
-        "CFBundleName": "Sentinel Fork",
-        "CFBundleDisplayName": "Sentinel Fork",
-        "CFBundleGetInfoString": "Sentinel Fork 2.0 — independent development build",
+        "CFBundleName": "Sentinel",
+        "CFBundleDisplayName": "Sentinel",
+        "CFBundleGetInfoString": "Sentinel 2.0",
         "CFBundleShortVersionString": "2.0.0",
         "CFBundleVersion": "2.0.0",
         "NSHighResolutionCapable": True,
@@ -101,7 +101,7 @@ app = BUNDLE(
         "LSMinimumSystemVersion": "12.0",
         "LSApplicationCategoryType": "public.app-category.developer-tools",
         # File dialogs can read selected evidence and save reports.
-        "NSDesktopFolderUsageDescription": "Sentinel Fork reads files you select and saves reports you choose.",
-        "NSDocumentsFolderUsageDescription": "Sentinel Fork reads files you select and saves reports you choose.",
+        "NSDesktopFolderUsageDescription": "Sentinel reads files you select and saves reports you choose.",
+        "NSDocumentsFolderUsageDescription": "Sentinel reads files you select and saves reports you choose.",
     },
 )

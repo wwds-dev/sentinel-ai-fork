@@ -1,4 +1,4 @@
-# Sentinel Fork — TODO
+# Sentinel — TODO
 
 > **Legend** — priority `P0` critical · `P1` high · `P2` normal · `P3` low
 > categories `security` `bug` `feature` `performance` `design` `docs` `testing` `infra` `research`
@@ -9,88 +9,57 @@ under **Detail** — this checklist is the summary view.
 
 ---
 
-## v2 — current
+## v2 — complete
 
-### Portable and Beacon workflow (completed)
+V2 closed on 2026-09-12. The release checklist contains no deferred work; all
+future and cross-project items are listed under V3 or in their owning project.
 
-- [x] Add marker-based macOS USB portable mode with isolated writable state.
-- [x] Preserve portable user data during app upgrades and exclude real `.env` secrets.
-- [x] Detect unavailable, read-only and low-space portable volumes with clear errors.
-- [x] Add Beacon's read-only interface/adapter role preflight and dual-interface guidance.
-- [x] Document storage formats, architecture, Gatekeeper, VM passthrough, safe eject and backups.
-- [x] Add a portable-only, double-confirmed Emergency Reset scoped to Sentinel-owned data, including API keys.
-- [x] `P1` `feature` `security` `@ai` **Tunnel integration, phase 1 — read-only Connection Check.** Added local tool/tunnel/default-route/DNS inspection, WireGuard handshake and aggregate transfer status without requesting key material, optional separately confirmed public-IP/latency checks, cancellation, structured result cards, focused tests, and Learning Centre/manual acceptance coverage. No check changes VPN, route, or firewall state. Verified with 12 Tunnel-panel tests plus the four dedicated diagnostic tests.
-- [x] `P1` `feature` `security` `@ai` **Tunnel integration, phase 2 — profile comparison and safe action previews.** The live VPN Agent profile catalog is read without seeding or changing it and secret/unknown fields are discarded; the selected interface, handshake and route are compared with the local snapshot while saved endpoint/port values are validated without claiming live endpoint identity; prioritized plain-language next steps are shown. Connect/Disconnect/Restart previews validate WireGuard protocol and interface values and show effects, pre-flight checks and commands, but have no subprocess or privilege path. App close and Portable Emergency Reset join the worker before teardown, packaged builds carry the non-secret starter catalog, and the screenshot workflow uses isolated sample state. Covered by 26 focused tests.
+### Product and interface
 
-- [x] `P1` `design` `@ai` **Refactor Phase 4** — all six specialist verticals now live in `ui/panels/` behind the shared `AgentPanel` boundary. The separate run-id hardening remains tracked below. See `docs/refactor_plan.md`.
-- [x] `P1` `design` `@ai` **Refactor Phase 3** — `AgentHost` (`ui/host.py`) and the `AgentPanel` base (`ui/panels/base.py`), with the design decision settled: composition, not mixins. Six panels' hand-built provider/model rows collapsed to one `build_provider_row` call each, six `*_load_models` methods to one `load_models_into`, and a map of loader *method names* to a registry panels fill in as they build. `main.py` 5,520 → 5,378; 77 new tests, 20 of which construct a panel with no `GodAI` at all.
-- [x] `P1` `design` `@ai` **GUI overhaul — section renderer.** Shipped for Trace and now Bloodhound: `SectionCard`/`SectionView` in `ui/widgets.py`, tabbed text boxes replaced by cards with per-card copy, raw response collapsed behind a disclosure, and a separate streaming box so tokens still show live before there are sections to render. Remaining agents tracked below.
-- [ ] `P2` `design` `@ai` **GUI overhaul — section renderer, remaining agents.** Bloodhound is now done too: `ui/panels/osint_heavy.py` uses the shared `SectionView` with a `stream_box` for live streaming, replacing its old seven-tab `QTabWidget`. Beacon, Bug Spray and Forge still render flat text and need the same treatment — each already has a `_parse_*_sections` method to build against. See `docs/gui_redesign.md`.
-- [x] `P2` `design` `@ai` **GUI overhaul — run bar.** Three stacked control rows → one: tool · command · provider · model · live cost · gear. Execution mode, the six provider permissions and the model tools moved into a popover behind the gear. Splitter minimum dropped 985 → 927px. Deferring this to Phase 4 stopped being the right call once Sentinel was down to six agents and 111 lines of control rows.
-- [x] `P3` `design` `@ai` **GUI overhaul — flat agent list.** The sidebar accordion was built for fifteen agents; there are six. Drop `CollapsibleSection` from the sidebar, keep it where panels still use it.
-- [x] `P1` `design` `@ai` **GUI overhaul — type and spacing scale.** Five sizes (four of which read as one) → three; six weights → two; documented in `ui/style.py` with the 15px section-title role reserved.
-- [x] `P1` `design` `@ai` **GUI overhaul — status rail figures.** `Meter`/`Bar` in `ui/widgets.py` drive system and budget; exact numbers moved to tooltips; budget bars fill with what is spent.
-- [x] `P1` `design` `@ai` **Sidebar rebalance — inspector vs. global setup.** The right rail was a flat stack (System, Routing, Cost, Budget, Actions, API Keys) with no particular order. Split by what changes with a request vs. what doesn't: the right rail now holds only live-request state, reordered to match the request lifecycle (Current Route → Cost → Budget → System, "Last run" folded into Cost), and API Keys/Actions moved to a new left-rail container (`left_utility_container`) alongside the agent list, since those are global setup, not per-request. Both rails share the same 220–270px width band now. `tests/test_ui_panels.py` covers the split (card order, that nothing dropped, and that Quick Actions/API Keys stayed reachable).
-- [x] `P1` `bug` `@ai` Key `_pending_requests` by run-id rather than agent name — done. `authorize_request`/`record_request`/`abandon_request`/`note_request_usage` all take an optional `request_id` (a `uuid4().hex` generated in `authorize_request`), with `_pending_request_key()` falling back to the agent name when no id is passed for backward compatibility. Verified: `tests/test_request_guard.py`'s `test_same_agent_runs_can_finish_out_of_order` starts two runs of the same agent and checks each resolves against its own context.
-- [x] `P2` `feature` `@ai` **Auto-route button, every agent.** Chat and all six specialist panels now have an "Auto-route" action next to their run controls that calls the router for a recommendation and applies it directly, instead of only showing a recommendation label to apply by hand.
-- [x] `P3` `design` `@ai` **Paid-route highlighting.** Any provider/model other than Ollama is flagged `paidSelection` and rendered amber (`ui/style.py`, `MenuComboBox.COST_ROLE`) so a cloud route is visible on the dropdown itself.
-- [x] `P2` `feature` `@ai` **Chat composer overhaul.** `ChatInput` sends on Enter and inserts a newline on Shift+Enter; the input box grew from 74px to 140px; the transcript (now labelled "Conversation", not "Response") renders every message with a role and a timestamp.
-- [x] `P1` `feature` `security` `@ai` **Bloodhound local file discovery.** Added an explicitly scoped, read-only recursive search for user-selected folders with full/partial name, extension, size and modified-date filters; sortable path/type/size/date results; progress, cancellation, inaccessible-folder reporting and 5,000-result/250,000-entry safety limits. File contents and metadata never enter an AI request. Covered by `tests/test_local_file_search.py` and focused panel tests.
-- [x] `P1` `feature` `security` `@ai` **Bloodhound authenticated remote file discovery.** Added hostname/IP/SSH-alias targets over SFTP, custom user/port and multiple absolute remote roots. Authentication stays in the existing SSH agent/keys, unknown host keys are rejected through `known_hosts`, and SSH config proxy settings are honoured. Sentinel stores no credentials and executes no remote shell command for searches; **Open SSH Terminal** explicitly hands unrestricted administration to the system SSH client. Covered by `tests/test_remote_file_search.py`; the combined file-discovery suite has 17 passing tests.
-- [x] `P2` `bug` `@ai` Remove the dead `ops_identity` sidebar entry — done: `services/agent_catalog.py`'s `BUILTIN_AGENT_ORDER` (the actual sidebar list) has no `ops_identity`; it's tracked in the new `RETIRED_BUILTIN_AGENTS` frozenset instead, which retires its registry row explicitly rather than leaving a dangling title.
-- [x] `P2` `feature` `@ai` Model Kimi prompt caching in `config/pricing.json` — done. `cached_input_per_1m_usd` is a new pricing column (seeded at 20% of the input rate, i.e. $0.19/1M for the current Kimi model), `kimi_client.py` reports `cached_input_tokens()` from the API response, `usage_tracker.calculate_cost_eur()` bills them at the cached rate, and the cost-history dialog and Settings pricing editor both gained a "Cached input" column. `database.py` schema v2 adds the column and backfills existing rows to 0.
-- [ ] `P2` `feature` `@ai` **Chat Projects Stage 2 — finish the UI.** The backend has landed: `database.py` schema v3 adds a `projects` table, `services/registry.py` has full CRUD (`list_projects`, `get_project`, `upsert_project`, `archive_project`), `history_store.save_chat()` takes an optional `project`, and `main.py` has `ALL_PROJECTS_FILTER`/`UNFILED_PROJECT_FILTER` constants plus `active_project_id`/`pending_project` state. None of it is wired to anything a user can see yet — no project picker, no filter, no way to create or assign a project from Chat. See `docs/projects_roadmap.md`.
-- [ ] `P3` `design` `@ai` Budget card: `Session €` and `Daily €` could share a row (~34px), but the two label+field pairs do not fit the sidebar's ~250px inner width without shortening the labels
-- [x] `P3` `testing` `@ai` Switch the budget comparison to `Decimal` — done. `services/validator.py` now runs session/daily budget checks through a `_money()` helper (`Decimal(str(value))`) instead of raw floats. `tests/test_cost_and_limits.py::test_decimal_budget_boundary_is_not_refused_by_float_noise` and the rewritten `tests/test_request_guard.py::test_budget_boundary_is_exact_under_decimal_comparison` both now assert the boundary request is *allowed*, replacing the old test that pinned the fail-safe refusal.
-- [ ] `P2` `research` `@me` Decide whether `RunLogger` should grow a general `note` method — it is the tidier home for the `_note_failure` warnings if they ever need to be queryable
-- [x] `P0` `security` `@ai` Paid API calls bypassed every guardrail outside the chat panel — 22 sites constructed a `ChatWorker` directly. `authorize_request` / `record_request` / `abandon_request` / `note_request_usage` now wrap all 19 previously unguarded sites.
-- [x] `P1` `bug` `@ai` Agent panels crushed when the window was narrow — 13 control rows converted to `FlowLayout`; splitter minimum 1460px → 985px
-- [x] `P0` `bug` `@ai` No timeouts on any paid cloud client — `services/api_limits.py` (120s, 1 retry) now shared by all five
-- [x] `P1` `bug` `@ai` Twelve silent `except: pass` blocks replaced with `_note_failure`, which writes to stderr and attaches the reason as a tooltip
-- [x] `P1` `testing` `@ai` Test coverage was inverted — the money logic was the untested part. `test_cost_and_limits.py` (31 tests) and `test_request_guard.py` (30 tests), both mutation-verified.
-- [x] `P2` `feature` `@ai` Saved Chats — agent filter above the search box, double-click to rename
-- [x] `P1` `feature` `@ai` **Trace Live Research, domain/IP slice** — separate consent-gated WHOIS, DNS, and crt.sh collection with source-by-source activity, partial-result retention, cancellation, zero-cost run logging, and Saved Searches integration.
-- [x] `P2` `feature` `@ai` **Trace Live Research, username/email slice** — URLScan requires confirmation; email research offers per-source selection, keeps breach services off by default, disables HIBP without a key, distinguishes skipped services from contacted ones, and preserves partial results. Structure Query remains planning-only.
-- [x] `P2` `feature` `@ai` **Trace Live Research, remaining target types** — company-name searches now use the public GLEIF Legal Entity Index after source-specific consent. Person and phone collectors were evaluated and deliberately excluded: Trace keeps those identifiers local and will not send them to people-search, reverse-phone, or data-broker services. The UI explains this boundary and offers Structure Query instead.
+- [x] Seven-agent Sentinel roster: Chat, Trace, Bloodhound, Beacon, Bug Spray, Tunnel and Forge; retired or moved agents no longer appear in the sidebar.
+- [x] Shared panel architecture (`AgentHost` + `AgentPanel`) and specialist modules under `ui/panels/`.
+- [x] Balanced sidebars, one-row run controls, compact History, three-level type/spacing scale, spend meters and paid-route highlighting.
+- [x] Structured result cards for Trace, Bloodhound, Beacon, Bug Spray and Forge, with separate live-stream surfaces and collapsed raw output.
+- [x] Chat sends with Enter, inserts a line with Shift+Enter, uses a larger composer, keeps the conversation scrollable and timestamps every message.
+- [x] Chat Projects grouping: project picker, project/agent/text filters, project creation and assignment, restored project on open, and project attribution for chat and usage records.
+- [x] Removed the obsolete READY pill and normalized specialist-panel margins to the 4/8/16/24 scale.
+- [x] Offscreen renders of the nine Learning Centre screenshots were visually inspected at 1600×1000 after the final UI changes.
 
-### Workspace restructure — see `docs/workspace_structure.md`
+### Agents and local tools
 
-- [ ] `P1` `infra` `@ai` **Rename "Sentinel AI" → "Sentinel" everywhere** — window title, bundle name, `runtime_paths.APP_NAME`, `SINGLE_INSTANCE_KEY`, the `/Applications` bundle, the Lab Hub tile, the repo docs. Two traps: `APP_NAME` decides `~/Library/Application Support/<name>/`, so the directory needs migrating or the app looks freshly installed; and two apps sharing `SINGLE_INSTANCE_KEY` means launching one focuses the other.
-- [ ] `P1` `infra` `@ai` **Extract the shared platform package** — provider clients, `api_limits`, `usage_tracker`, `validator`, `registry`, `run_logger`, `database`, `runtime_paths`, the request guard, and `ui/{style,widgets,workers,dialogs}`. Four hubs each keeping their own copy is TODO #1 repeated four times. Do this before the hubs diverge further.
-- [ ] `P1` `feature` `security` `@ai` **Tunnel phase 3a — private-key-free configuration inspection.** Parse an explicitly selected WireGuard configuration without retaining or displaying private keys; compare `AllowedIPs`, DNS, endpoint format and full- versus split-tunnel intent with the live read-only snapshot. Keep the canonical parser in `agents/vpn_agent/` and expose only structured, non-secret findings to Sentinel.
-- [ ] `P1` `feature` `security` `@ai` **Tunnel phase 3b — gated WireGuard execution.** Turn an approved preview into an optional action only through separate target review, explicit confirmation, administrator authorization, local audit record, rollback guidance and a fresh post-change check. Start with WireGuard; keep OpenVPN execution blocked until a dedicated adapter and equivalent safeguards exist.
-- [ ] `P2` `feature` `security` `@ai` **Tunnel phase 3c — key and recovery lifecycle.** Add real local key generation with private material excluded from chat and logs, then expose backup/restore entry points with protected storage, integrity checks and a recovery test before key rotation or deployment.
-- [ ] `P2` `testing` `@ai` **Tunnel parity and release audit.** Compare Sentinel with the standalone VPN Agent feature by feature, verify source, frozen and USB-portable launches, and extend close/reset/manual checks for every phase-three path. The companion remains the implementation owner; do not copy its services into Sentinel.
-- [ ] `P2` `infra` `@ai` **Create & Publish** — rebrand the fork (app name, bundle id, icon, `APP_NAME`, single-instance key), integrate `vidforge`, re-shape as tabs (Write · Audio · Web · Gigs), rename `author`→Manuscript and `manuscript`→Publisher internally so the display names and keys stop disagreeing.
-- [ ] `P2` `infra` `@ai` **Backup & Sync hub** — a standalone app in Sentinel's shape holding Backup Control Center and git_autosync, both runnable from inside it.
-- [ ] `P2` `feature` `@ai` **Lab Hub front desk** — hub tiles that list their contents in a smaller font, and a Tools tab presenting Narrator, Unblock Tracker, Convert and Image tools as tiles.
-- [ ] `P2` `research` `@me` **Bug Spray exists both as its own project and as a Sentinel agent** — decide which is the real home. (Playmaker is settled: the scaffold was dropped and the implementation lives at `sonar/playmaker/`, 33 tests.)
-- [ ] `P3` `infra` `@ai` **SONAR — Oracle tab** for long-term investment monitoring, alongside Playmaker.
-- [ ] `P3` `feature` `@ai` **More sports in Playmaker** — the `Sport(...)` registry in `sonar/playmaker/` is the extension point; a second sport is an entry plus its prop types.
+- [x] Trace consent-gated Live Research for domains/IPs, usernames, email and companies, with partial results, cancellation and saved searches. Person/phone data-broker lookup remains deliberately excluded.
+- [x] Bloodhound read-only local and authenticated SFTP file discovery with explicit roots, filters, safety limits, cancellation and no file-content handoff to AI.
+- [x] Beacon read-only interface/adapter preflight and documented dual-interface workflow.
+- [x] Tunnel phases 1–2: read-only connection diagnostics, selected-profile comparison and safe Connect/Disconnect/Restart previews with no execution path.
+- [x] Tunnel phase 3a: local WireGuard configuration inspection that discards private and preshared keys at parse time and compares non-secret intent with the latest diagnostic snapshot.
+- [x] Forge creates reviewable agent specifications before any scaffold is approved.
+- [x] Bug Spray's canonical home is the nested companion used by Sentinel; no duplicate top-level implementation is maintained.
 
-### Interface, remaining from the approved mock screens
+### Safety, cost and reliability
 
-- [x] `P2` `design` `@ai` **Trace result renderer** — Trace now uses `SectionView` cards with persistent activity tracking; no result tabs remain in its panel. Bloodhound presentation work is tracked with the remaining-agent renderer item above.
-- [ ] `P3` `design` `@ai` The `READY` pill is the last uppercase letter-spaced element in the centre column; the design has no such chrome.
-- [ ] `P3` `design` `@ai` **SAVED CHATS is a four-control stack** (filter, search, list, two buttons) in a rail that is otherwise flat rows. Compress it.
-- [ ] `P3` `design` `@ai` Normalise the remaining ad-hoc `setContentsMargins` calls onto the 4/8/16/24 scale — the right rail and centre are done, the agent panels are not.
-
-### Process
-
-- [ ] `P2` `docs` `@ai` **Verify visual changes by rendering, not by grepping** — `docs/handoff.md` has the offscreen `WA_DontShowOnScreen` + `grab()` recipe. Several design changes were reported as done while never reaching the screen.
-- [ ] `P3` `infra` `@me` `bazaar` and `playmaker` had no initial commit, so `git_autosync` was skipping them entirely. Both now have one. Worth checking no other project is in that state after the restructure.
+- [x] Every paid-provider request goes through authorization, budget, consent, usage and run logging, keyed by unique request id.
+- [x] Exact `Decimal` budget boundaries, Kimi cached-input pricing, cloud timeouts and clear provider-permission errors.
+- [x] `_note_failure` remains intentionally lightweight (stderr + tooltip); a queryable general `RunLogger.note` API is not required for V2.
+- [x] Portable macOS mode keeps state on the selected drive, preserves data during upgrades, excludes source secrets, handles read-only/low-space media and offers a double-confirmed Sentinel-only Emergency Reset.
+- [x] Product identity is Sentinel across source, bundle, runtime paths, single-instance key, documentation and Lab Hub. Legacy `Sentinel Fork` application-support data is migrated; archived `Sentinel AI` data is never touched.
+- [x] Full release verification: 556 Sentinel tests, the complete nested VPN Agent suite and the complete Lab Hub suite pass.
 
 ## v3 — later
 
-- [x] `P1` `feature` `docs` `@ai` **Learning Centre — complete curriculum.** Searchable in-app foundation, Quick Start, workspace tour, all shared controls and Settings, all seven agent courses, privacy/cost, troubleshooting, multi-agent workflows and advanced-tools guidance are shipped.
-- [x] `P2` `docs` `design` `@ai` **Learning Centre — current screenshots.** Eight current-interface images are captured from an isolated empty database with fictional/empty inputs and alt text. `scripts/capture_training_screenshots.py` makes the set reproducible after UI changes. Numbered graphical callouts remain optional polish.
-- [ ] `P2` `testing` `docs` `@ai` **Learning Centre — exercises and first-user validation.** Add beginner, intermediate and independent exercises per agent, then test Quick Start with people who have not used Sentinel before.
-- [ ] `P1` `infra` `security` `@ai` **v3 external-tool adapter framework.** Dependency detection, structured output, command previews, timeouts, cancellation, local audit records, privilege/scope gates and explicit cloud handoff consent.
-- [ ] `P2` `feature` `security` `@ai` **v3 staged specialist integrations.** Tunnel's profile-aware read-only diagnostics and safe previews are done; its remaining work is split into phases 3a–3c and a parity audit above. Bloodhound metadata/rule matching comes first; then Trace public-source adapters, authorised Bug Spray assessment and passive Beacon analysis. Exclude denial-of-service, credential theft, stealth/persistence and uncontrolled exploitation.
-- [ ] `P2` `feature` `@ai` Streaming responses in the chat panel, instead of wait-then-dump
-- [ ] `P2` `feature` `@ai` Local model provider (Ollama) as a zero-cost fallback when the budget cap is hit
-- [ ] `P3` `infra` `@ai` One shared retry-with-backoff wrapper across providers, replacing per-client handling
-- [ ] `P3` `feature` `@ai` Export a run — prompt, response, usage, cost — as a single markdown file
+- [x] `P1` `feature` `docs` `@ai` **Learning Centre — complete curriculum.** Searchable Quick Start, workspace tour, controls and Settings, all seven agent courses, privacy/cost, troubleshooting, multi-agent workflows and advanced-tools guidance are shipped.
+- [x] `P2` `docs` `design` `@ai` **Learning Centre — reproducible screenshots.** Nine current-interface images are generated from isolated fictional/empty state by `scripts/capture_training_screenshots.py`.
+- [ ] `P2` `testing` `docs` `@ai` **Learning Centre exercises and first-user validation.** Add beginner, intermediate and independent exercises per agent, then test Quick Start with new users.
+- [ ] `P1` `infra` `@ai` **Shared Lab platform package.** Extract provider clients, limits, usage, registry, database, runtime paths, request guard and common UI only when the other hubs are ready to consume one version.
+- [ ] `P1` `infra` `security` `@ai` **External-tool adapter framework.** Dependency checks, structured output, previews, timeouts, cancellation, local audit records, privilege/scope gates and explicit cloud-handoff consent.
+- [ ] `P1` `feature` `security` `@ai` **Tunnel phase 3b — gated WireGuard execution.** Separate target review, explicit confirmation, administrator authorization, local audit, rollback guidance and a fresh post-change check. OpenVPN execution remains blocked pending an equivalent adapter.
+- [ ] `P2` `feature` `security` `@ai` **Tunnel phase 3c — key and recovery lifecycle.** Local key generation, protected backup/restore, integrity checking and recovery testing, with secret material excluded from chat and logs.
+- [ ] `P2` `testing` `@ai` **Tunnel phase-three parity audit.** Verify source, frozen and USB-portable paths plus close/reset behavior after the execution and recovery work exists.
+- [ ] `P2` `feature` `@ai` **Chat Projects stages 2.3–2.6.** Project instructions, defaults, budget and management UI; grouping remains useful and safe without these behavior-changing additions.
+- [ ] `P2` `feature` `security` `@ai` **Staged specialist integrations.** Bloodhound metadata/rule matching, Trace public-source adapters, authorised Bug Spray assessment and passive Beacon analysis. Exclude denial of service, credential theft, stealth/persistence and uncontrolled exploitation.
+- [ ] `P2` `feature` `@ai` Streaming responses in Chat.
+- [ ] `P2` `feature` `@ai` Automatic Ollama fallback when a cloud budget cap is reached.
+- [ ] `P3` `infra` `@ai` One retry-with-backoff wrapper shared across providers.
+- [ ] `P3` `feature` `@ai` Export a run—prompt, response, usage and cost—as one Markdown file.
 
 ---
 

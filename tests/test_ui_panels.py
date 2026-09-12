@@ -23,7 +23,7 @@ import pytest
 from PySide6.QtCore import QObject, Signal, Qt
 from PySide6.QtGui import QTextCursor
 from PySide6.QtTest import QSignalSpy, QTest
-from PySide6.QtWidgets import QAbstractItemView, QMessageBox
+from PySide6.QtWidgets import QAbstractItemView, QLabel, QMessageBox
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -40,7 +40,7 @@ PANEL_AGENTS = [
 ]
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture(scope="session")
 def qapp():
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     from PySide6.QtWidgets import QApplication
@@ -694,6 +694,147 @@ class TestWorkspaceLayoutRegressions:
         win._toggle_saved_chats(False)
         win.saved_searches_toggle.setChecked(False)
         win._toggle_saved_searches(False)
+
+    def test_chat_projects_can_be_created_and_selected(self, win, monkeypatch):
+        import main
+
+        existing = win.registry.list_projects()
+        projects = []
+        monkeypatch.setattr(win.registry, "list_projects", lambda: list(projects))
+
+        def create(project):
+            saved = {
+                "id": "moonlight",
+                "name": project["name"],
+                "instructions": "",
+                "default_agent": "chat",
+                "default_provider": "ollama",
+                "default_model": "",
+                "budget_eur": None,
+                "archived": False,
+            }
+            projects.append(saved)
+            return saved
+
+        monkeypatch.setattr(win.registry, "upsert_project", create)
+        monkeypatch.setattr(
+            main.QInputDialog, "getText",
+            staticmethod(lambda *args, **kwargs: ("Moonlight", True)),
+        )
+
+        win.refresh_project_controls()
+        win.create_chat_project()
+
+        assert win.active_project_id == "moonlight"
+        assert win.active_project_box.currentText() == "Moonlight"
+        assert win.history_project_filter.findText("Moonlight") >= 0
+
+        # Leave the module-scoped window showing the real registry afterwards.
+        monkeypatch.setattr(win.registry, "list_projects", lambda: existing)
+        win.active_project_id = None
+        win.refresh_project_controls()
+
+    def test_saved_chat_project_filter_intersects_agent_and_search(
+            self, win, monkeypatch, tmp_path):
+        import json
+        import main
+
+        records = (
+            ("one.json", "chat", "moonlight", "alpha draft"),
+            ("two.json", "vpn", "moonlight", "alpha tunnel"),
+            ("three.json", "chat", None, "alpha loose"),
+            ("four.json", "chat", "moonlight", "beta draft"),
+        )
+        for filename, agent, project, prompt in records:
+            payload = {
+                "agent": agent,
+                "messages": [{"role": "user", "content": prompt}],
+                "response": "done",
+            }
+            if project:
+                payload["project"] = project
+            (tmp_path / filename).write_text(json.dumps(payload), encoding="utf-8")
+
+        existing = win.registry.list_projects()
+        monkeypatch.setattr(
+            win.registry, "list_projects",
+            lambda: [{"id": "moonlight", "name": "Moonlight"}],
+        )
+        monkeypatch.setattr(main, "CHATS_DIR", tmp_path)
+        win.refresh_project_controls()
+        win.history_project_filter.setCurrentIndex(
+            win._combo_index_for_data(win.history_project_filter, "moonlight")
+        )
+        win.history_agent_filter.setCurrentText("chat")
+        win.history_search.setText("alpha")
+        win.load_history_list()
+
+        assert win.history_list.count() == 1
+        assert "alpha draft" in win.history_list.item(0).text()
+
+        win.history_search.clear()
+        win.history_agent_filter.setCurrentText("All agents")
+        monkeypatch.setattr(win.registry, "list_projects", lambda: existing)
+        win.active_project_id = None
+        win.refresh_project_controls()
+
+    def test_saved_chat_can_be_assigned_and_returned_to_unfiled(
+            self, win, monkeypatch, tmp_path):
+        import json
+
+        path = tmp_path / "chat.json"
+        path.write_text(json.dumps({
+            "agent": "chat",
+            "messages": [{"role": "user", "content": "hello"}],
+            "response": "hi",
+        }), encoding="utf-8")
+        monkeypatch.setattr(win, "load_history_list", lambda: None)
+        monkeypatch.setattr(
+            win, "_chat_projects",
+            {"moonlight": {"id": "moonlight", "name": "Moonlight"}},
+        )
+
+        win._assign_chat_to_project(str(path), "moonlight")
+        assert json.loads(path.read_text(encoding="utf-8"))["project"] == "moonlight"
+
+        win._assign_chat_to_project(str(path), None)
+        assert "project" not in json.loads(path.read_text(encoding="utf-8"))
+
+    def test_completed_chat_is_saved_and_accounted_to_pending_project(
+            self, win, monkeypatch):
+        usage_calls = []
+        saved_calls = []
+        monkeypatch.setattr(
+            win.usage_tracker, "log_request",
+            lambda **kwargs: usage_calls.append(kwargs) or {
+                "cost_eur": 0.0,
+                "estimated_cost": 0.0,
+                "input_tokens": 1,
+                "output_tokens": 1,
+            },
+        )
+        monkeypatch.setattr(
+            win.history, "save_chat",
+            lambda **kwargs: saved_calls.append(kwargs),
+        )
+        monkeypatch.setattr(win, "load_history_list", lambda: None)
+        monkeypatch.setattr(win, "update_usage_labels", lambda: None)
+
+        win.pending_agent = "chat"
+        win.pending_backend = "ollama"
+        win.pending_model = "test-model"
+        win.pending_command = "General Chat"
+        win.pending_prompt = "hello"
+        win.pending_messages = [win._timestamped_message("user", "hello")]
+        win.pending_usage = None
+        win.pending_project = "moonlight"
+        win.current_messages = list(win.pending_messages)
+        win.active_run_id = None
+
+        win.handle_chat_finished("hi")
+
+        assert usage_calls[0]["project"] == "moonlight"
+        assert saved_calls[0]["project"] == "moonlight"
 
     def test_saved_trace_search_can_be_filtered_and_reopened(
             self, win, monkeypatch, tmp_path):
@@ -1598,7 +1739,13 @@ class TestForgePanel:
         forge.host.authorized = False
         forge.analyze_idea()
         assert forge.analyze_btn.isEnabled() is True
-        assert "Analyzing..." not in forge.spec_display.toPlainText()
+        assert "Analyzing" not in forge.stream_box.toPlainText()
+
+    def test_tokens_stream_before_the_spec_is_structured(self, forge):
+        forge.analyze_idea()
+        forge.worker.token_signal.emit('{"name": "fw')
+        assert forge.stream_box.toPlainText() == '{"name": "fw'
+        assert forge.sections.isHidden() is True
 
     def test_a_parsed_spec_enables_approval(self, forge):
         forge.analyze_idea()
@@ -1607,6 +1754,11 @@ class TestForgePanel:
         assert forge.approve_btn.isEnabled() is True
         assert forge.reject_btn.isEnabled() is True
         assert "[Ready]" in forge.log.toPlainText()
+        assert forge.stream_box.isHidden() is True
+        assert forge.sections._raw == SPEC
+        assert "Firewall Review" in " ".join(
+            label.text() for label in forge.sections.findChildren(QLabel)
+        )
 
     def test_an_unparseable_answer_leaves_approval_disabled(self, forge):
         # The response is still shown — the raw text is the only clue to why.
@@ -1614,7 +1766,7 @@ class TestForgePanel:
         forge.worker.finished_signal.emit("sorry, I could not do that")
         assert forge.pending_spec is None
         assert forge.approve_btn.isEnabled() is False
-        assert "sorry, I could not do that" in forge.spec_display.toPlainText()
+        assert "sorry, I could not do that" in forge.sections._raw
 
     def test_an_error_abandons_the_request(self, forge):
         forge.analyze_idea()
@@ -1652,7 +1804,8 @@ class TestForgePanel:
         forge.worker.finished_signal.emit(SPEC)
         forge.reject_spec()
         assert forge.pending_spec is None
-        assert forge.spec_display.toPlainText() == ""
+        assert forge.sections._raw == ""
+        assert forge.stream_box.toPlainText() == ""
         assert forge.approve_btn.isEnabled() is False
 
     def test_stop_cancels_and_re_enables_analyse(self, forge):
@@ -1670,7 +1823,8 @@ class TestForgePanel:
         forge.worker.finished_signal.emit(SPEC)
         forge.clear()
         assert forge.idea_input.toPlainText() == ""
-        assert forge.spec_display.toPlainText() == ""
+        assert forge.sections._raw == ""
+        assert forge.stream_box.toPlainText() == ""
         assert forge.pending_spec is None
 
 
@@ -1713,9 +1867,11 @@ def spray(qapp, monkeypatch):
 class TestBugSprayPanel:
 
     def test_it_builds_hidden_with_saving_disabled(self, spray):
+        from PySide6.QtWidgets import QTabWidget
         assert spray.isHidden() is True
         assert spray.save_btn.isEnabled() is False
-        assert spray.tabs.count() == 5
+        assert spray.findChildren(QTabWidget) == []
+        assert spray.sections is not None
 
     def test_nothing_to_analyse_says_so_without_spending(self, spray):
         spray.target_input.clear()
@@ -1746,18 +1902,22 @@ class TestBugSprayPanel:
              "API / REST", "401 on /admin", ""),
         ]
 
-    def test_tokens_stream_into_the_report_tab(self, spray):
+    def test_tokens_stream_until_the_report_can_be_sectioned(self, spray):
         spray.analyse()
         spray.worker.token_signal.emit("## VULN")
         spray.worker.token_signal.emit("ERABILITY")
-        assert spray.report_box.toPlainText() == "## VULNERABILITY"
+        assert spray.stream_box.toPlainText() == "## VULNERABILITY"
+        assert spray.sections.isHidden() is True
 
-    def test_a_finished_report_fills_the_tabs(self, spray):
+    def test_a_finished_report_fills_the_section_cards(self, spray):
         spray.analyse()
         spray.worker.finished_signal.emit(REPORT)
-        assert spray.remediation_box.toPlainText() == "patch it"
-        assert spray.submission_box.toPlainText() == "draft text"
-        assert spray.poc_box.toPlainText().startswith("curl")
+        parsed = spray.parse_sections(REPORT)
+        assert parsed["remediation"] == "patch it"
+        assert parsed["submission"] == "draft text"
+        assert parsed["poc"].startswith("curl")
+        assert spray.sections._raw == REPORT
+        assert spray.stream_box.isHidden() is True
         assert spray.save_btn.isEnabled() is True
         assert spray.status_label.text() == "Analysis complete."
 
@@ -1776,11 +1936,14 @@ class TestBugSprayPanel:
         assert spray.bounty_label.text() == "—"
 
     def test_an_unsectioned_answer_still_shows_something(self, spray):
-        # The vulnerability tab falls back to the whole answer rather than
-        # showing an empty box when the model ignores the heading format.
+        # SectionView falls back to one Response card when the model ignores
+        # the requested heading format.
         spray.analyse()
         spray.worker.finished_signal.emit("just prose, no headings")
-        assert spray.vuln_box.toPlainText() == "just prose, no headings"
+        assert spray.sections._raw == "just prose, no headings"
+        assert "just prose, no headings" in " ".join(
+            label.text() for label in spray.sections.findChildren(QLabel)
+        )
 
     def test_an_error_abandons_the_request(self, spray):
         spray.analyse()
@@ -1803,7 +1966,8 @@ class TestBugSprayPanel:
         spray.worker.finished_signal.emit(REPORT)
         spray.clear()
         assert spray.target_input.text() == ""
-        assert spray.report_box.toPlainText() == ""
+        assert spray.stream_box.toPlainText() == ""
+        assert spray.sections._raw == ""
         assert spray.severity_label.text() == "—"
         assert spray.save_btn.isEnabled() is False
 
@@ -1905,9 +2069,12 @@ class TestBloodhoundPanel:
         assert hound.file_folders.isEnabled() is False
         assert hound.add_folder_btn.isEnabled() is False
 
-    def test_it_builds_hidden_with_seven_tabs(self, hound):
+    def test_it_builds_hidden_with_section_results(self, hound):
+        from PySide6.QtWidgets import QTabWidget
+
         assert hound.isHidden() is True
-        assert hound.tabs.count() == 7
+        assert hound.findChildren(QTabWidget) == []
+        assert hound.sections is not None
         assert hound.save_btn.isEnabled() is False
 
     def test_an_empty_target_never_reaches_the_guard(self, hound):
@@ -1936,13 +2103,19 @@ class TestBloodhoundPanel:
         hound.investigate()
         assert hound.depth_label.text() == "Quick Scan"
 
-    def test_a_finished_dossier_fills_every_tab(self, hound):
+    def test_a_finished_dossier_fills_section_cards(self, hound):
         hound.investigate()
         hound.worker.finished_signal.emit(DOSSIER)
-        assert hound.overview_box.toPlainText() == "who they are"
-        assert hound.footprint_box.toPlainText() == "accounts"
-        assert hound.method_box.toPlainText() == "how it was found"
-        assert hound.dossier_box.toPlainText() == DOSSIER
+        parsed = hound.parse_sections(DOSSIER)
+        assert parsed["overview"] == "who they are"
+        assert parsed["footprint"] == "accounts"
+        assert parsed["methodology"] == "how it was found"
+        assert hound.sections._raw == DOSSIER
+        labels = " ".join(
+            label.text() for label in hound.sections.findChildren(QLabel)
+        )
+        assert "Digital footprint" in labels
+        assert "Methodology" in labels
         assert hound.save_btn.isEnabled() is True
 
     def test_a_finished_dossier_fills_the_indicators(self, hound):
@@ -1965,12 +2138,12 @@ class TestBloodhoundPanel:
         assert hound.investigate_btn.isEnabled() is True
         assert hound.status_label.text() == "Stopped."
 
-    def test_clear_resets_the_brief_the_tabs_and_the_image(self, hound):
+    def test_clear_resets_the_brief_the_sections_and_the_image(self, hound):
         hound.investigate()
         hound.worker.finished_signal.emit(DOSSIER)
         hound.clear()
         assert hound.target_input.text() == ""
-        assert hound.overview_box.toPlainText() == ""
+        assert hound.sections._raw == ""
         assert hound.threat_bar.value() == 0
         assert hound.image_label.text() == "No image selected"
 
@@ -1988,14 +2161,14 @@ class TestBloodhoundPanel:
         hound.investigate()
         assert hound.host.agent_instances["osint_heavy"].calls[-1][4] == ""
 
-    def test_attaching_an_image_fills_the_image_tab(self, hound, tmp_path):
+    def test_attaching_an_image_shows_local_image_details(self, hound, tmp_path):
         fake = tmp_path / "target.jpg"
         fake.write_text("not really a jpeg")
         hound.set_image(str(fake))
         assert hound.image_label.text() == "target.jpg"
-        assert "Image OSINT" in hound.image_tab.toPlainText()
-        assert "No EXIF data found" in hound.image_tab.toPlainText()
-        assert hound.tabs.currentIndex() == hound.tabs.indexOf(hound.image_tab)
+        assert hound.image_details.isHidden() is False
+        assert "Image OSINT" in hound.image_details.toPlainText()
+        assert "No EXIF data found" in hound.image_details.toPlainText()
 
 
 class TestBloodhoundParsing:
@@ -2084,11 +2257,12 @@ def tunnel(qapp, monkeypatch):
 
 class TestTunnelPanel:
 
-    def test_it_builds_hidden_with_four_result_tabs(self, tunnel):
+    def test_it_builds_hidden_with_five_result_tabs(self, tunnel):
         assert tunnel.isHidden() is True
-        assert tunnel.tabs.count() == 4
+        assert tunnel.tabs.count() == 5
         assert tunnel.tabs.tabText(0) == "Diagnostics"
         assert tunnel.tabs.tabText(3) == "Action Preview"
+        assert tunnel.tabs.tabText(4) == "Config Inspection"
         assert tunnel.external_checks_box.isChecked() is False
         assert tunnel.profile_box.currentText() == "Travel VPS"
 
@@ -2150,6 +2324,34 @@ class TestTunnelPanel:
         assert tunnel.tabs.currentWidget() is tunnel.action_view
         assert "sudo wg-quick down wg3" in tunnel.action_view._raw
         assert "nothing executed" in tunnel.status_label.text().lower()
+        assert [c for c in tunnel.host.calls if c[0] == "authorize"] == []
+
+    def test_config_inspection_discards_keys_and_uses_no_model(
+        self, tunnel, monkeypatch, tmp_path
+    ):
+        import ui.panels.vpn as vpn_mod
+
+        secret = "PRIVATE-MUST-NOT-BE-RENDERED"
+        path = tmp_path / "travel.conf"
+        path.write_text(f"""
+[Interface]
+PrivateKey = {secret}
+DNS = 10.0.0.53
+[Peer]
+Endpoint = vpn.example.test:51820
+AllowedIPs = 0.0.0.0/0
+""", encoding="utf-8")
+        monkeypatch.setattr(
+            vpn_mod.QFileDialog,
+            "getOpenFileName",
+            staticmethod(lambda *a, **k: (str(path), "WireGuard configurations (*.conf)")),
+        )
+
+        tunnel.inspect_config()
+
+        assert tunnel.tabs.currentWidget() is tunnel.config_inspection_view
+        assert secret not in tunnel.config_inspection_view._raw
+        assert "key material discarded" in tunnel.status_label.text().lower()
         assert [c for c in tunnel.host.calls if c[0] == "authorize"] == []
 
     def test_connection_result_is_rendered_as_sections(self, tunnel):
@@ -2245,10 +2447,13 @@ def beacon(qapp, monkeypatch):
 class TestBeaconPanel:
 
     def test_it_builds_hidden_with_the_kali_form_collapsed(self, beacon):
+        from PySide6.QtWidgets import QTabWidget
         assert beacon.isHidden() is True
         assert beacon.kali_group.isHidden() is True
         assert beacon.preflight_btn.text() == "Run Preflight"
         assert beacon.preflight_box.objectName() == "BeaconPreflight"
+        assert beacon.findChildren(QTabWidget) == []
+        assert beacon.sections is not None
 
     def test_switching_to_kali_reveals_the_form_and_disables_ai(self, beacon):
         beacon.mode_box.setCurrentText("Kali Command Builder")
@@ -2279,6 +2484,33 @@ class TestBeaconPanel:
         assert [c for c in beacon.host.calls if c[0] == "authorize"]
         assert beacon.mode_box.currentText() in beacon.host.agent_instances["wifi"].prompts[-1]
 
+    def test_ai_tokens_stream_then_become_section_cards(self, beacon):
+        response = (
+            "1. SUMMARY\nConnected on en0\n"
+            "2. NETWORK FINDINGS\nOne WPA2 network\n"
+            "3. SECURITY OBSERVATIONS\nNo open networks\n"
+            "4. RECOMMENDATIONS\nKeep WPA2 enabled"
+        )
+        beacon.mode_box.setCurrentText("Scan Networks")
+        beacon.run()
+        beacon.scan_worker.finished_signal.emit("agrCtlRSSI: -55")
+        beacon.worker.token_signal.emit("1. SUMMARY\nConnected")
+        assert beacon.stream_box.toPlainText().endswith("Connected")
+        assert beacon.sections.isHidden() is True
+        beacon.worker.finished_signal.emit(response)
+        assert beacon.stream_box.isHidden() is True
+        assert beacon.sections._raw == response
+        labels = " ".join(
+            label.text() for label in beacon.sections.findChildren(QLabel)
+        )
+        assert "Network findings" in labels
+        assert "Keep WPA2 enabled" in labels
+        assert all(
+            label.isHidden()
+            for label in beacon.sections.findChildren(QLabel)
+            if label.text() == "No results yet."
+        )
+
     def test_a_scan_without_ai_just_shows_the_raw_output(self, beacon):
         beacon.mode_box.setCurrentText("Scan Networks")
         beacon.ai_checkbox.setChecked(False)
@@ -2292,7 +2524,10 @@ class TestBeaconPanel:
         beacon.ai_checkbox.setChecked(False)
         beacon.kali_bssid_input.setText("AA:BB:CC:DD:EE:FF")
         beacon.run()
-        assert beacon.kali_cmd_box.toPlainText() != ""
+        assert beacon.sections._raw != ""
+        assert "Generated Kali commands" in " ".join(
+            label.text() for label in beacon.sections.findChildren(QLabel)
+        )
         assert [c for c in beacon.host.calls if c[0] == "authorize"] == []
         assert beacon.save_btn.isEnabled() is True
 
@@ -2324,9 +2559,35 @@ class TestBeaconPanel:
         assert "-40 dBm" in beacon.signal_val_label.text()
 
     def test_clear_resets_everything(self, beacon):
-        beacon.raw_box.setPlainText("stuff")
+        beacon._show_sections([("Raw wireless output", "stuff", True)], "stuff")
         beacon.target_input.setText("192.168.1.1")
         beacon.clear()
-        assert beacon.raw_box.toPlainText() == ""
+        assert beacon.stream_box.toPlainText() == ""
+        assert beacon.sections._raw == ""
         assert beacon.target_input.text() == ""
         assert beacon.signal_bar.value() == 0
+
+
+class TestBeaconSectionParsing:
+    def test_numbered_headings_become_four_sections(self):
+        from ui.panels.wifi import WifiPanel
+
+        parsed = WifiPanel.parse_analysis_sections(
+            "1. SUMMARY\nsummary\n"
+            "2. NETWORK FINDINGS\nnetworks\n"
+            "3. SECURITY OBSERVATIONS\nsecurity\n"
+            "4. RECOMMENDATIONS\nnext"
+        )
+        assert parsed == {
+            "summary": "summary",
+            "findings": "networks",
+            "security": "security",
+            "recommendations": "next",
+        }
+
+    def test_missing_headings_stay_empty(self):
+        from ui.panels.wifi import WifiPanel
+
+        parsed = WifiPanel.parse_analysis_sections("## SUMMARY\nOnly a summary")
+        assert parsed["summary"] == "Only a summary"
+        assert parsed["security"] == ""

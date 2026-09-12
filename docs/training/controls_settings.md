@@ -61,7 +61,7 @@ When Sentinel is running from a supported portable build, the General tab also
 shows **Emergency Reset**. It is intentionally absent from development and
 ordinary installed mode. The reset requires typing `ERASE SENTINEL DATA`, then
 accepting a separate final warning. It stops running Sentinel tasks, deletes the
-complete `Sentinel Fork Data` contents—including `.env` API keys—and quits.
+complete `Sentinel Data` contents—including `.env` API keys—and quits.
 
 It does not format the USB drive, delete neighboring files or remove exports
 saved elsewhere. It also cannot remove records held by macOS, networks or model

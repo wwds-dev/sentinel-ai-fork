@@ -91,7 +91,7 @@ def _crtsh(domain: str) -> dict:
             "https://crt.sh/",
             params={"q": f"%.{domain}", "output": "json"},
             timeout=12,
-            headers={"User-Agent": "SentinelAI-OSINT/1.0"},
+            headers={"User-Agent": "Sentinel-OSINT/2.0"},
         )
         if resp.status_code != 200:
             return {"error": f"crt.sh HTTP {resp.status_code}"}

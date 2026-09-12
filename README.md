@@ -1,6 +1,6 @@
-# Sentinel Fork
+# Sentinel
 
-Sentinel Fork is a local-first PySide6 desktop command centre for security, investigation, and controlled AI-assisted workflows. It supports local Ollama models and explicitly enabled cloud providers, records request usage and cost, and keeps each specialist workflow behind a clear panel and permission gate.
+Sentinel is a local-first PySide6 desktop command centre for security, investigation, and controlled AI-assisted workflows. It supports local Ollama models and explicitly enabled cloud providers, records request usage and cost, and keeps each specialist workflow behind a clear panel and permission gate.
 
 Sentinel's built-in roster is intentionally limited to seven agents:
 
@@ -115,6 +115,12 @@ Normal app close and Portable Emergency Reset cancel and finish an active check
 before the UI is torn down. Packaged builds include a non-secret starter profile
 catalog so Tunnel does not depend on source-tree files.
 
+**Inspect config…** reads one explicitly selected WireGuard file locally and
+returns only its interface, routing, DNS, peer and endpoint summary. Private and
+pre-shared key values are discarded during parsing; the source file is not sent
+to a model, Saved Chats, or the run log. When a recent Connection Check exists,
+Tunnel compares the file's intended full/split routing and DNS with that snapshot.
+
 ### Safety boundaries
 
 Beacon, Bug Spray, and Tunnel are intended for systems, networks, and programs the operator owns or is explicitly authorised to assess. Trace and Bloodhound should be used lawfully and with respect for privacy. Bloodhound never scans a local or remote machine automatically: the operator must enter each host and folder and already possess valid SSH access. Generated commands and findings require human review before execution or submission.
@@ -143,7 +149,7 @@ The main runtime is organised around:
 - `config/tool_prompts.json` — Chat tool instructions
 - `data/sentinel.db` — local application data
 - `assets/` — `icon.icns` and its source PNG for the macOS app bundle; used by
-  `scripts/install_app.sh`, `scripts/build_app.sh`, and `SentinelAI.spec`
+  `scripts/install_app.sh`, `scripts/build_app.sh`, and `Sentinel.spec`
 - `output/` — gitignored, generated-only. Currently holds leftover files from
   before this fork was narrowed to the security roster (`launch_assets/` has a
   KDP listing, an ARC outreach email and a BookTok pitch — publishing-agent
@@ -160,7 +166,7 @@ Development runs and the everyday thin launcher use the Lab project directory fo
 
 `./scripts/install_app.sh` installs the everyday thin launcher. It runs directly from this Lab checkout and uses this folder's `data/`, `config/`, and `.env`, exactly like `python main.py`.
 
-`./scripts/build_app.sh` creates a self-contained release in `dist.noindex/` but does not install it. A self-contained build uses `~/Library/Application Support/Sentinel Fork/` when launched. Installing it with `./scripts/build_app.sh --install` explicitly replaces the thin launcher, so use that option only when you intend to switch modes. The two modes do not automatically merge their data.
+`./scripts/build_app.sh` creates a self-contained release in `dist.noindex/` but does not install it. A self-contained build uses `~/Library/Application Support/Sentinel/` when launched. On first launch it renames existing `Sentinel Fork` application-support data in place; it never takes data from the archived `Sentinel AI` app. Installing with `./scripts/build_app.sh --install` explicitly replaces the thin launcher, so use that option only when you intend to switch modes. Source and frozen modes do not otherwise merge their data.
 
 Important data includes saved chats, settings, usage, run history, and registry records. Do not replace or delete `data/sentinel.db` during an upgrade. Schema and roster changes should be applied through migrations that preserve user history.
 

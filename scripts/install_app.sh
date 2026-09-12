@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Install "Sentinel Fork.app" into /Applications — a thin launcher that runs the
+# Install "Sentinel.app" into /Applications — a thin launcher that runs the
 # project's own main.py through the project's .venv.
 #
 #   ./scripts/install_app.sh
@@ -22,7 +22,7 @@
 set -euo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-APP_NAME="Sentinel Fork"
+APP_NAME="Sentinel"
 INSTALLED="/Applications/${APP_NAME}.app"
 PY="${PROJECT_ROOT}/.venv/bin/python"
 
@@ -51,10 +51,10 @@ cat > "$STAGE/launch.applescript" <<APPLESCRIPT
 set pythonBin to "${PY}"
 set mainPy to "${PROJECT_ROOT}/main.py"
 if (do shell script "[ -x " & quoted form of pythonBin & " ] && [ -f " & quoted form of mainPy & " ] && echo ok || echo missing") is not "ok" then
-    display alert "Sentinel Fork cannot start" message "The project is not where the app expects it:" & return & return & "${PROJECT_ROOT}" & return & return & "Re-run scripts/install_app.sh from the project." as critical
+    display alert "Sentinel cannot start" message "The project is not where the app expects it:" & return & return & "${PROJECT_ROOT}" & return & return & "Re-run scripts/install_app.sh from the project." as critical
     return
 end if
-do shell script "cd " & quoted form of "${PROJECT_ROOT}" & " && " & quoted form of pythonBin & " " & quoted form of mainPy & " > /tmp/sentinel-fork-launch.log 2>&1; exit 0"
+do shell script "cd " & quoted form of "${PROJECT_ROOT}" & " && " & quoted form of pythonBin & " " & quoted form of mainPy & " > /tmp/sentinel-launch.log 2>&1; exit 0"
 APPLESCRIPT
 
 osacompile -o "$APP_DIR" "$STAGE/launch.applescript"
@@ -69,7 +69,7 @@ cp "$PROJECT_ROOT/assets/icon.icns" "$APP_DIR/Contents/Resources/applet.icns"
 rm -f "$APP_DIR/Contents/Resources/Assets.car"
 defaults write "$APP_DIR/Contents/Info" CFBundleName -string "${APP_NAME}"
 defaults write "$APP_DIR/Contents/Info" CFBundleDisplayName -string "${APP_NAME}"
-defaults write "$APP_DIR/Contents/Info" CFBundleIdentifier -string "com.netrunner3000.sentinel.fork"
+defaults write "$APP_DIR/Contents/Info" CFBundleIdentifier -string "com.netrunner3000.sentinel"
 defaults write "$APP_DIR/Contents/Info" LSUIElement -bool false
 plutil -convert xml1 "$APP_DIR/Contents/Info.plist"
 
@@ -78,11 +78,28 @@ pkill -f "${PROJECT_ROOT}/main.py" 2>/dev/null || true
 sleep 1
 
 rm -rf "$INSTALLED"
+LSREG="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
+LEGACY_INSTALLED="/Applications/Sentinel Fork.app"
+if [ -d "$LEGACY_INSTALLED" ]; then
+    "$LSREG" -u "$LEGACY_INSTALLED" 2>/dev/null || true
+    rm -rf "$LEGACY_INSTALLED"
+fi
+
+# Preserve the predecessor's packaged-app state under the final product name.
+# Sentinel AI is intentionally not a migration source: it is a separate,
+# archived application and must remain untouched.
+LEGACY_SUPPORT="${HOME}/Library/Application Support/Sentinel Fork"
+CURRENT_SUPPORT="${HOME}/Library/Application Support/Sentinel"
+if [ -d "$LEGACY_SUPPORT" ] && [ ! -e "$CURRENT_SUPPORT" ]; then
+    mv "$LEGACY_SUPPORT" "$CURRENT_SUPPORT"
+    echo "  Migrated app data: ${LEGACY_SUPPORT} → ${CURRENT_SUPPORT}"
+elif [ -d "$LEGACY_SUPPORT" ] && [ -e "$CURRENT_SUPPORT" ]; then
+    echo "  Kept both app-data folders because Sentinel already exists; no automatic merge was attempted." >&2
+fi
 cp -R "$APP_DIR" "$INSTALLED"
 xattr -cr "$INSTALLED" 2>/dev/null || true
 codesign --force --deep --sign - "$INSTALLED"
 
-LSREG="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
 "$LSREG" -f "$INSTALLED"
 
 echo ""

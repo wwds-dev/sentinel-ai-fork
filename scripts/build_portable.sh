@@ -3,9 +3,9 @@
 set -euo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-APP_NAME="Sentinel Fork"
+APP_NAME="Sentinel"
 SOURCE_APP="${PROJECT_ROOT}/dist.noindex/${APP_NAME}.app"
-OUTPUT="${1:-${PROJECT_ROOT}/dist.noindex/Sentinel Fork Portable}"
+OUTPUT="${1:-${PROJECT_ROOT}/dist.noindex/Sentinel Portable}"
 DATA_DIR="${OUTPUT}/${APP_NAME} Data"
 MIN_KB=262144
 
@@ -40,8 +40,8 @@ if [ ! -e "$DATA_DIR/.env" ]; then
     cp "${PROJECT_ROOT}/.env.example" "$DATA_DIR/.env"
 fi
 cp "${PROJECT_ROOT}/docs/portable_mode.md" "${OUTPUT}/Portable Read Me.md"
-cp "${PROJECT_ROOT}/scripts/run_portable.command" "${OUTPUT}/Start Sentinel Fork.command"
-chmod +x "${OUTPUT}/Start Sentinel Fork.command"
+cp "${PROJECT_ROOT}/scripts/run_portable.command" "${OUTPUT}/Start Sentinel.command"
+chmod +x "${OUTPUT}/Start Sentinel.command"
 
 echo "Built/updated portable distribution: $OUTPUT"
 echo "User data preserved at: $DATA_DIR"

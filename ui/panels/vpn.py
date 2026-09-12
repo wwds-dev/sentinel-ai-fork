@@ -11,14 +11,16 @@ from __future__ import annotations
 
 from PySide6.QtGui import QTextCursor
 from PySide6.QtWidgets import (
-    QCheckBox, QComboBox, QGridLayout, QGroupBox, QHBoxLayout, QLabel, QLineEdit,
-    QMessageBox, QPushButton, QTabWidget, QTextBrowser, QVBoxLayout,
+    QCheckBox, QComboBox, QFileDialog, QGridLayout, QGroupBox, QHBoxLayout,
+    QLabel, QLineEdit, QMessageBox, QPushButton, QTabWidget, QTextBrowser,
+    QVBoxLayout,
 )
 
 from agents.vpn_agent.sentinel_chat_agent import build_configs
 from services.vpn_diagnostics import (
     VpnDiagnosticsReport,
     build_vpn_action_preview,
+    inspect_wireguard_config,
     load_vpn_profile_catalog,
 )
 from ui.panels.base import AgentPanel
@@ -116,6 +118,13 @@ class VpnPanel(AgentPanel):
         self.profile_refresh_btn.setToolTip("Reload the VPN Agent profile list from disk.")
         self.profile_refresh_btn.clicked.connect(self.reload_profiles)
         profile_row.addWidget(self.profile_refresh_btn)
+        self.inspect_config_btn = QPushButton("Inspect config…")
+        self.inspect_config_btn.setToolTip(
+            "Choose one WireGuard file. Private and pre-shared keys are discarded "
+            "before Tunnel builds its local summary."
+        )
+        self.inspect_config_btn.clicked.connect(self.inspect_config)
+        profile_row.addWidget(self.inspect_config_btn)
         diagnostics_layout.addLayout(profile_row)
 
         diagnostics_row = QHBoxLayout()
@@ -214,6 +223,9 @@ class VpnPanel(AgentPanel):
 
         self.action_view = SectionView()
         self.tabs.addTab(self.action_view, "Action Preview")
+
+        self.config_inspection_view = SectionView()
+        self.tabs.addTab(self.config_inspection_view, "Config Inspection")
 
         self.advisor_box.setPlaceholderText(
             "Troubleshooting advice will appear after you select Ask Advisor."
@@ -415,6 +427,29 @@ class VpnPanel(AgentPanel):
             self.status_label.setText("Stopping connection check…")
             self.diagnostics_stop_btn.setEnabled(False)
 
+    def inspect_config(self) -> None:
+        """Summarise one selected WireGuard file without retaining its secrets."""
+        path, _selected_filter = QFileDialog.getOpenFileName(
+            self,
+            "Inspect WireGuard Configuration",
+            "",
+            "WireGuard configurations (*.conf);;All files (*)",
+        )
+        if not path:
+            return
+        try:
+            inspection = inspect_wireguard_config(path, self._last_diagnostics_report)
+        except ValueError as exc:
+            QMessageBox.warning(self, "Configuration Could Not Be Inspected", str(exc))
+            return
+        self.config_inspection_view.show_sections(
+            inspection.sections(), raw=inspection.as_text()
+        )
+        self.tabs.setCurrentWidget(self.config_inspection_view)
+        self.status_label.setText(
+            "Configuration inspected locally — key material discarded."
+        )
+
     def shutdown(self, timeout_ms: int = 2000) -> None:
         """Cancel and join Tunnel workers before their widgets are destroyed."""
         workers = [self.worker, self._diagnostics_worker]
@@ -464,6 +499,7 @@ class VpnPanel(AgentPanel):
         self.advisor_box.clear()
         self.config_box.clear()
         self.action_view.clear()
+        self.config_inspection_view.clear()
         self.question_input.clear()
         self.status_label.setText("Idle")
         self._last_response = ""

@@ -18,6 +18,10 @@ import subprocess
 import time
 from typing import Callable
 
+from agents.vpn_agent.services.config_inspection import (
+    WireGuardConfigSummary,
+    inspect_wireguard_config as inspect_companion_wireguard_config,
+)
 from agents.vpn_agent.server import paths as vpn_paths
 from agents.vpn_agent.services import dns_check, latency, public_ip, wireguard_manager
 from services.runtime_paths import resource_base
@@ -158,6 +162,130 @@ class VpnActionPreview:
         for title, body, _mono in self.sections():
             lines.extend(("", title, body))
         return "\n".join(lines)
+
+
+@dataclass(frozen=True)
+class VpnConfigInspection:
+    """Non-secret config summary plus cautious comparison with a live snapshot."""
+
+    summary: WireGuardConfigSummary
+    comparison: tuple[DiagnosticFinding, ...]
+
+    def sections(self) -> list[tuple[str, str, bool]]:
+        summary = self.summary
+        overview = [
+            f"File: {summary.source_name}",
+            f"Interface name: {summary.interface_name or 'Not available'}",
+            f"Intended routing: {summary.route_mode}",
+            f"Interface addresses: {', '.join(summary.addresses) or 'Not specified'}",
+            f"DNS: {', '.join(summary.dns_servers) or 'Not specified'}",
+            f"Peers: {summary.peer_count}",
+        ]
+        if summary.mtu:
+            overview.append(f"MTU: {summary.mtu}")
+        routing = [
+            "Endpoints: " + (", ".join(summary.endpoints) or "Not specified"),
+            "Allowed IPs: " + (", ".join(summary.allowed_ips) or "Not specified"),
+        ]
+        sections: list[tuple[str, str, bool]] = [
+            ("Configuration summary", "\n".join(overview), True),
+            ("Peer routing", "\n".join(routing), True),
+        ]
+        if self.comparison:
+            sections.append((
+                "Comparison with latest Connection Check",
+                "\n\n".join(item.line() for item in self.comparison),
+                False,
+            ))
+        if summary.warnings:
+            sections.append(("Values needing attention", "\n".join(summary.warnings), False))
+        sections.append((
+            "Privacy boundary",
+            f"{summary.secrets_discarded} private or pre-shared key field(s) were "
+            "discarded while reading. Tunnel keeps only this non-secret summary; "
+            "the original configuration is not copied into chat, logs, or results.",
+            False,
+        ))
+        return sections
+
+    def as_text(self) -> str:
+        lines = [f"Tunnel configuration inspection · {self.summary.source_name}"]
+        for title, body, _mono in self.sections():
+            lines.extend(("", title, body))
+        return "\n".join(lines)
+
+
+def inspect_wireguard_config(
+    path: str | Path,
+    report: "VpnDiagnosticsReport | None" = None,
+) -> VpnConfigInspection:
+    """Inspect one user-selected config without retaining private key material."""
+    summary = inspect_companion_wireguard_config(path)
+    findings: list[DiagnosticFinding] = []
+    if report is None:
+        findings.append(DiagnosticFinding(
+            "info",
+            "No current snapshot",
+            "The configuration was inspected safely, but no Connection Check result is available.",
+            "Run Connection Check to compare its route and DNS intent with this Mac.",
+        ))
+        return VpnConfigInspection(summary, tuple(findings))
+
+    default_interface = str(report.route.get("interface") or "Unknown")
+    if summary.route_mode == "Full tunnel":
+        if default_interface in report.active_tunnels:
+            findings.append(DiagnosticFinding(
+                "ready", "Full-tunnel route is plausible",
+                f"The current default interface {default_interface} is a detected WireGuard interface.",
+            ))
+        else:
+            findings.append(DiagnosticFinding(
+                "check", "Full-tunnel route is not visible",
+                f"The configuration includes a default route, but the current default interface is {default_interface}.",
+                "Connect through your trusted VPN client, then run a fresh Connection Check.",
+            ))
+    elif summary.route_mode == "Split tunnel":
+        findings.append(DiagnosticFinding(
+            "info", "Split-tunnel routing",
+            "The configuration routes only the listed networks, so the ordinary default interface may remain unchanged.",
+        ))
+    else:
+        findings.append(DiagnosticFinding(
+            "check", "No routing intent found", "No AllowedIPs value was found in a peer section.",
+            "Review the peer's AllowedIPs before using this configuration.",
+        ))
+
+    if summary.dns_servers:
+        overlap = sorted(set(summary.dns_servers) & set(report.dns_servers))
+        if overlap:
+            findings.append(DiagnosticFinding(
+                "ready", "Configured DNS is visible",
+                "The current DNS list includes: " + ", ".join(overlap),
+            ))
+        else:
+            findings.append(DiagnosticFinding(
+                "check", "Configured DNS is not visible",
+                "None of the DNS values in this configuration appear in the current system DNS list.",
+                "Confirm the tunnel is active and inspect DNS in the VPN client before treating this as a leak.",
+            ))
+
+    profile = report.selected_profile or {}
+    profile_endpoint = str(profile.get("endpoint") or "").strip()
+    profile_port = str(profile.get("port") or "").strip()
+    if profile_endpoint and profile_port and summary.endpoints:
+        expected = f"{profile_endpoint}:{profile_port}"
+        if expected in summary.endpoints:
+            findings.append(DiagnosticFinding(
+                "ready", "Profile endpoint matches the file",
+                "The selected profile and inspected configuration contain the same saved endpoint value.",
+            ))
+        else:
+            findings.append(DiagnosticFinding(
+                "check", "Profile endpoint differs from the file",
+                "The selected profile's saved endpoint is not present in this configuration.",
+                "Confirm that the profile and file describe the same tunnel. This does not query the live peer.",
+            ))
+    return VpnConfigInspection(summary, tuple(findings))
 
 
 def _format_bytes(value: int) -> str:

@@ -139,9 +139,26 @@ def test_existing_usage_cloud_flags_are_repaired_without_touching_unknown_backen
 
 
 def test_frozen_bundle_includes_tunnel_profile_seed():
-    spec = (ROOT / "SentinelAI.spec").read_text(encoding="utf-8")
+    spec = (ROOT / "Sentinel.spec").read_text(encoding="utf-8")
 
     assert "agents/vpn_agent/config/vpn_profiles.json" in spec
+
+
+def test_installer_migrates_only_sentinel_fork_identity():
+    installer = (ROOT / "scripts" / "install_app.sh").read_text(encoding="utf-8")
+
+    assert '/Applications/Sentinel Fork.app' in installer
+    assert 'Application Support/Sentinel Fork' in installer
+    assert 'Application Support/Sentinel"' in installer
+    assert '/Applications/Sentinel AI.app' not in installer
+    assert 'Application Support/Sentinel AI' not in installer
+
+
+def test_sidebar_uses_final_product_name():
+    source = (ROOT / "main.py").read_text(encoding="utf-8")
+
+    assert 'QLabel("SENTINEL")' in source
+    assert 'QLabel("SENTINEL FORK")' not in source
 
 
 def test_shared_panel_shutdown_prefers_join_contract_and_stops_fallbacks():

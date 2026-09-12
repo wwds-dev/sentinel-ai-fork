@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 set -u
 ROOT="$(cd "$(dirname "$0")" && pwd)"
-APP="$ROOT/Sentinel Fork.app"
-DATA="$ROOT/Sentinel Fork Data"
+APP="$ROOT/Sentinel.app"
+DATA="$ROOT/Sentinel Data"
 
 fail() {
     osascript \
         -e 'on run argv' \
-        -e 'display alert "Sentinel Fork cannot start" message (item 1 of argv) as critical' \
+        -e 'display alert "Sentinel cannot start" message (item 1 of argv) as critical' \
         -e 'end run' -- "$1" 2>/dev/null || echo "Error: $1" >&2
     exit 1
 }
@@ -21,8 +21,8 @@ AVAILABLE_KB="$(df -Pk "$ROOT" 2>/dev/null | awk 'NR==2 {print $4}')"
 [ "$AVAILABLE_KB" -ge 262144 ] || fail "The USB volume has less than 256 MiB free. Free space before starting."
 
 export SENTINEL_PORTABLE_ROOT="$ROOT"
-"$APP/Contents/MacOS/Sentinel Fork" > "$DATA/data/portable-launch.log" 2>&1
+"$APP/Contents/MacOS/Sentinel" > "$DATA/data/portable-launch.log" 2>&1
 STATUS=$?
 if [ "$STATUS" -ne 0 ]; then
-    fail "Sentinel stopped unexpectedly. See Sentinel Fork Data/data/portable-launch.log."
+    fail "Sentinel stopped unexpectedly. See Sentinel Data/data/portable-launch.log."
 fi

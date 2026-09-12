@@ -24,7 +24,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QTextCursor
 from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QGridLayout, QGroupBox, QHBoxLayout, QLabel,
-    QLineEdit, QMessageBox, QProgressBar, QPushButton, QSplitter, QTabWidget,
+    QLineEdit, QMessageBox, QProgressBar, QPushButton, QSplitter,
     QTextBrowser, QVBoxLayout, QWidget,
 )
 
@@ -35,7 +35,7 @@ from agents.wifi_agent import (
 from services.runtime_paths import user_data_base
 from ui.workers import SubprocessWorker
 from ui.panels.base import AgentPanel
-from ui.widgets import MenuComboBox
+from ui.widgets import MenuComboBox, SectionView
 
 # Static facts about the adapters the Kali builder knows how to target.
 KALI_ADAPTERS = {
@@ -65,6 +65,7 @@ class WifiPanel(AgentPanel):
         super().__init__(host, parent)
         self.setObjectName("WiFiPanel")
         self._last_response = ""
+        self._source_output = ""
         self._detected_adapter: dict = {}
         self.scan_worker: SubprocessWorker | None = None
         self._build()
@@ -190,32 +191,23 @@ class WifiPanel(AgentPanel):
         # ── Results splitter ─────────────────────────────────────────────
         results_splitter = QSplitter(Qt.Horizontal)
 
-        self.tabs = QTabWidget()
+        output_widget = QWidget()
+        output_layout = QVBoxLayout(output_widget)
+        output_layout.setContentsMargins(0, 0, 0, 0)
 
-        self.raw_box = QTextBrowser()
-        self.raw_box.setOpenExternalLinks(False)
-        self.tabs.addTab(self.raw_box, "Raw Output")
+        self.stream_box = QTextBrowser()
+        self.stream_box.setOpenExternalLinks(False)
+        self.stream_box.setVisible(False)
+        output_layout.addWidget(self.stream_box, 1)
 
-        self.analysis_box = QTextBrowser()
-        self.tabs.addTab(self.analysis_box, "AI Analysis")
-
-        self.kali_cmd_box = QTextBrowser()
-        self.tabs.addTab(self.kali_cmd_box, "Kali Commands")
-
-        self.raw_box.setPlaceholderText("Wireless scan or interface output will appear here.")
-        self.analysis_box.setPlaceholderText(
-            "Optional AI interpretation will appear here when AI Analysis is enabled."
-        )
-        self.kali_cmd_box.setPlaceholderText(
-            "Generated authorised-testing commands will appear here."
-        )
-
-        results_splitter.addWidget(self.tabs)
+        self.sections = SectionView()
+        output_layout.addWidget(self.sections, 1)
+        results_splitter.addWidget(output_widget)
 
         # ── Sidebar indicators ───────────────────────────────────────────
         indicators_widget = QWidget()
         indicators_layout = QVBoxLayout(indicators_widget)
-        indicators_layout.setContentsMargins(6, 6, 6, 6)
+        indicators_layout.setContentsMargins(8, 8, 8, 8)
         indicators_layout.setSpacing(8)
 
         adapter_group = QGroupBox("Adapter")
@@ -297,8 +289,6 @@ class WifiPanel(AgentPanel):
         is_kali = mode == "Kali Command Builder"
         self.kali_group.setVisible(is_kali)
         self.ai_checkbox.setEnabled(not is_kali)
-        if is_kali:
-            self.tabs.setCurrentIndex(2)
 
     def detect_adapters(self) -> None:
         self.status_label.setText("Scanning USB bus...")
@@ -313,8 +303,11 @@ class WifiPanel(AgentPanel):
             self.chipset_label.setText("—")
             self.monitor_label.setText("Monitor  —")
             self.inject_label.setText("Injection  —")
-            self.raw_box.setPlainText(
-                "[Adapter Detection]\nNo known Wi-Fi adapters detected on USB bus.\n" + err)
+            report = (
+                "[Adapter Detection]\n"
+                "No known Wi-Fi adapters detected on USB bus.\n" + err
+            )
+            self._show_sections([("Adapter detection", report, True)], report)
             self.status_label.setText("No known adapters detected.")
             self._detected_adapter = {}
             return
@@ -348,8 +341,7 @@ class WifiPanel(AgentPanel):
         )
         if len(adapters) > 1:
             report += f"\n[+] {len(adapters) - 1} additional adapter(s) also detected.\n"
-        self.raw_box.setPlainText(report)
-        self.tabs.setCurrentIndex(0)
+        self._show_sections([("Adapter detected", report, True)], report)
         self.status_label.setText(
             f"Detected: {adapter.get('name')} ({adapter.get('chipset')})")
 
@@ -384,10 +376,10 @@ class WifiPanel(AgentPanel):
 
         self._clear_displays()
         self._last_response = ""
+        self._source_output = ""
         self.set_busy(self.run_btn, self.stop_btn, True)
         self.save_btn.setEnabled(False)
         self.status_label.setText(f"Running: {mode}…")
-        self.tabs.setCurrentIndex(0)
 
         if mode == "Interface Info":
             cmd = ["networksetup", "-listallhardwareports"]
@@ -427,8 +419,13 @@ class WifiPanel(AgentPanel):
                 "# Do not place your only connected adapter into monitor mode.\n\n" + cmds
             )
 
-        self.kali_cmd_box.setPlainText(cmds)
-        self.tabs.setCurrentIndex(2)
+        self._show_sections(
+            [
+                ("Connection preflight", preflight.get("text", "")),
+                ("Generated Kali commands", cmds, True),
+            ],
+            cmds,
+        )
         self._last_response = cmds
         self.save_btn.setEnabled(True)
         self.status_label.setText(f"Kali commands generated: {op}")
@@ -442,7 +439,8 @@ class WifiPanel(AgentPanel):
             self._start_ai_pass(prompt)
 
     def _scan_finished(self, raw: str) -> None:
-        self.raw_box.setPlainText(raw)
+        self._source_output = raw
+        self._show_sections([("Raw wireless output", raw, True)], raw)
         self.status_label.setText("Scan complete.")
         self._update_indicators(raw)
 
@@ -462,35 +460,53 @@ class WifiPanel(AgentPanel):
         if not self.authorize(prompt):
             self.set_busy(self.run_btn, self.stop_btn, False)
             return
+        self._last_response = ""
+        self.sections.setVisible(False)
+        self.stream_box.clear()
+        self.stream_box.setVisible(True)
         self.start_worker(
             messages, prompt,
             on_token=self._on_token,
             on_finished=self._on_finished,
             on_error=self._on_error,
         )
-        self.tabs.setCurrentIndex(1)
 
     def _scan_error(self, error: str) -> None:
-        self.raw_box.setPlainText(f"[Error]\n{error}")
+        self.sections.setVisible(False)
+        self.stream_box.setVisible(True)
+        self.stream_box.setPlainText(f"[Error]\n{error}")
         self.status_label.setText("Error running scan.")
         self.set_busy(self.run_btn, self.stop_btn, False)
 
     def _on_token(self, token: str) -> None:
         self._last_response += token
-        self.analysis_box.setPlainText(self._last_response)
-        self.analysis_box.moveCursor(QTextCursor.End)
+        self.sections.setVisible(False)
+        self.stream_box.setVisible(True)
+        self.stream_box.setPlainText(self._last_response)
+        self.stream_box.moveCursor(QTextCursor.End)
 
     def _on_finished(self, full_response: str) -> None:
         self.record(full_response)
         self._last_response = full_response
-        self.analysis_box.setPlainText(full_response)
+        sections = self.parse_analysis_sections(full_response)
+        cards = [
+            ("Summary", sections["summary"]),
+            ("Network findings", sections["findings"]),
+            ("Security observations", sections["security"]),
+            ("Recommendations", sections["recommendations"]),
+        ]
+        if self._source_output:
+            cards.append(("Source output", self._source_output, True))
+        self._show_sections(cards, full_response)
         self.status_label.setText("Analysis complete.")
         self.set_busy(self.run_btn, self.stop_btn, False)
         self.save_btn.setEnabled(True)
 
     def _on_error(self, error: str) -> None:
         self.abandon()
-        self.analysis_box.setPlainText(f"[Error] {error}")
+        self.sections.setVisible(False)
+        self.stream_box.setVisible(True)
+        self.stream_box.setPlainText(f"[Error] {error}")
         self.status_label.setText("Error.")
         self.set_busy(self.run_btn, self.stop_btn, False)
 
@@ -532,13 +548,51 @@ class WifiPanel(AgentPanel):
         self._last_response = ""
 
     def _clear_displays(self) -> None:
-        self.raw_box.clear()
-        self.analysis_box.clear()
-        self.kali_cmd_box.clear()
+        self.sections.clear()
+        self.stream_box.clear()
+        self.stream_box.setVisible(False)
+        self.sections.setVisible(True)
+        self._source_output = ""
         self.signal_bar.setValue(0)
         self.signal_val_label.setText("—")
         self.security_label.setText("—")
         self.save_btn.setEnabled(False)
+
+    def _show_sections(self, cards, raw: str) -> None:
+        self.stream_box.setVisible(False)
+        self.sections.setVisible(True)
+        self.sections.show_sections(cards, raw=raw)
+
+    @staticmethod
+    def parse_analysis_sections(text: str) -> dict[str, str]:
+        """Split Beacon's existing four-part AI response into display cards."""
+        headings = {
+            "summary": "SUMMARY",
+            "findings": "NETWORK FINDINGS",
+            "security": "SECURITY OBSERVATIONS",
+            "recommendations": "RECOMMENDATIONS",
+        }
+        result = {key: "" for key in headings}
+        marker = re.compile(
+            r"^[ \t]*(?P<prefix>#{1,6}[ \t]*|\d+[.)][ \t]*)?"
+            r"(?P<heading>SUMMARY|NETWORK FINDINGS|SECURITY OBSERVATIONS|RECOMMENDATIONS)"
+            r"[ \t]*:?[ \t]*$",
+            re.IGNORECASE | re.MULTILINE,
+        )
+        # A plain, lower-case sentence containing only "summary" is content,
+        # not a new heading. Markdown/number prefixes may use either case;
+        # prefix-free headings must retain the requested all-caps form.
+        matches = [
+            match for match in marker.finditer(text)
+            if match.group("prefix") or match.group("heading").isupper()
+        ]
+        key_for_heading = {heading: key for key, heading in headings.items()}
+        for index, match in enumerate(matches):
+            start = match.end()
+            end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
+            key = key_for_heading[match.group("heading").upper()]
+            result[key] = text[start:end].strip()
+        return result
 
     def _update_indicators(self, raw: str) -> None:
         rssi_m = re.search(r"agrCtlRSSI:\s*(-\d+)", raw)

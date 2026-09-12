@@ -184,7 +184,7 @@ class AgentPanel(QWidget):
         container.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
         row = QHBoxLayout(container)
-        row.setContentsMargins(10, 7, 10, 7)
+        row.setContentsMargins(8, 8, 8, 8)
         row.setSpacing(8)
 
         if context:

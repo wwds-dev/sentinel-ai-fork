@@ -14,14 +14,14 @@ Two things differ from the other panels and are deliberate:
 
 from __future__ import annotations
 
-import json
-
 from PySide6.QtWidgets import (
-    QGroupBox, QHBoxLayout, QMessageBox, QPushButton, QTextEdit, QVBoxLayout,
+    QGroupBox, QHBoxLayout, QMessageBox, QPushButton, QTextBrowser, QTextEdit,
+    QVBoxLayout,
 )
 
 from agents.manager_agent import ManagerAgent
 from ui.panels.base import AgentPanel
+from ui.widgets import SectionView
 
 
 class ManagerPanel(AgentPanel):
@@ -35,6 +35,7 @@ class ManagerPanel(AgentPanel):
         self.setObjectName("ManagerPanel")
         self.manager_agent = ManagerAgent()
         self.pending_spec: dict | None = None
+        self._last_response = ""
         self._build()
         self.polish_workspace()
         self.hide()
@@ -81,12 +82,14 @@ class ManagerPanel(AgentPanel):
         spec_group.setObjectName("ManagerSpecBox")
         spec_layout = QVBoxLayout(spec_group)
 
-        self.spec_display = QTextEdit()
-        self.spec_display.setReadOnly(True)
-        self.spec_display.setMinimumHeight(180)
-        self.spec_display.setPlaceholderText("Spec will appear here after analysis...")
-        self.spec_display.setStyleSheet("font-family: monospace; font-size: 12px;")
-        spec_layout.addWidget(self.spec_display)
+        self.stream_box = QTextBrowser()
+        self.stream_box.setOpenExternalLinks(False)
+        self.stream_box.setVisible(False)
+        spec_layout.addWidget(self.stream_box, 1)
+
+        self.sections = SectionView()
+        self.sections.setMinimumHeight(180)
+        spec_layout.addWidget(self.sections, 1)
 
         approve_row = QHBoxLayout()
 
@@ -132,7 +135,11 @@ class ManagerPanel(AgentPanel):
 
         messages = self.manager_agent.build_messages(idea)
 
-        self.spec_display.setPlainText("Analyzing...")
+        self._last_response = ""
+        self.sections.clear()
+        self.sections.setVisible(False)
+        self.stream_box.setPlainText("Analyzing…")
+        self.stream_box.setVisible(True)
         self.analyze_btn.setEnabled(False)
         self.approve_btn.setEnabled(False)
         self.reject_btn.setEnabled(False)
@@ -142,29 +149,40 @@ class ManagerPanel(AgentPanel):
             # Analyze was disabled above; a blocked request has to put it back
             # or the panel is stuck with a dead button and "Analyzing..." on
             # screen for a request that was never sent.
-            self.spec_display.setPlainText("[Blocked] The request was not sent.")
+            self.stream_box.setPlainText("[Blocked] The request was not sent.")
             self.analyze_btn.setEnabled(True)
             return
 
         self.start_worker(
             messages, idea,
+            on_token=self._on_token,
             on_finished=self._on_finished,
             on_error=self._on_error,
         )
 
+    def _on_token(self, token: str) -> None:
+        self._last_response += token
+        self.sections.setVisible(False)
+        self.stream_box.setVisible(True)
+        self.stream_box.setPlainText(self._last_response)
+
     def _on_finished(self, response: str) -> None:
         self.record(response)
         self.analyze_btn.setEnabled(True)
+        self._last_response = response
         spec = self.manager_agent.parse_spec(response)
         if spec is None:
-            self.spec_display.setPlainText(
-                "[Error] Could not parse a valid JSON spec from the response.\n\n"
-                "Raw response:\n" + response
+            self.stream_box.setVisible(False)
+            self.sections.setVisible(True)
+            self.sections.show_sections(
+                [("Could not structure the response", response)], raw=response
             )
             return
 
         self.pending_spec = spec
-        self.spec_display.setPlainText(json.dumps(spec, indent=2))
+        self.stream_box.setVisible(False)
+        self.sections.setVisible(True)
+        self._populate_sections(spec, response)
         self.approve_btn.setEnabled(True)
         self.reject_btn.setEnabled(True)
         self.log.append("[Ready] Spec generated. Review and approve or reject.")
@@ -172,8 +190,37 @@ class ManagerPanel(AgentPanel):
     def _on_error(self, error: str) -> None:
         self.abandon()
         self.analyze_btn.setEnabled(True)
-        self.spec_display.setPlainText(f"[Error]\n{error}")
+        self.sections.setVisible(False)
+        self.stream_box.setVisible(True)
+        self.stream_box.setPlainText(f"[Error]\n{error}")
         self.log.append(f"[Error] {error}")
+
+    def _populate_sections(self, spec: dict, raw: str) -> None:
+        providers = ", ".join(spec.get("allowed_providers", [])) or "None"
+        tools = ", ".join(spec.get("allowed_tools", [])) or "None"
+        budget = spec.get("budget_limit_eur")
+        budget_text = "No agent-specific cap" if budget is None else f"€{budget}"
+        approval = "Required" if spec.get("requires_approval") else "Not required"
+        overview = "\n".join(filter(None, [
+            f"Name: {spec.get('name', '—')}",
+            f"Label: {spec.get('label', '—')}",
+            spec.get("description", ""),
+        ]))
+        access = (
+            f"Providers: {providers}\n"
+            f"Tools: {tools}\n"
+            f"Budget: {budget_text}\n"
+            f"Approval: {approval}"
+        )
+        self.sections.show_sections(
+            [
+                ("Agent overview", overview),
+                ("Access and safeguards", access),
+                ("System instructions", spec.get("system_prompt", "")),
+                ("Design reasoning", spec.get("reasoning", "")),
+            ],
+            raw=raw,
+        )
 
     def stop(self) -> None:
         """The window's Stop button. Forge has no Stop of its own.
@@ -232,15 +279,22 @@ class ManagerPanel(AgentPanel):
 
     def reject_spec(self) -> None:
         self.pending_spec = None
-        self.spec_display.setPlainText("")
+        self._clear_spec()
         self.approve_btn.setEnabled(False)
         self.reject_btn.setEnabled(False)
         self.log.append("[Rejected] Spec cleared. You can describe a new idea.")
 
     def clear(self) -> None:
         self.idea_input.clear()
-        self.spec_display.clear()
+        self._clear_spec()
         self.pending_spec = None
         self.approve_btn.setEnabled(False)
         self.reject_btn.setEnabled(False)
         self.log.append("[Cleared]")
+
+    def _clear_spec(self) -> None:
+        self._last_response = ""
+        self.stream_box.clear()
+        self.stream_box.setVisible(False)
+        self.sections.clear()
+        self.sections.setVisible(True)

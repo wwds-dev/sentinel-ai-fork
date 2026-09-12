@@ -1,132 +1,57 @@
-# Roadmap — Sentinel, Atelier, SONAR
+# Sentinel roadmap
 
-Written 2026-08-12, after the fork. This is the index; each item links to the
-plan that already covers it in detail.
+Updated 2026-09-12. Sentinel is the security and intelligence hub inside the
+Lab workspace. This roadmap covers Sentinel only; Create & Publish, SONAR,
+Backup & Sync and Lab Hub keep their work in their own repositories.
 
-## Where things stand
+## V2 — released
 
-| repo | state |
-|---|---|
-| **sentinel_ai** | `main.py` 9,034 lines (was 11,902). Refactor phases 1–2 done. TODO #1, #3, #4, #5, #6 closed; #2 in progress. 12 agents in the sidebar. |
-| **atelier** | Forked with full history (21 commits). **Nothing stripped** — still a copy of Sentinel. |
-| **sonar** | Sports tab shipped: NFL props with real odds arithmetic, 33 tests, 266 passing overall. |
+V2 establishes the seven-agent product: Chat, Trace, Bloodhound, Beacon, Bug
+Spray, Tunnel and Forge. The old `sentinel_fork` repository key remains stable
+for paths and Lab automation, but the public product and installed application
+are named **Sentinel**.
 
-## The one thing blocking everything else
+Delivered:
 
-**Sentinel refactor phase 3 → phase 4.**
+- one shared panel architecture and a balanced three-column workspace;
+- compact run controls, visible route/cost state and exact budget enforcement;
+- structured result sections for the five analysis-oriented agents;
+- Chat projects for grouping, filtering, assignment and spend attribution;
+- consent-gated Trace research and scoped local/remote Bloodhound discovery;
+- Beacon adapter preflight and a documented two-interface workflow;
+- Tunnel connection checks, profile comparison, safe action previews and
+  private-key-free WireGuard configuration inspection;
+- source, packaged and USB-portable runtime paths with safe legacy
+  `Sentinel Fork` migration that never reads or overwrites `Sentinel AI`;
+- an in-app Learning Centre with a reproducible nine-image screenshot set.
 
-Phase 4 turns each agent into a self-contained module. That module is the unit
-that Atelier deletes, that the platform package leaves behind, and that a future
-split moves. Doing any of those before phase 4 means doing the same untangling
-two or three times.
+Release verification: 556 Sentinel tests, the complete nested VPN Agent suite
+and the complete Lab Hub suite pass. The final interface was rendered at
+1600×1000 and inspected rather than inferred from source code.
 
-Phase 3 carries the one open design decision: **composition over mixins**
-(`docs/refactor_plan.md`). Settle it before writing the `AgentHost` protocol.
+## V3 — proposed sequence
 
-## Do now — independent of the blocker
+1. Validate the Learning Centre with first-time users and add graded exercises.
+2. Extract a shared Lab platform package only when at least one other hub is
+   ready to consume it in the same change.
+3. Build the guarded external-tool adapter: dependency checks, scope review,
+   previews, cancellation, timeouts, local audit records and privilege gates.
+4. Extend Bloodhound with metadata and rule matching.
+5. Add Tunnel's separately confirmed WireGuard execution, then protected key
+   backup/recovery and a source/frozen/portable parity audit.
+6. Add further public-source Trace adapters, authorised Bug Spray assessment
+   and passive Beacon analysis.
+7. Evaluate Chat streaming, automatic local-model budget fallback, shared
+   retry/backoff and single-file run export.
+8. If normal use shows value beyond grouping, add Chat Project instructions,
+   defaults, project budgets and management UI.
 
-These need nothing from the refactor and can land in any order.
+V3 continues to exclude denial of service, credential theft, stealth,
+persistence and uncontrolled exploitation.
 
-1. ~~**Remove `nfl_bet` from Sentinel.**~~ **DONE (2026-08-12).** 20 methods
-   and 549 lines out of `main.py` (9,584 → 9,008), plus both agent modules, the
-   docs page, the test class, the seed entry and the DB row. SONAR owns sports
-   betting now. Sidebar: 13 agents → 12.
+## Related plans
 
-2. **GUI step 1 — type scale: DONE (2026-08-12).** `ui/style.py` went from
-   five sizes (10/11/12/13/22) to three (11 caption · 13 body · 22 display) and
-   from six weights (400/500/600/700/800/bold) to two (400/500). The scale is
-   documented at the top of the sheet, including the 15px title role the
-   section renderer will use.
-
-   **GUI step 2 — right-rail figures: DONE (2026-08-12).** New `Meter` and
-   `Bar` widgets in `ui/widgets.py` (painted, not styled — a QProgressBar would
-   inherit the sheet's audiobook-progress look). SYSTEM shows RAM/CPU/SWAP/BATT
-   as bars, BUDGET shows session and daily spend, all with level colouring that
-   escalates green → yellow → red at 60% and 90%. Exact figures moved to
-   tooltips rather than crowding the glanceable number. Budget bars fill with
-   what is *spent*, not what is left — a bar that empties as you spend reads as
-   progress towards something good.
-
-   **Next: GUI steps 3–4** (run bar, section renderer) — both restructure panel
-   layout, so they are cheaper after refactor phase 4.
-
-3. **Commit the working trees.** Sentinel has 11 uncommitted paths and SONAR 6,
-   including this session's deletions and the whole sports feature. They are
-   green but unsaved.
-
-## Then — the critical path
-
-4. **Refactor phase 3** — `AgentHost` protocol + `AgentPanel` base. Also absorbs
-   the 16 near-identical `*_load_models` methods.
-5. **Refactor phase 4** — move verticals to `ui/panels/`, smallest first
-   (osint 227 → author 1,195).
-6. **Extract the platform package** — provider clients, `api_limits`,
-   `usage_tracker`, `validator`, `registry`, `run_logger`, `database`,
-   `runtime_paths`, the request guard, and `ui/{style,widgets,workers,dialogs}`.
-   Sentinel consumes it first; nothing moves between apps yet.
-7. **Refactor phase 5** — `GodAI` becomes a shell.
-
-## Then — Atelier
-
-8. **Atelier takes the platform package**, then deletes its six non-creative
-   verticals and `providers/` (`atelier/FORK_PLAN.md`).
-9. **Re-shape Atelier as tabs**: Write · Audio · Web · Gigs.
-10. **Rebrand** — app name, bundle id, icon, and the two traps that bite if it
-    is incomplete: `runtime_paths.APP_NAME` (shared Application Support
-    directory) and `SINGLE_INSTANCE_KEY` (launching Atelier focuses Sentinel).
-11. **Lab Hub launchpad entry** for Atelier.
-
-## Optional, whenever
-
-- **Chat Projects stage 2** (`docs/projects_roadmap.md`) — instructions,
-  defaults and per-project budget. Stage 1 (filter + rename) shipped. Worth it
-  only if the goal is "stop re-establishing context", not a tidier list.
-- **More sports in SONAR** — the registry is the extension point; a second sport
-  is a `Sport(...)` entry plus its prop types.
-- **`chat` in Atelier** — decide whether a creative app wants its own general
-  assistant, or none.
-
-## Sentinel v3 — guided capability expansion
-
-The v3 direction is a safe adapter layer around selected specialist tools,
-paired with an in-app Learning Centre. The adapter layer owns dependency
-checks, previews, authorised scope, privilege prompts, timeouts, cancellation,
-local logs and structured results. Agents remain the understandable front end.
-
-Suggested order:
-
-1. Validate the completed Learning Centre with first-time users and expand its
-   exercises where testing exposes gaps.
-2. Land the shared external-tool adapter and audit format.
-3. Add Bloodhound metadata/rule matching. Tunnel's read-only selected-profile
-   comparison and safe action previews are delivered. Its next work is staged:
-   private-key-free config inspection, separately gated WireGuard actions, then
-   local key/recovery lifecycle and a source/frozen/portable parity audit.
-4. Add Trace public-source integrations.
-5. Add authorised Bug Spray assessment and passive Beacon analysis.
-6. Teach reviewed multi-agent handoffs and Forge reporting.
-
-This direction deliberately excludes denial-of-service features, credential
-theft, stealth or persistence mechanisms, and uncontrolled exploitation.
-
-## What this leaves Sentinel as
-
-After #1 and Atelier's split: `chat` · `osint` · `osint_heavy` · `wifi` ·
-`bug_bounty` · `manager` — six agents, one sentence to explain, and a sidebar
-that fits without scrolling. That is the point of the whole exercise.
-
-## Sequencing note
-
-Steps 1–3 are safe today and independent. Steps 4–7 want a clear run — they are
-one continuous piece of work, and stopping halfway leaves `main.py` in a state
-where half the panels are modules and half are not. Steps 8–11 are mechanical
-once 4–7 are done.
-
-## Portable privacy controls delivered
-
-The supported macOS portable distribution now isolates all application state on
-the removable volume and includes a double-confirmed Emergency Reset. The reset
-is intentionally scoped to Sentinel-owned data and does not promise amnesic or
-forensic deletion. Future portable work should focus on encrypted-volume
-onboarding, backup verification and architecture-specific release clarity—not
-operating-system anti-forensics.
+- `docs/projects_roadmap.md` — optional later Chat Project context features.
+- `docs/workspace_structure.md` — ownership across the Lab hubs.
+- `docs/refactor_plan.md` — completed panel extraction history.
+- `docs/portable_mode.md` — supported portable distribution and data rules.
