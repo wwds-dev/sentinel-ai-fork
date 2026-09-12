@@ -13,12 +13,16 @@ A meta-agent that turns a plain-language idea into a reviewable agent scaffold: 
 | Idea box | Describe the agent: purpose, inputs, output sections, providers. |
 | Model override | Optional provider/model change; a strong code-capable model is selected by default. |
 | Analyze Idea | Draft a reviewable specification. Approve and Reject are revealed only after a valid draft exists. |
-| Analyze Idea | Generate the JSON spec. |
 | Clear | Reset. |
 | Approve & Create / Reject | Commit or discard the reviewed spec. |
 
 ## Outputs
-A reviewable **JSON spec** (name, label, description, allowed_providers, allowed_tools, budget, requires_approval, system_prompt). The Creation Log is collapsed by default. On approval: a new `agents/<name>_agent.py`, an `agents` table row, and a `tools` row. It remains outside the built-in roster and sidebar until a developer integrates it.
+A reviewable specification shown as **Agent Overview**, **Access and
+Safeguards**, **System Instructions** and **Design Reasoning** cards, with the
+raw JSON behind a disclosure. The Creation Log is separate. On approval Forge
+writes a new `agents/<name>_agent.py`, an `agents` table row and a `tools` row.
+It remains outside the built-in roster and sidebar until a developer integrates
+it.
 
 ## How it works
 `ManagerAgent` prompts the LLM to emit the JSON spec; `manager_analyze_idea()` parses/validates it into `pending_spec`; `manager_approve_spec()` hands it to `AgentFactory`, which writes the class file (with `build_messages()`) and the DB entries.

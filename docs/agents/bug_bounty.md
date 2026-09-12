@@ -19,7 +19,10 @@ Turns raw findings into a professional vulnerability report and a paste-ready Ha
 | Analyse / Stop | Run, or cancel while a request is active. Save and Clear appear with results. |
 
 ## Outputs
-Tabs: **Full Report** (Vulnerability Title, Severity+CVSS, Target, Description, PoC, Impact, Remediation, References), **Vulnerability**, **PoC Draft**, **Remediation**, **Submission Draft** (platform-ready). Sidebar indicators (severity/lean) parsed from the report.
+The result is split into copyable cards: **Vulnerability Report**, **Proof of
+Concept**, **Remediation** and **Submission Draft**. The unmodified model reply
+remains available behind a collapsed raw-output disclosure. Side indicators
+show parsed severity, CVSS score and any stated bounty estimate.
 
 ## How it works
 `BugBountyAgent.build_messages(target, program, scope_type, findings, nmap_output)` composes only the evidence present (no fabrication) and requests the fixed report + submission format. Nmap runs via a dedicated `QProcess` (`bb_run_nmap` → `_bb_nmap_read` → `_bb_nmap_finished`), separate from the LLM `ChatWorker`.
@@ -28,7 +31,7 @@ Tabs: **Full Report** (Vulnerability Title, Severity+CVSS, Target, Description, 
 | Location | Role |
 |---|---|
 | `agents/bug_bounty_agent.py` | `BugBountyAgent` — report + submission spec. |
-| `ui/panels/bug_bounty.py` | Panel, optional Nmap lifecycle, three consolidated result tabs, analysis, and indicators. |
+| `ui/panels/bug_bounty.py` | Panel, optional Nmap lifecycle, structured result cards, analysis, and indicators. |
 | `main.py: bb_save()/bb_clear()` | Export / reset. |
 
 ## Extend it

@@ -15,7 +15,11 @@ The default agent. Plain text in, plain text out, with full multi-turn conversat
 | Prompt box | Your message. Run, or Stop to cancel while a request is active. |
 
 ## Outputs
-Streaming text into the **Output** box (auto-hidden until there's content). Each turn is appended to `current_messages`, so follow-ups keep context. Conversations auto-save to `data/chats/` and appear in **Saved Chats**.
+The scrollable **Conversation** area keeps every user and assistant message in
+order, with a small local date/time stamp on each one. Each turn is appended to
+`current_messages`, so follow-ups keep context. Conversations auto-save to
+`data/chats/` and appear in the collapsed **History** area, where they can be
+filtered and assigned to a Chat Project.
 
 ## How it works
 `ChatAgent.build_messages()` returns `[system(tool prompt), user]`. On later turns the prior assistant reply is included so the model sees the whole thread. Token-by-token streaming for streaming backends, word-by-word emulation otherwise.

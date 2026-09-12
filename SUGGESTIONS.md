@@ -39,7 +39,7 @@ Ideas not yet committed to. Status: `IDEA` · `CONSIDERING` · `PLANNED` · `DON
 | Paid-route highlighting — any non-Ollama provider/model marked amber on the dropdown | Sep 2026 |
 | Chat composer overhaul — Enter-to-send/Shift+Enter, taller input, per-message timestamps, "Conversation" relabeling | Sep 2026 |
 | Learning Centre foundation — searchable Quick Start, Chat, agent workflows and advanced-tools lessons | Sep 2026 |
-| Exhaustive Learning Centre — workspace/Settings reference, seven agent courses, privacy, troubleshooting, expanded workflows and eight current screenshots | Sep 2026 |
+| Exhaustive Learning Centre — workspace/Settings reference, seven agent courses, privacy, troubleshooting, expanded workflows and nine current screenshots | Sep 2026 |
 | Tunnel Connection Check — read-only tools/tunnels/route/DNS cards with separately confirmed public-IP and latency checks; 16 focused tests | Sep 2026 |
 | Tunnel profile comparison and safe action previews — secret-field filtering, profile/protocol-aware findings and remediation with no execution path; 26 focused tests | Sep 2026 |
 | Tunnel private-key-free WireGuard config inspection and live-intent comparison | Sep 2026 |

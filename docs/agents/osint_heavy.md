@@ -48,7 +48,7 @@ arbitrary remote commands are not executed inside Sentinel or by its AI worker.
 | Location | Role |
 |---|---|
 | `agents/osint_heavy_agent.py` | `OsintHeavyAgent` + the tool library + section spec. |
-| `ui/panels/osint_heavy.py` | Panel, optional image workflow, consolidated result tabs, and indicators. |
+| `ui/panels/osint_heavy.py` | Panel, optional image workflow, structured dossier cards, and indicators. |
 | `services/local_file_search.py` | Bounded, read-only metadata search and filters. |
 | `services/remote_file_search.py` | Strict-host-key SFTP traversal for authenticated machines. |
 | `ui/workers.py: LocalFileSearchWorker` | Runs file discovery without freezing the interface. |

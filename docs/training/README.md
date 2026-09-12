@@ -41,7 +41,7 @@ privacy or cost implications, best practices and a simple completion check.
 Screenshots must use fictional data, hide secrets and personal paths, include
 alternative text, and record the interface version they show.
 
-The eight-screen screenshot set is reproducible with
+The nine-screen screenshot set is reproducible with
 `scripts/capture_training_screenshots.py`. Re-capture it after a material UI
 change instead of keeping misleading historical images.
 Pass one or more screen keys (for example,

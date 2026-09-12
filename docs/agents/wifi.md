@@ -22,7 +22,12 @@ Two capabilities in one panel:
 | Run / Stop | Execute, or cancel while work is active. Results reveal Save and Clear controls. Use the shared Help button for docs. |
 
 ## Outputs
-Tabs: **Raw Output** (subprocess text), **AI Analysis** (LLM interpretation), **Kali Commands** (generated sequence). Sidebar: detected adapter, chipset, capabilities (monitor/injection), signal bar, security.
+Results appear as readable cards. Local commands show their raw findings;
+optional AI interpretation is split into **Summary**, **Network Findings**,
+**Security Observations** and **Recommendations**; Kali planning shows a
+reviewable command sequence. Raw model text stays available behind a collapsed
+disclosure. The side indicators show adapter, chipset, monitor/injection
+capabilities, signal and security.
 
 ## How it works
 - `detect_usb_adapters()` parses `system_profiler SPUSBDataType -json` against `KNOWN_ADAPTERS` (VID/PID → chipset, monitor/inject support, Kali iface, driver notes).
