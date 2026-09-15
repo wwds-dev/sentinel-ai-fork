@@ -2175,6 +2175,8 @@ class GodAI(QWidget):
         # ── Inner container that holds all cards (scrollable) ───────────
         cards_container = QWidget()
         cards_container.setObjectName("RightCardsContainer")
+        cards_container.setMinimumWidth(0)
+        cards_container.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         cards_layout = QVBoxLayout(cards_container)
         cards_layout.setContentsMargins(0, 0, 0, 0)
         cards_layout.setSpacing(8)
@@ -2367,6 +2369,9 @@ class GodAI(QWidget):
 
         # ── Scroll area wrapping all cards ──────────────────────────────
         scroll_area = QScrollArea()
+        scroll_area.setObjectName("InspectorScroll")
+        scroll_area.setMinimumWidth(0)
+        scroll_area.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         scroll_area.setWidget(cards_container)
         scroll_area.setWidgetResizable(True)
         scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)

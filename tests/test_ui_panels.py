@@ -470,6 +470,33 @@ class TestWorkspaceLayoutRegressions:
             win.resize(original_size)
             win.toggle_inspector(original)
 
+    def test_narrow_inspector_content_stays_inside_its_viewport(self, win, qapp):
+        from PySide6.QtWidgets import QScrollArea
+        from ui.widgets import KeyValue, Meter
+
+        original_size = win.size()
+        original = win.inspector_visible
+        try:
+            win.showNormal()
+            win.resize(1200, 700)
+            win.toggle_inspector(True)
+            qapp.processEvents()
+
+            scroll = win.right_panel.findChild(QScrollArea, "InspectorScroll")
+            container = scroll.widget()
+            assert container.width() <= scroll.viewport().width()
+
+            for item in [
+                *container.findChildren(KeyValue),
+                *container.findChildren(Meter),
+            ]:
+                value = item.value
+                assert value.width() > 0
+                assert value.geometry().right() <= item.contentsRect().right()
+        finally:
+            win.resize(original_size)
+            win.toggle_inspector(original)
+
     def test_chat_run_bar_and_prompt_form_one_compact_stack(self, win):
         win.select_agent("chat")
         run_bar = win.findChild(QObject, "RunBar")

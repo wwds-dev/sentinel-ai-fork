@@ -447,11 +447,15 @@ class Meter(QWidget):
         self.value = QLabel("—")
         self.value.setObjectName("MeterValue")
         self.value.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        self.value.setMinimumWidth(58)
+        # A long budget figure must not set the minimum width of the entire
+        # inspector.  At the narrow (230 px) rail size Qt otherwise makes the
+        # scroll area's content wider than its viewport and silently clips the
+        # right edge because horizontal scrolling is intentionally disabled.
+        self.value.setMinimumWidth(0)
+        self.value.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
 
         row.addWidget(self.caption)
-        row.addStretch()
-        row.addWidget(self.value)
+        row.addWidget(self.value, 1)
         outer.addLayout(row)
         outer.addWidget(self.bar)
         if tip:
@@ -461,6 +465,7 @@ class Meter(QWidget):
             tip: str = "") -> None:
         self.bar.set(fraction, self.LEVEL_COLOURS.get(level, "#3cff88"))
         self.value.setText(text)
+        self.value.setToolTip(text)
         if tip:
             self.setToolTip(tip)
 
@@ -626,6 +631,8 @@ class KeyValue(QWidget):
 
     def __init__(self, key: str, value: str = "—", tip: str = "", parent=None):
         super().__init__(parent)
+        self.setMinimumWidth(0)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         row = QHBoxLayout(self)
         row.setContentsMargins(0, 0, 0, 0)
         row.setSpacing(10)
@@ -635,14 +642,17 @@ class KeyValue(QWidget):
         self.value = QLabel(value)
         self.value.setObjectName("KVValue")
         self.value.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        self.value.setMinimumWidth(0)
+        self.value.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+        self.value.setToolTip(value)
 
         row.addWidget(self.key)
-        row.addStretch()
-        row.addWidget(self.value)
+        row.addWidget(self.value, 1)
         if tip:
             self.setToolTip(tip)
 
     def set(self, value: str, tip: str = "") -> None:
         self.value.setText(value)
+        self.value.setToolTip(value)
         if tip:
             self.setToolTip(tip)
