@@ -36,17 +36,18 @@ STAGE="$(mktemp -d)"
 trap 'rm -rf "$STAGE"' EXIT
 APP_DIR="$STAGE/${APP_NAME}.app"
 
-# The launcher must not background python: the applet is the parent process, and
-# macOS reaps the child as soon as the parent returns. Blocking on `do shell
-# script` keeps the applet alive as the visible app for the GUI's lifetime.
+# The applet is only a launch shim. It must return immediately after starting
+# Python; holding `do shell script` open for the full GUI lifetime makes macOS
+# label the applet "Not Responding" and prevents a second click from reaching
+# Sentinel's single-instance handoff. A transient launchctl job makes macOS the
+# Python process owner, so the applet can exit without taking Sentinel with it.
 #
-# Two details that matter:
+# Three details that matter:
 #  * Missing venv/main.py is reported up front, so a broken install says why
 #    instead of bouncing the icon once and giving up.
-#  * The command ends in "; exit 0" so python's exit status never reaches
-#    AppleScript. Otherwise quitting or killing the app returns non-zero, which
-#    AppleScript raises as an error dialog — that left the applet alive with no
-#    window, and macOS then treated the app as running and refused to relaunch.
+#  * A later Python exit can never surface as an AppleScript error dialog.
+#  * Every launch starts a short-lived Python process; if Sentinel is already
+#    open, its local-socket guard raises that window and the new process exits.
 cat > "$STAGE/launch.applescript" <<APPLESCRIPT
 set pythonBin to "${PY}"
 set mainPy to "${PROJECT_ROOT}/main.py"
@@ -54,7 +55,9 @@ if (do shell script "[ -x " & quoted form of pythonBin & " ] && [ -f " & quoted 
     display alert "Sentinel cannot start" message "The project is not where the app expects it:" & return & return & "${PROJECT_ROOT}" & return & return & "Re-run scripts/install_app.sh from the project." as critical
     return
 end if
-do shell script "cd " & quoted form of "${PROJECT_ROOT}" & " && " & quoted form of pythonBin & " " & quoted form of mainPy & " > /tmp/sentinel-launch.log 2>&1; exit 0"
+set launchLabel to "com.netrunner3000.sentinel.launch." & (random number from 100000 to 999999)
+set launchCommand to "cd " & quoted form of "${PROJECT_ROOT}" & " && exec " & quoted form of pythonBin & " " & quoted form of mainPy
+do shell script "/bin/launchctl submit -l " & quoted form of launchLabel & " -o /tmp/sentinel-launch.log -e /tmp/sentinel-launch.log -- /bin/sh -c " & quoted form of launchCommand
 APPLESCRIPT
 
 osacompile -o "$APP_DIR" "$STAGE/launch.applescript"
@@ -75,6 +78,8 @@ plutil -convert xml1 "$APP_DIR/Contents/Info.plist"
 
 # Stop a running copy so Launch Services picks up the new bundle.
 pkill -f "${PROJECT_ROOT}/main.py" 2>/dev/null || true
+pkill -f "${INSTALLED}/Contents/MacOS/applet" 2>/dev/null || true
+pkill -f "sh -c cd '${PROJECT_ROOT}'" 2>/dev/null || true
 sleep 1
 
 rm -rf "$INSTALLED"

@@ -154,6 +154,23 @@ def test_installer_migrates_only_sentinel_fork_identity():
     assert 'Application Support/Sentinel AI' not in installer
 
 
+def test_thin_launcher_hands_python_to_launchd_instead_of_blocking_the_applet():
+    installer = (ROOT / "scripts" / "install_app.sh").read_text(encoding="utf-8")
+
+    launch_line = next(
+        line for line in installer.splitlines()
+        if line.startswith('do shell script "/bin/launchctl submit')
+    )
+    assert "-l " in launch_line
+    assert "-o /tmp/sentinel-launch.log" in launch_line
+    assert "-e /tmp/sentinel-launch.log" in launch_line
+    assert "-- /bin/sh -c" in launch_line
+    assert "; exit 0" not in launch_line
+    assert "set launchLabel to" in installer
+    assert "set launchCommand to" in installer
+    assert 'pkill -f "${INSTALLED}/Contents/MacOS/applet"' in installer
+
+
 def test_sidebar_uses_final_product_name():
     source = (ROOT / "main.py").read_text(encoding="utf-8")
 
