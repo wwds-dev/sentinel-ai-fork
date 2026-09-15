@@ -16,9 +16,8 @@
 # Data lives in the project (data/, config/, .env) exactly as it does when you
 # run `python main.py` by hand, so the app and the terminal share one state.
 #
-# Built as a compiled AppleScript applet rather than a shell-script bundle:
-# macOS treats applets as a normal app type, while an unsigned shell-script
-# CFBundleExecutable gets killed silently by Gatekeeper on launch.
+# Built as a small native launcher rather than a shell-script bundle or a
+# blocking AppleScript applet. The installed bundle is ad-hoc signed locally.
 set -euo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -36,50 +35,35 @@ STAGE="$(mktemp -d)"
 trap 'rm -rf "$STAGE"' EXIT
 APP_DIR="$STAGE/${APP_NAME}.app"
 
-# The applet is only a launch shim. It must return immediately after starting
-# Python; holding `do shell script` open for the full GUI lifetime makes macOS
-# label the applet "Not Responding" and prevents a second click from reaching
-# Sentinel's single-instance handoff. A transient launchctl job makes macOS the
-# Python process owner, so the applet can exit without taking Sentinel with it.
-#
-# Three details that matter:
-#  * Missing venv/main.py is reported up front, so a broken install says why
-#    instead of bouncing the icon once and giving up.
-#  * A later Python exit can never surface as an AppleScript error dialog.
-#  * Every launch starts a short-lived Python process; if Sentinel is already
-#    open, its local-socket guard raises that window and the new process exits.
-cat > "$STAGE/launch.applescript" <<APPLESCRIPT
-set pythonBin to "${PY}"
-set mainPy to "${PROJECT_ROOT}/main.py"
-if (do shell script "[ -x " & quoted form of pythonBin & " ] && [ -f " & quoted form of mainPy & " ] && echo ok || echo missing") is not "ok" then
-    display alert "Sentinel cannot start" message "The project is not where the app expects it:" & return & return & "${PROJECT_ROOT}" & return & return & "Re-run scripts/install_app.sh from the project." as critical
-    return
-end if
-set launchLabel to "com.netrunner3000.sentinel.launch." & (random number from 100000 to 999999)
-set launchCommand to "cd " & quoted form of "${PROJECT_ROOT}" & " && exec " & quoted form of pythonBin & " " & quoted form of mainPy
-do shell script "/bin/launchctl submit -l " & quoted form of launchLabel & " -o /tmp/sentinel-launch.log -e /tmp/sentinel-launch.log -- /bin/sh -c " & quoted form of launchCommand
-APPLESCRIPT
+mkdir -p "$APP_DIR/Contents/MacOS" "$APP_DIR/Contents/Resources"
+xcrun clang -std=c11 -Wall -Wextra -Werror \
+    "$PROJECT_ROOT/scripts/thin_launcher.c" \
+    -o "$APP_DIR/Contents/MacOS/SentinelLauncher"
+cp "$PROJECT_ROOT/assets/icon.icns" "$APP_DIR/Contents/Resources/icon.icns"
+printf '%s\n' "$PROJECT_ROOT" > "$APP_DIR/Contents/Resources/project_root.txt"
 
-osacompile -o "$APP_DIR" "$STAGE/launch.applescript"
-
-cp "$PROJECT_ROOT/assets/icon.icns" "$APP_DIR/Contents/Resources/applet.icns"
-
-# osacompile also emits Assets.car, an asset catalog holding the stock
-# AppleScript applet artwork (the scroll-on-a-folder). macOS resolves an app's
-# icon from the asset catalog BEFORE CFBundleIconFile, so leaving it in place
-# silently overrides the Sentinel icon we just copied in. Drop it — the applet
-# has no UI of its own that needs those assets.
-rm -f "$APP_DIR/Contents/Resources/Assets.car"
 defaults write "$APP_DIR/Contents/Info" CFBundleName -string "${APP_NAME}"
 defaults write "$APP_DIR/Contents/Info" CFBundleDisplayName -string "${APP_NAME}"
 defaults write "$APP_DIR/Contents/Info" CFBundleIdentifier -string "com.netrunner3000.sentinel"
+defaults write "$APP_DIR/Contents/Info" CFBundleExecutable -string "SentinelLauncher"
+defaults write "$APP_DIR/Contents/Info" CFBundleIconFile -string "icon.icns"
+defaults write "$APP_DIR/Contents/Info" CFBundlePackageType -string "APPL"
+defaults write "$APP_DIR/Contents/Info" CFBundleShortVersionString -string "2.0"
+defaults write "$APP_DIR/Contents/Info" CFBundleVersion -string "2"
+defaults write "$APP_DIR/Contents/Info" NSHighResolutionCapable -bool true
 defaults write "$APP_DIR/Contents/Info" LSUIElement -bool false
 plutil -convert xml1 "$APP_DIR/Contents/Info.plist"
+printf 'APPL????' > "$APP_DIR/Contents/PkgInfo"
 
 # Stop a running copy so Launch Services picks up the new bundle.
 pkill -f "${PROJECT_ROOT}/main.py" 2>/dev/null || true
 pkill -f "${INSTALLED}/Contents/MacOS/applet" 2>/dev/null || true
-pkill -f "sh -c cd '${PROJECT_ROOT}'" 2>/dev/null || true
+
+# Clean up jobs created by the faulty launchctl-based installer. The prefix is
+# unique to Sentinel and no new installation creates such a job.
+while IFS= read -r legacy_job; do
+    [ -n "$legacy_job" ] && launchctl remove "$legacy_job" 2>/dev/null || true
+done < <(launchctl list | awk '$3 ~ /^com\.netrunner3000\.sentinel\.launch\./ {print $3}')
 sleep 1
 
 rm -rf "$INSTALLED"
