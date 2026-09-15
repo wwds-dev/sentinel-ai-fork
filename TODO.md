@@ -43,6 +43,8 @@ future and cross-project items are listed under V3 or in their owning project.
 - [x] Portable macOS mode keeps state on the selected drive, preserves data during upgrades, excludes source secrets, handles read-only/low-space media and offers a double-confirmed Sentinel-only Emergency Reset.
 - [x] Product identity is Sentinel across source, bundle, runtime paths, single-instance key, documentation and Lab Hub. Legacy `Sentinel Fork` application-support data is migrated; archived `Sentinel AI` data is never touched.
 - [x] Full release verification: 556 Sentinel tests, the complete nested VPN Agent suite and the complete Lab Hub suite pass.
+- [x] Replaced the AppleScript/launchctl thin launcher with a compiled native one-shot shim (`scripts/thin_launcher.c`): Launch Services starts it, it execs the project's `.venv` Python against `main.py` in a detached child, and the parent returns at once — no persistent launchd job, no restart-on-exit policy.
+- [x] Fixed the request inspector clipping its right edge in the narrowest sidebar width: `Meter`/`KeyValue` values and the cards container no longer impose a minimum width wider than the scroll viewport (`ui/widgets.py`, `main.py`).
 
 ## v3 — later
 

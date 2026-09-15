@@ -150,6 +150,9 @@ The main runtime is organised around:
 - `data/sentinel.db` — local application data
 - `assets/` — `icon.icns` and its source PNG for the macOS app bundle; used by
   `scripts/install_app.sh`, `scripts/build_app.sh`, and `Sentinel.spec`
+- `scripts/thin_launcher.c` — the native one-shot launcher compiled and
+  installed by `scripts/install_app.sh`; execs the project's own `.venv`
+  Python against `main.py` with no persistent launchd job
 - `output/` — gitignored, generated-only. Currently holds leftover files from
   before this fork was narrowed to the security roster (`launch_assets/` has a
   KDP listing, an ARC outreach email and a BookTok pitch — publishing-agent
@@ -164,7 +167,7 @@ Development runs and the everyday thin launcher use the Lab project directory fo
 
 ### macOS launch modes
 
-`./scripts/install_app.sh` installs the everyday thin launcher. It runs directly from this Lab checkout and uses this folder's `data/`, `config/`, and `.env`, exactly like `python main.py`.
+`./scripts/install_app.sh` installs the everyday thin launcher: a small compiled native shim (`scripts/thin_launcher.c`), not an AppleScript applet or a shell-script bundle. Launch Services starts the compiled executable; it forks a detached child that execs the project's own `.venv` Python against `main.py` while the parent returns immediately, so there is no persistent launchd job and no restart-on-exit policy — a quit or crash simply ends the process. It runs directly from this Lab checkout and uses this folder's `data/`, `config/`, and `.env`, exactly like `python main.py`.
 
 `./scripts/build_app.sh` creates a self-contained release in `dist.noindex/` but does not install it. A self-contained build uses `~/Library/Application Support/Sentinel/` when launched. On first launch it renames existing `Sentinel Fork` application-support data in place; it never takes data from the archived `Sentinel AI` app. Installing with `./scripts/build_app.sh --install` explicitly replaces the thin launcher, so use that option only when you intend to switch modes. Source and frozen modes do not otherwise merge their data.
 
