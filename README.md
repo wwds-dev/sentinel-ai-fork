@@ -184,6 +184,10 @@ pytest
 ```
 
 The current manual acceptance checklist is in `tests/manual_test_cases.md`. It covers all seven built-in agents and verifies that Writing and Coding remain Chat tools rather than sidebar agents.
+The [testing roadmap](docs/testing_roadmap.md) maps every shipped agent workflow
+and shared control to automated, packaged-app, and owned-lab checks, with
+priority and release gates. Sentinel's main test suite does not include the
+separate Bug Spray and VPN Agent companion-repository suites.
 Tunnel's local-only and external-opt-in boundaries are covered by
 `tests/test_vpn_diagnostics.py` and the Tunnel panel tests in
 `tests/test_ui_panels.py`.

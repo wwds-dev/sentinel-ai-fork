@@ -48,6 +48,9 @@ future and cross-project items are listed under V3 or in their owning project.
 
 ## v3 — later
 
+- [ ] `P0` `testing` `security` `@ai` **Testing roadmap — safety gate.** Isolate writable config as well as SQLite (the baseline suite changed `config/settings.json`), add a deny-by-default network/process harness, cover every agent's consent, scope, secret, budget, cancellation and write/delete boundary, plus installed-app Quit-stays-quit smoke. See `docs/testing_roadmap.md`.
+- [ ] `P1` `testing` `@ai` **Testing roadmap — workflow matrix.** Complete success/error/cancel/persistence contracts for all seven agents, their distinct modes, all shared controls/providers/settings, and the separate companion-repo test runs. See `docs/testing_roadmap.md`.
+- [ ] `P2` `testing` `docs` `@ai` **Testing roadmap — release acceptance.** Automate source/frozen/USB smoke where feasible, run owned-lab hardware/network cases and first-user Learning Centre review, and record unverified modes explicitly. See `docs/testing_roadmap.md`.
 - [x] `P1` `feature` `docs` `@ai` **Learning Centre — complete curriculum.** Searchable Quick Start, workspace tour, controls and Settings, all seven agent courses, privacy/cost, troubleshooting, multi-agent workflows and advanced-tools guidance are shipped.
 - [x] `P2` `docs` `design` `@ai` **Learning Centre — reproducible screenshots.** Nine current-interface images are generated from isolated fictional/empty state by `scripts/capture_training_screenshots.py`.
 - [ ] `P2` `testing` `docs` `@ai` **Learning Centre exercises and first-user validation.** Add beginner, intermediate and independent exercises per agent, then test Quick Start with new users.
