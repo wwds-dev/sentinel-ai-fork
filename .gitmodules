@@ -1,3 +1,6 @@
 [submodule "vpn_agent"]
 	path = agents/vpn_agent
 	url = https://github.com/Netrunner3000/vpn_agent.git
+[submodule "bug_spray"]
+	path = agents/bug_spray
+	url = https://github.com/Netrunner3000/bug_spray.git
