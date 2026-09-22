@@ -43,6 +43,11 @@ LEARNING_TOPICS = (
     LearningTopic("Tunnel", "tunnel.md", "Profile-aware VPN checks, safe previews, design, and troubleshooting."),
     LearningTopic("Forge", "forge.md", "Create and review agent scaffolds."),
     LearningTopic("Agent workflows", "workflows.md", "Combine agents to complete larger goals."),
+    LearningTopic(
+        "Testing roadmap",
+        "../testing_roadmap.md",
+        "How every agent, shared control, and release mode is verified.",
+    ),
     LearningTopic("Privacy & cost", "privacy_cost.md", "Choose routes and protect sensitive data."),
     LearningTopic("Troubleshooting", "troubleshooting.md", "Resolve common setup and run problems."),
     LearningTopic("Advanced tools", "advanced_tools.md", "Safe next steps and the v3 Kali roadmap."),

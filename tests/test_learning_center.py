@@ -1,7 +1,8 @@
 from pathlib import Path
 import re
 
-from PySide6.QtWidgets import QApplication, QDialog, QTextBrowser, QWidget
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import QApplication, QDialog, QListWidget, QTextBrowser, QWidget
 
 from ui.learning_center import (
     LEARNING_TOPICS,
@@ -34,6 +35,18 @@ def test_release_bundle_includes_training_resources():
     root = Path(__file__).resolve().parents[1]
     spec = (root / "Sentinel.spec").read_text(encoding="utf-8")
     assert '("docs/training", "docs/training")' in spec
+    assert '("docs/testing_roadmap.md", "docs")' in spec
+
+
+def test_complete_testing_roadmap_is_an_in_app_learning_topic():
+    root = Path(__file__).resolve().parents[1]
+    topic = next(topic for topic in LEARNING_TOPICS if topic.title == "Testing roadmap")
+    text = load_learning_topic(root, topic)
+
+    assert text.startswith("# Sentinel testing roadmap")
+    assert "## Agent-by-agent matrix" in text
+    assert "## Shared functionality matrix" in text
+    assert "## Release gate" in text
 
 
 def test_every_training_screenshot_reference_exists():
@@ -60,3 +73,9 @@ def test_learning_center_opens_with_first_lesson(monkeypatch):
     browser = dialog.findChild(QTextBrowser, "LearningBrowser")
     assert browser is not None
     assert "complete a safe first request" in browser.toPlainText()
+
+    topics = dialog.findChild(QListWidget, "LearningTopicList")
+    testing_items = topics.findItems("Testing roadmap", Qt.MatchExactly)
+    assert len(testing_items) == 1
+    topics.setCurrentItem(testing_items[0])
+    assert "Agent-by-agent matrix" in browser.toPlainText()

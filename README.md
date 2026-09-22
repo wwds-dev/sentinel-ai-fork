@@ -76,8 +76,9 @@ The in-app **Learning Centre** is available from **More (•••)**. It contai
 guided Quick Start, full workspace and Settings reference, courses for all
 seven agents, privacy/cost guidance, troubleshooting, multi-agent workflows,
 practice exercises, current-interface screenshots, and the v3 advanced-tools
-roadmap. Training source files live in `docs/training/`; they are separate from
-the developer reference in `docs/agents/`.
+roadmap. It also includes the complete testing roadmap for every agent, shared
+control, and release mode. Training source files live in `docs/training/`; they
+are separate from the developer reference in `docs/agents/`.
 
 For a removable, self-contained macOS copy, see
 [`docs/portable_mode.md`](docs/portable_mode.md). Portable mode keeps settings,

@@ -32,6 +32,7 @@ troubleshooting and combined-agent workflows. Open it from Sentinel's
 ### Working across Sentinel
 
 - [Agent workflows](workflows.md)
+- [Testing roadmap](../testing_roadmap.md)
 - [Advanced tools and v3 direction](advanced_tools.md)
 
 ## Lesson standard

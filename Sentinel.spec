@@ -36,6 +36,7 @@ datas += [
     (".env.example", "."),
     ("docs/agents", "docs/agents"),   # per-agent capability sheets (Docs button)
     ("docs/training", "docs/training"),  # in-app Learning Centre lessons
+    ("docs/testing_roadmap.md", "docs"),  # complete in-app testing roadmap
 ]
 
 a = Analysis(
