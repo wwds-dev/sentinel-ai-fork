@@ -31,8 +31,11 @@ future and cross-project items are listed under V3 or in their owning project.
 - [x] Trace consent-gated Live Research for domains/IPs, usernames, email and companies, with partial results, cancellation and saved searches. Person/phone data-broker lookup remains deliberately excluded.
 - [x] Bloodhound read-only local and authenticated SFTP file discovery with explicit roots, filters, safety limits, cancellation and no file-content handoff to AI.
 - [x] Beacon read-only interface/adapter preflight and documented dual-interface workflow.
-- [x] Tunnel phases 1–2: read-only connection diagnostics, selected-profile comparison and safe Connect/Disconnect/Restart previews with no execution path.
+- [x] Tunnel phases 1–2: read-only connection diagnostics, selected-profile comparison and Connect/Disconnect/Restart command previews (Action Preview still shows commands without running them).
 - [x] Tunnel phase 3a: local WireGuard configuration inspection that discards private and preshared keys at parse time and compares non-secret intent with the latest diagnostic snapshot.
+- [x] Tunnel phase 4 — real VPN client: WireGuard **and** OpenVPN connect/disconnect via the macOS authorisation dialog after an explicit confirmation, `.conf`/`.ovpn` import, and country-labelled example templates that the connect path refuses until given a real endpoint/config. Privileged execution is injectable and unit-tested without `sudo` (`services/vpn_connection.py`, `services/openvpn_manager.py`, `tests/test_vpn_connection.py`).
+- [x] VPN Agent code merged in-tree (formerly a git submodule): removed the 1.2 GB committed `.venv`, the standalone `app/` GUI and its build/test meta; rewrote the internal `from server import …`/`from services import …` imports to fully-qualified paths so the pf **kill switch** and `profile_store` now import under Sentinel.
+- [x] Honesty-audit fixes (`docs/honesty_audit.md`): Bloodhound now runs live OSINT for every target type and drives the Sources gauge from real sources contacted (Threat/Confidence labelled AI estimates); streaming requests bill the provider's real token counts, so the budget cap is accurate; Beacon scans via `system_profiler` instead of the Apple-removed `airport` binary and the USB VID/PID matcher is fixed; honest UI captions on Tunnel, Bug Spray and Forge.
 - [x] Forge creates reviewable agent specifications before any scaffold is approved.
 - [x] Bug Spray's canonical home is the nested companion used by Sentinel; no duplicate top-level implementation is maintained.
 
@@ -50,6 +53,7 @@ future and cross-project items are listed under V3 or in their owning project.
 ## v3 — later
 
 - [x] `P1` `bug` `@ai` `agent:vpn` VPN audit follow-up: label command completion as unverified protection; refuse OpenVPN shutdown without verified process tracking and preserve signal failures.
+- [x] `P0` `infra` `@me` **`agents/vpn_agent` was a bare gitlink — its files were tracked by nothing.** `git ls-files --stage agents/vpn_agent` showed `160000 e5a28ea3…` with no `.gitmodules` entry and no nested `.git`, so GitHub rendered it as an empty grey folder and its files were in neither history. Resolved in `db0eb4d` by `git rm --cached agents/vpn_agent && git add agents/vpn_agent` — it is now a normal in-tree directory (`040000 tree`), matching the intentional de-submodule merge of the VPN library.
 - [ ] `P1` `testing` `@me` `agent:vpn` Verify live IPv4/IPv6 routing, DNS, handshake, reconnect and failure behavior against an owned VPN endpoint before relying on traffic protection. See `docs/honesty_audit.md`.
 
 - [ ] `P1` `infra` `docs` `@ai` **v2.002 release follow-up.** When the next user-visible development milestone is ready, increment `VERSION` to `2.002`, add its release-record entry, run the release checks and create the next numbered follow-up. See `docs/versioning.md`. This explicit open item is the Lab project monitor hand-off.

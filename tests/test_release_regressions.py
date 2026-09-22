@@ -159,6 +159,7 @@ def test_every_distribution_reads_the_canonical_version_file():
     installer = (ROOT / "scripts" / "install_app.sh").read_text(encoding="utf-8")
 
     assert '("VERSION", ".")' in spec
+    assert '("docs/versioning.md", "docs")' in spec
     assert 'Path(SPECPATH) / "VERSION"' in spec
     assert '${PROJECT_ROOT}/VERSION' in installer
     assert 'CFBundleShortVersionString -string "$APP_VERSION"' in installer

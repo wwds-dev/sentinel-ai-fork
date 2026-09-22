@@ -39,6 +39,7 @@ datas += [
     ("config", "config"),
     ("agents/vpn_agent/config/vpn_profiles.json", "agents/vpn_agent/config"),
     ("README.md", "."),
+    ("docs/versioning.md", "docs"),
     (".env.example", "."),
     ("docs/agents", "docs/agents"),   # per-agent capability sheets (Docs button)
     ("docs/training", "docs/training"),  # in-app Learning Centre lessons
