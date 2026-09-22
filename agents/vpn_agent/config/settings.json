@@ -1,0 +1,11 @@
+{
+    "refresh_interval_seconds": 30,
+    "latency_target_host": "1.1.1.1",
+    "latency_ping_count": 4,
+    "dns_check_resolver": "8.8.8.8",
+    "ip_api_url": "https://api.ipify.org?format=json",
+    "ip_detail_url": "https://ipapi.co/json/",
+    "log_to_file": true,
+    "log_path": "data/logs/vpn_agent.log",
+    "theme": "dark"
+}

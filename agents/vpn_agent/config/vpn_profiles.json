@@ -1,0 +1,26 @@
+{
+    "profiles": [
+        {
+            "name": "Home Server",
+            "endpoint": "192.168.1.1",
+            "port": 51820,
+            "interface": "wg0",
+            "notes": "Home WireGuard server"
+        },
+        {
+            "name": "GL-iNet Flint 2",
+            "endpoint": "192.168.8.1",
+            "port": 51820,
+            "interface": "wg1",
+            "notes": "GL.iNet Flint 2 local router"
+        },
+        {
+            "name": "VPS Node 1",
+            "endpoint": "0.0.0.0",
+            "port": 51820,
+            "interface": "wg2",
+            "notes": "Replace 0.0.0.0 with your VPS public IP"
+        }
+    ],
+    "active_profile": "Home Server"
+}
