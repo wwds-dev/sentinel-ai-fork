@@ -13,9 +13,8 @@ returned, and ``is_running``/``status`` read the real pid file and process table
 
 from __future__ import annotations
 
-import os
 import shutil
-import signal
+import shlex
 import subprocess
 from pathlib import Path
 from typing import Callable
@@ -59,32 +58,10 @@ def _read_pid() -> int | None:
         return None
 
 
-def _pid_alive(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True  # exists but owned by root — that is our daemon
-    except OSError:
-        return False
-    return True
-
-
 def is_running() -> bool:
-    """Real check: our pid file names a live process, or an openvpn is running."""
+    """Whether the tracked Sentinel process exists; not a tunnel-health check."""
     pid = _read_pid()
-    if pid is not None and _pid_alive(pid):
-        return True
-    pgrep = shutil.which("pgrep")
-    if not pgrep:
-        return False
-    try:
-        return subprocess.run(
-            [pgrep, "-x", "openvpn"], capture_output=True, timeout=3
-        ).returncode == 0
-    except (OSError, subprocess.TimeoutExpired):
-        return False
+    return pid is not None and _is_tracked_process(pid)
 
 
 def _quote(text: str) -> str:
@@ -132,31 +109,47 @@ def connect(config_path: str, *, run_as_root: RunAsRoot = _default_run_as_root) 
     return result
 
 
+def _is_tracked_process(pid: int) -> bool:
+    """Fail closed unless this PID names Sentinel's own OpenVPN command.
+
+    A PID file alone is not identity: PIDs can be stale or reused. Ambiguous
+    process arguments (including unquoted spaces from ps) are refused.
+    """
+    if pid <= 1:
+        return False
+    try:
+        proc = subprocess.run(
+            ["/bin/ps", "-p", str(pid), "-o", "command="],
+            capture_output=True, text=True, timeout=3,
+        )
+        args = shlex.split(proc.stdout.strip())
+        return (
+            proc.returncode == 0 and bool(args)
+            and Path(args[0]).name == "openvpn"
+            and args[args.index("--daemon") + 1] == "sentinel-ovpn"
+            and args[args.index("--writepid") + 1] == str(pid_file())
+        )
+    except (OSError, subprocess.TimeoutExpired, ValueError, IndexError):
+        return False
+
+
 def disconnect(*, run_as_root: RunAsRoot = _default_run_as_root) -> dict:
-    """Stop the OpenVPN client started by :func:`connect`."""
+    """Request termination only for a verified Sentinel OpenVPN process."""
     result = {"success": False, "output": "", "error": None, "protocol": "OpenVPN"}
     pid = _read_pid()
-    if pid is None:
-        # Nothing we started is tracked; fall back to a name-scoped stop.
-        ok, output = run_as_root(
-            "pkill -x openvpn || true",
-            "Sentinel needs administrator access to stop the VPN.")
-        result["success"] = ok
-        result["output"] = output
-        if not ok:
-            result["error"] = output or "Could not stop OpenVPN."
+    if pid is None or not _is_tracked_process(pid):
+        result["error"] = (
+            "Cannot verify a Sentinel-owned OpenVPN process. Nothing was stopped. "
+            "Use the VPN client that started the connection to disconnect it."
+        )
         return result
     ok, output = run_as_root(
-        f"kill {int(pid)} 2>/dev/null || true",
+        f"kill -TERM {pid}",
         "Sentinel needs administrator access to stop the VPN.")
     result["success"] = ok
     result["output"] = output
-    if ok:
-        try:
-            pid_file().unlink()
-        except OSError:
-            pass
-    else:
+    # Keep tracking until exit is observed; sending a signal does not prove exit.
+    if not ok:
         result["error"] = output or "Could not stop OpenVPN."
     return result
 

@@ -4,7 +4,42 @@ _Audit date: 2026-09-21 · Scope: does every agent/tool really do what it claims
 or only appear to? Method: per-subsystem claim-vs-code verification with an
 adversarial re-check pass, plus independent spot-checks._
 
-## Bottom line
+## Current verification — 2026-09-22
+
+The original audit below is historical; its preview-only Tunnel verdict was
+superseded by the real connection implementation. The checkout already contains
+Bloodhound dispatch, Anthropic/Kimi usage, Beacon scanning and Forge wording fixes.
+Baseline automated verification: **608 tests passed**. After the corrections,
+**619 tests passed** in the full suite; the final targeted VPN run passed **29
+tests**, including four additional invalid-PID cases. These tests use simulated
+provider/VPN results and do not establish successful external operations.
+
+Follow-up corrections:
+
+- Tunnel starts in **Connection state not checked**, rather than claiming it is
+  disconnected without a measurement. Successful commands explicitly leave
+  connection state and traffic protection **unverified**. Starting a daemon or
+  creating an interface does not prove a handshake, correct routing or leak safety.
+- OpenVPN no longer falls back to stopping every process named `openvpn`.
+  Missing, malformed, or unverified tracking refuses to stop anything. A tracked
+  process must have the OpenVPN executable name, Sentinel daemon name and expected
+  PID-file argument. Signal failures are reported, not hidden with `|| true`, and
+  tracking remains after a termination request. Ambiguous process arguments are
+  refused. This is a fail-closed check, not an atomic process-identity guarantee;
+  a privileged supervisor remains the stronger long-term design.
+
+**Not yet established:** live WireGuard/OpenVPN connectivity; selected-profile
+identity; IPv4/IPv6 and split-route behavior; DNS leak behavior; reconnect and
+server-failure behavior; firewall enforcement; packaged-app operation. Test these
+on an owned VPN endpoint before relying on Sentinel for protection. No live VPN
+or firewall change was made during this follow-up.
+
+Remaining review priorities include privileged command resolution, imported-config
+hooks, root-owned runtime files, OpenVPN profile ownership and daemon lifecycle,
+stream cancellation accounting, estimate-based budget limits, and complete test
+isolation. These are review targets, not claims that each is an exploitable defect.
+
+## Historical initial assessment
 
 No subsystem fabricates data and presents it as live results — the owner's
 primary fear (e.g. "a tunnel that only pretends to tunnel") is **not** present in
@@ -21,7 +56,7 @@ looked like they did more than they did. Most are fixed (see below).
 | File discovery (local + SSH) | Does what it claims | Metadata-only, read-only, no symlink follow, strict SSH `RejectPolicy` (fail-closed), no creds stored, nothing sent to AI. Cleanest subsystem. |
 | OSINT providers (Trace + lookups) | Real | Live WHOIS/DNS/crt.sh/emailrep/HIBP/BreachDirectory/urlscan/GLEIF; honest failure; no invented findings. |
 | Trust backbone (guard/cost/clients) | Real, with one billing bug (fixed) | Guard blocks on both paths; clients hit real endpoints; Kimi cache math correct. Streaming billed an estimate (fixed). |
-| Tunnel / VPN | Honest but limited | Real diagnostics + non-executing preview. **Does not route traffic.** See "VPN reality". |
+| Tunnel / VPN | Connection control added after initial audit | Executes VPN commands; traffic protection remains unverified. See current verification above. |
 | Bug Spray | Honest but limited | Prompt+report builder; Nmap really runs; "in-scope" not enforced (now captioned). |
 | Forge (agent factory) | Safe, but messaging oversold (fixed) | Generated code cannot run (no dynamic loader). Dialog/messages corrected. |
 | Beacon / Wi-Fi | Two flagship modes were dead on macOS 14.4+ (fixed) | `airport` removed by Apple; replaced with `system_profiler`. |

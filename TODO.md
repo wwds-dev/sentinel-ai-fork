@@ -49,6 +49,9 @@ future and cross-project items are listed under V3 or in their owning project.
 
 ## v3 — later
 
+- [x] `P1` `bug` `@ai` `agent:vpn` VPN audit follow-up: label command completion as unverified protection; refuse OpenVPN shutdown without verified process tracking and preserve signal failures.
+- [ ] `P1` `testing` `@me` `agent:vpn` Verify live IPv4/IPv6 routing, DNS, handshake, reconnect and failure behavior against an owned VPN endpoint before relying on traffic protection. See `docs/honesty_audit.md`.
+
 - [ ] `P1` `infra` `docs` `@ai` **v2.002 release follow-up.** When the next user-visible development milestone is ready, increment `VERSION` to `2.002`, add its release-record entry, run the release checks and create the next numbered follow-up. See `docs/versioning.md`. This explicit open item is the Lab project monitor hand-off.
 - [x] `P2` `testing` `docs` `@ai` **Testing roadmap — in-app access.** The complete roadmap is a searchable Learning Centre topic and is bundled in self-contained releases.
 - [ ] `P0` `testing` `security` `@ai` **Testing roadmap — safety gate.** Isolate writable config as well as SQLite (the baseline suite changed `config/settings.json`), add a deny-by-default network/process harness, cover every agent's consent, scope, secret, budget, cancellation and write/delete boundary, plus installed-app Quit-stays-quit smoke. See `docs/testing_roadmap.md`.

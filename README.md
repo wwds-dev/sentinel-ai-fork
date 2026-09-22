@@ -115,7 +115,10 @@ but the live peer endpoint is deliberately not queried or verified.
 Tunnel's **VPN Connection** brings a real tunnel up and down. Choosing a
 WireGuard or OpenVPN profile and clicking **Connect** runs `wg-quick`/`openvpn`
 through the macOS authorisation dialog after an explicit confirmation, and
-**Disconnect** brings it down; both run off the interface thread. **Import
+**Disconnect** requests shutdown; both run off the interface thread. Command
+success does not verify a handshake, routing, DNS, or traffic protection. OpenVPN
+shutdown refuses if Sentinel cannot identify its tracked process; it never stops
+all OpenVPN processes by name. **Import
 config…** loads a `.conf`/`.ovpn` and stores it as a connectable profile. A few
 country-labelled example profiles ship as explicit templates — they are marked
 `(template)` and the connect path refuses them until you import a real config or

@@ -58,7 +58,7 @@ class VpnPanel(AgentPanel):
         layout.setSpacing(8)
 
         banner = QLabel(
-            "Connect runs a real WireGuard/OpenVPN tunnel and will ask for your "
+            "Connect starts WireGuard/OpenVPN; traffic protection is not verified. It may ask for your "
             "administrator password. Example country profiles are templates and will "
             "not connect until you import a real config or set a real endpoint. "
             "Diagnostics and Action Preview remain read-only."
@@ -98,7 +98,7 @@ class VpnPanel(AgentPanel):
         self.disconnect_btn.setObjectName("DangerAction")
         self.disconnect_btn.clicked.connect(self.disconnect_vpn)
         action_row.addWidget(self.disconnect_btn)
-        self.connection_status_label = QLabel("Not connected.")
+        self.connection_status_label = QLabel("Connection state not checked.")
         self.connection_status_label.setStyleSheet("color: #9aa; font-size: 12px;")
         action_row.addWidget(self.connection_status_label, 1)
         connect_layout.addLayout(action_row)
@@ -475,8 +475,8 @@ class VpnPanel(AgentPanel):
         confirm = QMessageBox.question(
             self, "Connect VPN",
             f"Start a real {protocol} tunnel for '{profile.get('name')}'?\n\n"
-            "This reroutes your traffic and will prompt for your administrator "
-            "password.",
+            "Routing depends on the imported configuration. Starting the client does "
+            "not verify traffic protection. Administrator access may be requested.",
             QMessageBox.Yes | QMessageBox.No)
         if confirm != QMessageBox.Yes:
             return
@@ -515,7 +515,8 @@ class VpnPanel(AgentPanel):
         self.disconnect_btn.setEnabled(True)
         if result.get("success"):
             self.connection_status_label.setText(
-                f"{result.get('protocol', 'VPN')}: {result.get('output') or 'done'}"[:200])
+                f"{result.get('protocol', 'VPN')}: command completed. "
+                "Connection state and traffic protection are not verified.")
         else:
             self.connection_status_label.setText(f"Failed: {result.get('error', 'unknown')}"[:300])
 

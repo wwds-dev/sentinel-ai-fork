@@ -153,12 +153,43 @@ def test_openvpn_connect_reports_missing_binary(monkeypatch, tmp_path):
     assert "openvpn" in result["error"].lower()
 
 
-def test_openvpn_disconnect_without_pid_uses_name_stop(monkeypatch):
-    monkeypatch.setattr(openvpn_manager, "_read_pid", lambda: None)
-    run = Recorder(ok=True, output="")
+@pytest.mark.parametrize("pid", [None, -1, 0, 1, 12345])
+def test_openvpn_disconnect_refuses_unverified_process(monkeypatch, pid):
+    monkeypatch.setattr(openvpn_manager, "_read_pid", lambda: pid)
+    monkeypatch.setattr(openvpn_manager, "_is_tracked_process", lambda p: False)
+    run = Recorder()
     result = openvpn_manager.disconnect(run_as_root=run)
-    assert result["success"] is True
-    assert any("pkill" in s for s in run.scripts)
+    assert result["success"] is False
+    assert run.scripts == []
+
+
+@pytest.mark.parametrize("ok", [True, False])
+def test_openvpn_disconnect_preserves_tracking_and_reports_signal_failure(monkeypatch, tmp_path, ok):
+    pidfile = tmp_path / "openvpn.pid"
+    pidfile.write_text("12345")
+    monkeypatch.setattr(openvpn_manager, "pid_file", lambda: pidfile)
+    monkeypatch.setattr(openvpn_manager, "_is_tracked_process", lambda p: p == 12345)
+    run = Recorder(ok=ok, output="signal result")
+    result = openvpn_manager.disconnect(run_as_root=run)
+    assert result["success"] is ok
+    assert run.scripts == ["kill -TERM 12345"]
+    assert pidfile.exists()
+
+
+@pytest.mark.parametrize("command, expected", [
+    ("/opt/homebrew/sbin/openvpn --daemon sentinel-ovpn --writepid /tmp/sentinel.pid", True),
+    ("/usr/bin/python --daemon sentinel-ovpn --writepid /tmp/sentinel.pid", False),
+    ("openvpn --daemon other --writepid /tmp/sentinel.pid", False),
+    ("openvpn --daemon sentinel-ovpn --writepid /tmp/other.pid", False),
+    ("openvpn --daemon", False),
+])
+def test_openvpn_process_identity(monkeypatch, command, expected):
+    from pathlib import Path
+    from types import SimpleNamespace
+    monkeypatch.setattr(openvpn_manager, "pid_file", lambda: Path("/tmp/sentinel.pid"))
+    monkeypatch.setattr(openvpn_manager.subprocess, "run", lambda *a, **k:
+                        SimpleNamespace(returncode=0, stdout=command))
+    assert openvpn_manager._is_tracked_process(12345) is expected
 
 
 # ── Protocol dispatch ───────────────────────────────────────────────────────
@@ -169,3 +200,11 @@ def test_unknown_protocol_is_refused():
         run_as_root=Recorder())
     assert result["success"] is False
     assert "protocol" in result["error"].lower()
+
+
+@pytest.mark.parametrize("pid", [-100, -1, 0, 1])
+def test_openvpn_invalid_pid_never_queries_or_signals_processes(monkeypatch, pid):
+    def unexpected(*a, **k):
+        pytest.fail("Invalid PID reached process inspection")
+    monkeypatch.setattr(openvpn_manager.subprocess, "run", unexpected)
+    assert openvpn_manager._is_tracked_process(pid) is False

@@ -2351,6 +2351,7 @@ class TestTunnelPanel:
     def test_a_successful_connect_updates_status(self, tunnel):
         tunnel._on_connection_finished({"success": True, "protocol": "WireGuard", "output": "up"})
         assert "WireGuard" in tunnel.connection_status_label.text()
+        assert "not verified" in tunnel.connection_status_label.text()
         assert tunnel.connect_btn.isEnabled() is True
         assert tunnel.tabs.tabText(4) == "Config Inspection"
         assert tunnel.external_checks_box.isChecked() is False
