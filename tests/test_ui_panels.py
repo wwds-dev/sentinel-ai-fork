@@ -2357,6 +2357,39 @@ class TestTunnelPanel:
         assert tunnel.external_checks_box.isChecked() is False
         assert tunnel.profile_box.currentText() == "Travel VPS"
 
+    def test_arming_the_kill_switch_dispatches_an_arm_worker(self, tunnel, monkeypatch):
+        from PySide6.QtWidgets import QMessageBox
+        from services import vpn_connection
+        monkeypatch.setattr(vpn_connection, "killswitch_supported", lambda: True)
+        monkeypatch.setattr(QMessageBox, "question",
+                            staticmethod(lambda *a, **k: QMessageBox.Yes))
+        tunnel.connect_profile_box.clear()
+        tunnel.connect_profile_box.addItem("VPS", {
+            "name": "VPS", "protocol": "WireGuard", "endpoint": "203.0.113.7",
+            "interface": "wg0"})
+        tunnel.arm_kill_switch()
+        assert len(FakeVpnConnectionWorker.instances) == 1
+        assert FakeVpnConnectionWorker.instances[0].action == "arm"
+
+    def test_arming_refuses_a_template_profile(self, tunnel, monkeypatch):
+        from PySide6.QtWidgets import QMessageBox
+        from services import vpn_connection
+        monkeypatch.setattr(vpn_connection, "killswitch_supported", lambda: True)
+        monkeypatch.setattr(QMessageBox, "question",
+                            staticmethod(lambda *a, **k: QMessageBox.Yes))
+        monkeypatch.setattr(QMessageBox, "information", staticmethod(lambda *a, **k: None))
+        tunnel.connect_profile_box.clear()
+        tunnel.connect_profile_box.addItem("Example — Japan", {
+            "name": "Example — Japan", "protocol": "WireGuard",
+            "endpoint": "<SERVER_IP>", "interface": "wgjp", "placeholder": True})
+        tunnel.arm_kill_switch()
+        assert FakeVpnConnectionWorker.instances == []
+
+    def test_kill_switch_result_updates_its_own_status(self, tunnel):
+        tunnel._on_killswitch_finished({"success": True, "output": "Kill switch ARMED"})
+        assert "ARMED" in tunnel.kill_switch_status_label.text()
+        assert tunnel.arm_ks_btn.isEnabled() is True
+
     def test_an_empty_question_never_reaches_the_guard(self, tunnel):
         tunnel.question_input.clear()
         tunnel.run()

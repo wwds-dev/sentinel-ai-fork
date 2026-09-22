@@ -119,10 +119,15 @@ through the macOS authorisation dialog after an explicit confirmation, and
 success does not verify a handshake, routing, DNS, or traffic protection. OpenVPN
 shutdown refuses if Sentinel cannot identify its tracked process; it never stops
 all OpenVPN processes by name. **Import
-config…** loads a `.conf`/`.ovpn` and stores it as a connectable profile. A few
+config…** loads a `.conf`/`.ovpn`, reads its real server endpoint out of the
+file, and stores it as a connectable profile. A few
 country-labelled example profiles ship as explicit templates — they are marked
 `(template)` and the connect path refuses them until you import a real config or
-set a real endpoint, so nothing pretends to be a working server it is not.
+set a real endpoint, so nothing pretends to be a working server it is not. An
+optional **Kill switch** (macOS pf) can be armed to block all traffic except the
+selected tunnel's endpoint, so a dropped tunnel cannot leak; it refuses to arm
+for a template or when the endpoint cannot be resolved, and reports its recovery
+command on failure.
 **Action Preview** still shows the equivalent commands without running them, and
 **Connection Check** stays read-only. It never
 requests private key material. Public-IP and latency

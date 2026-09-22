@@ -1,0 +1,129 @@
+"""Kill-switch wiring and imported-config endpoint extraction.
+
+The pf kill switch is mocked everywhere here — no test runs pfctl, sudo, or
+osascript, and none arms a real firewall. Covers: pulling the real server
+endpoint out of an imported config (so the kill switch exempts the tunnel, not
+blocks it), the arm/disarm pass-throughs, and the worker's result normalisation.
+"""
+
+from __future__ import annotations
+
+from services import vpn_connection
+
+
+# ── Endpoint extraction from imported configs ───────────────────────────────
+
+def test_extract_wireguard_endpoint(tmp_path):
+    cfg = tmp_path / "nl.conf"
+    cfg.write_text("[Interface]\nAddress = 10.0.0.2/32\n[Peer]\nEndpoint = 203.0.113.7:51820\n")
+    assert vpn_connection.extract_endpoint(str(cfg), "WireGuard") == ("203.0.113.7", 51820)
+
+
+def test_extract_openvpn_endpoint(tmp_path):
+    cfg = tmp_path / "jp.ovpn"
+    cfg.write_text("client\ndev tun\nremote vpn.example.net 1194 udp\n")
+    assert vpn_connection.extract_endpoint(str(cfg), "OpenVPN") == ("vpn.example.net", 1194)
+
+
+def test_extract_ipv6_wireguard_endpoint(tmp_path):
+    cfg = tmp_path / "v6.conf"
+    cfg.write_text("[Peer]\nEndpoint = [2001:db8::1]:51820\n")
+    assert vpn_connection.extract_endpoint(str(cfg), "WireGuard") == ("2001:db8::1", 51820)
+
+
+def test_extract_missing_endpoint_returns_none(tmp_path):
+    cfg = tmp_path / "bad.conf"
+    cfg.write_text("[Interface]\nAddress = 10.0.0.2/32\n")
+    assert vpn_connection.extract_endpoint(str(cfg), "WireGuard") == (None, None)
+
+
+def test_imported_profile_gets_a_real_endpoint_and_is_connectable(tmp_path):
+    cfg = tmp_path / "nl.conf"
+    cfg.write_text("[Peer]\nEndpoint = 203.0.113.7:51820\n")
+    profile = vpn_connection.profile_from_config(str(cfg))
+    assert profile["endpoint"] == "203.0.113.7"
+    assert profile["port"] == 51820
+    assert not vpn_connection.is_placeholder(profile)   # a real endpoint, not a template
+
+
+def test_imported_profile_without_endpoint_is_still_connectable(tmp_path):
+    cfg = tmp_path / "x.ovpn"
+    cfg.write_text("client\n")  # no remote line
+    profile = vpn_connection.profile_from_config(str(cfg))
+    assert profile["endpoint"] == "imported"            # marker, not a placeholder token
+    assert not vpn_connection.is_placeholder(profile)
+
+
+# ── arm / disarm pass-throughs ──────────────────────────────────────────────
+
+class _FakeKS:
+    def __init__(self, supported=True):
+        self._supported = supported
+        self.arm_calls = []
+        self.disarm_calls = 0
+
+    def is_supported(self):
+        return self._supported
+
+    def arm(self, endpoints, allow):
+        self.arm_calls.append((list(endpoints), list(allow)))
+        return True, "Kill switch ARMED"
+
+    def disarm(self):
+        self.disarm_calls += 1
+        return True, "disarmed"
+
+
+def test_arm_exempts_the_profile_endpoint(monkeypatch):
+    fake = _FakeKS()
+    monkeypatch.setattr(vpn_connection, "_killswitch", lambda: fake)
+    ok, message = vpn_connection.arm_killswitch(
+        {"name": "VPS", "protocol": "WireGuard", "endpoint": "203.0.113.7"})
+    assert ok is True and "ARMED" in message
+    assert fake.arm_calls == [(["203.0.113.7"], [])]
+
+
+def test_arm_refuses_a_placeholder(monkeypatch):
+    fake = _FakeKS()
+    monkeypatch.setattr(vpn_connection, "_killswitch", lambda: fake)
+    ok, _ = vpn_connection.arm_killswitch({"endpoint": "<SERVER_IP>", "placeholder": True})
+    assert ok is False
+    assert fake.arm_calls == []            # never armed for a template
+
+
+def test_arm_reports_when_unsupported(monkeypatch):
+    monkeypatch.setattr(vpn_connection, "_killswitch", lambda: None)
+    ok, message = vpn_connection.arm_killswitch({"endpoint": "203.0.113.7"})
+    assert ok is False and "unavailable" in message.lower()
+
+
+def test_disarm_passes_through(monkeypatch):
+    fake = _FakeKS()
+    monkeypatch.setattr(vpn_connection, "_killswitch", lambda: fake)
+    ok, _ = vpn_connection.disarm_killswitch()
+    assert ok is True and fake.disarm_calls == 1
+
+
+# ── Worker normalises the (ok, message) tuple into a result dict ────────────
+
+def test_worker_arm_normalises_result(monkeypatch):
+    from ui.workers import VpnConnectionWorker
+    monkeypatch.setattr(vpn_connection, "arm_killswitch", lambda profile: (True, "ARMED ok"))
+    received = []
+    worker = VpnConnectionWorker("arm", {"endpoint": "203.0.113.7"})
+    worker.finished_signal.connect(received.append)
+    worker.run()  # synchronous
+    assert received and received[0]["success"] is True
+    assert received[0]["protocol"] == "Kill switch"
+    assert "ARMED" in received[0]["output"]
+
+
+def test_worker_disarm_reports_failure(monkeypatch):
+    from ui.workers import VpnConnectionWorker
+    monkeypatch.setattr(vpn_connection, "disarm_killswitch", lambda: (False, "pfctl error"))
+    received = []
+    worker = VpnConnectionWorker("disarm", {})
+    worker.finished_signal.connect(received.append)
+    worker.run()
+    assert received and received[0]["success"] is False
+    assert received[0]["error"] == "pfctl error"

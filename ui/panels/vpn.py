@@ -102,6 +102,23 @@ class VpnPanel(AgentPanel):
         self.connection_status_label.setStyleSheet("color: #9aa; font-size: 12px;")
         action_row.addWidget(self.connection_status_label, 1)
         connect_layout.addLayout(action_row)
+
+        ks_row = QHBoxLayout()
+        ks_row.addWidget(QLabel("Kill switch:"))
+        self.arm_ks_btn = QPushButton("Arm")
+        self.arm_ks_btn.setToolTip(
+            "Block all traffic except the selected tunnel's endpoint, so a dropped "
+            "tunnel cannot leak. Requires macOS pf and your administrator password.")
+        self.arm_ks_btn.clicked.connect(self.arm_kill_switch)
+        ks_row.addWidget(self.arm_ks_btn)
+        self.disarm_ks_btn = QPushButton("Disarm")
+        self.disarm_ks_btn.clicked.connect(self.disarm_kill_switch)
+        ks_row.addWidget(self.disarm_ks_btn)
+        self.kill_switch_status_label = QLabel("Kill switch not armed.")
+        self.kill_switch_status_label.setStyleSheet("color: #9aa; font-size: 12px;")
+        ks_row.addWidget(self.kill_switch_status_label, 1)
+        connect_layout.addLayout(ks_row)
+
         layout.addWidget(connect_group)
         self.reload_connect_profiles()
 
@@ -524,6 +541,65 @@ class VpnPanel(AgentPanel):
         self.connect_btn.setEnabled(True)
         self.disconnect_btn.setEnabled(True)
         self.connection_status_label.setText(f"Error: {error}"[:300])
+
+    # ── Kill switch ─────────────────────────────────────────────────────
+    def arm_kill_switch(self) -> None:
+        if self._connection_busy():
+            return
+        if not vpn_connection.killswitch_supported():
+            QMessageBox.information(
+                self, "Kill switch",
+                "The kill switch needs macOS pf (the packet filter) to be available.")
+            return
+        profile = self.selected_connect_profile()
+        if not profile or vpn_connection.is_placeholder(profile):
+            QMessageBox.information(
+                self, "Kill switch",
+                "Choose a real server profile first — the kill switch must exempt "
+                "its endpoint, or it would block the tunnel too.")
+            return
+        confirm = QMessageBox.question(
+            self, "Arm kill switch",
+            "Arm a firewall kill switch?\n\nThis blocks all network traffic except "
+            f"the selected tunnel's endpoint ({profile.get('endpoint')}). If the "
+            "tunnel drops, traffic stays blocked until you disarm. It needs your "
+            "administrator password, and refuses to arm if the endpoint cannot be "
+            "resolved.",
+            QMessageBox.Yes | QMessageBox.No)
+        if confirm != QMessageBox.Yes:
+            return
+        self._start_killswitch("arm", profile, "Arming kill switch…")
+
+    def disarm_kill_switch(self) -> None:
+        if self._connection_busy():
+            return
+        self._start_killswitch(
+            "disarm", self.selected_connect_profile() or {}, "Disarming kill switch…")
+
+    def _start_killswitch(self, action: str, profile: dict, status: str) -> None:
+        self.kill_switch_status_label.setText(status)
+        self.arm_ks_btn.setEnabled(False)
+        self.disarm_ks_btn.setEnabled(False)
+        worker = self.connection_worker_class(action, profile)
+        worker.finished_signal.connect(self._on_killswitch_finished)
+        worker.error_signal.connect(self._on_killswitch_error)
+        self._connection_worker = worker
+        worker.start()
+
+    def _on_killswitch_finished(self, result: dict) -> None:
+        self.arm_ks_btn.setEnabled(True)
+        self.disarm_ks_btn.setEnabled(True)
+        if result.get("success"):
+            self.kill_switch_status_label.setText(
+                f"Kill switch: {result.get('output', 'done')}"[:200])
+        else:
+            self.kill_switch_status_label.setText(
+                f"Kill switch failed: {result.get('error', 'unknown')}"[:300])
+
+    def _on_killswitch_error(self, error: str) -> None:
+        self.arm_ks_btn.setEnabled(True)
+        self.disarm_ks_btn.setEnabled(True)
+        self.kill_switch_status_label.setText(f"Kill switch error: {error}"[:300])
 
     def run_diagnostics(self) -> None:
         if super().is_running():

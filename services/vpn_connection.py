@@ -15,6 +15,7 @@ change the firewall.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Callable
 
@@ -217,18 +218,55 @@ def load_connectable_profiles(include_examples: bool = True) -> list[dict]:
     return profiles
 
 
+def extract_endpoint(config_path: str, protocol: str) -> tuple[str | None, int | None]:
+    """Read the server host/port from a WireGuard `.conf` or OpenVPN `.ovpn`.
+
+    The kill switch needs the real endpoint to exempt (otherwise arming would
+    block the tunnel from ever reaching its server). Returns (host, port) or
+    (None, None) when it cannot be determined.
+    """
+    try:
+        text = Path(config_path).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None, None
+    if protocol == "OpenVPN":
+        match = re.search(r"(?im)^\s*remote\s+(\S+)(?:\s+(\d+))?", text)
+        if match:
+            return match.group(1), int(match.group(2)) if match.group(2) else None
+        return None, None
+    # WireGuard: Endpoint = host:port  (also handle [IPv6]:port)
+    match = re.search(r"(?im)^\s*Endpoint\s*=\s*(.+?)\s*$", text)
+    if not match:
+        return None, None
+    value = match.group(1).strip()
+    ipv6 = re.match(r"^\[(.+)\]:(\d+)$", value)
+    if ipv6:
+        return ipv6.group(1), int(ipv6.group(2))
+    if ":" in value:
+        host, _, port = value.rpartition(":")
+        if port.isdigit():
+            return host, int(port)
+    return value or None, None
+
+
 def profile_from_config(path: str) -> dict:
     """Build a connectable profile from an imported WireGuard/OpenVPN file."""
     p = Path(path)
     protocol = "OpenVPN" if p.suffix.lower() == ".ovpn" else "WireGuard"
-    return {
+    host, port = extract_endpoint(str(p), protocol)
+    profile = {
         "name": f"Imported — {p.stem}",
         "protocol": protocol,
         "config_path": str(p),
         "interface": p.stem if protocol == "WireGuard" else "",
-        "endpoint": "imported",  # real endpoint lives inside the config file
+        # A real host lets the kill switch exempt the tunnel; fall back to a
+        # non-placeholder marker so connect still works via the config file.
+        "endpoint": host or "imported",
         "notes": f"Imported from {p.name}",
     }
+    if port:
+        profile["port"] = port
+    return profile
 
 
 def save_profile(profile: dict) -> None:

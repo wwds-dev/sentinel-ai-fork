@@ -328,8 +328,17 @@ class VpnConnectionWorker(QThread):
             from services import vpn_connection
             if self._action == "connect":
                 result = vpn_connection.connect(self._profile)
-            else:
+            elif self._action == "disconnect":
                 result = vpn_connection.disconnect(self._profile)
+            elif self._action in ("arm", "disarm"):
+                if self._action == "arm":
+                    ok, message = vpn_connection.arm_killswitch(self._profile)
+                else:
+                    ok, message = vpn_connection.disarm_killswitch()
+                result = {"success": ok, "protocol": "Kill switch",
+                          "output": message, "error": None if ok else message}
+            else:
+                result = {"success": False, "error": f"Unknown action: {self._action}"}
             self.finished_signal.emit(result)
         except Exception as exc:
             self.error_signal.emit(str(exc))
