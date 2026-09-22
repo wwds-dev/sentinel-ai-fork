@@ -80,6 +80,15 @@ class BugBountyPanel(AgentPanel):
             ["Critical (P1)", "High (P2)", "Medium (P3)", "Low (P4)", "Informational"])
         setup_layout.addWidget(self.severity_box, 2, 3)
 
+        scope_note = QLabel(
+            "Program and Scope are declared by you and are not verified or enforced. "
+            "Bug Spray drafts a report from what you enter; only stay within programs "
+            "you are authorised to test."
+        )
+        scope_note.setWordWrap(True)
+        scope_note.setStyleSheet("font-size: 11px; color: #999;")
+        setup_layout.addWidget(scope_note, 3, 0, 1, 4)
+
         layout.addWidget(setup_group)
 
         # ── Nmap scan section ────────────────────────────────────────────
@@ -104,6 +113,15 @@ class BugBountyPanel(AgentPanel):
         nmap_cmd_row.addWidget(self.nmap_stop_btn)
         self.set_busy(self.nmap_run_btn, self.nmap_stop_btn, False)
         nmap_layout.addLayout(nmap_cmd_row)
+
+        nmap_note = QLabel(
+            "Runs this command on your machine (the first word is the program to "
+            "launch), with no scope check and outside the budget/authorisation guard. "
+            "Only scan targets you are authorised to test."
+        )
+        nmap_note.setWordWrap(True)
+        nmap_note.setStyleSheet("font-size: 11px; color: #999;")
+        nmap_layout.addWidget(nmap_note)
 
         self.nmap_output = QTextBrowser()
         self.nmap_output.setOpenExternalLinks(False)

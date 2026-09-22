@@ -1,14 +1,19 @@
-"""Tunnel — self-hosted VPN design, kill switch, and a deploy runbook.
+"""Tunnel — a real VPN client plus self-hosted VPN design and diagnostics.
 
 Fifth vertical moved out of `main.py` (phase 4, `docs/refactor_plan.md`).
 
-The panel keeps four paths visibly separate: **Connection Check** is read-only,
-**Action Preview** cannot execute, **Ask Advisor** is a paid request that goes
-through the guard, and **Build Config** renders WireGuard files locally.
+The panel keeps its paths visibly separate: **VPN Connection** runs a real
+WireGuard/OpenVPN tunnel (with an administrator prompt and an explicit confirm),
+**Connection Check** is read-only, **Action Preview** shows commands without
+running them, **Ask Advisor** is a paid request that goes through the guard, and
+**Build Config** renders WireGuard files locally.
 """
 
 from __future__ import annotations
 
+from pathlib import Path
+
+from PySide6.QtCore import Qt
 from PySide6.QtGui import QTextCursor
 from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QFileDialog, QGridLayout, QGroupBox, QHBoxLayout,
@@ -23,16 +28,18 @@ from services.vpn_diagnostics import (
     inspect_wireguard_config,
     load_vpn_profile_catalog,
 )
+from services import vpn_connection
 from ui.panels.base import AgentPanel
 from ui.widgets import MenuComboBox, SectionView
-from ui.workers import VpnDiagnosticsWorker
+from ui.workers import VpnConnectionWorker, VpnDiagnosticsWorker
 
 
 class VpnPanel(AgentPanel):
-    """Advise on, and generate, a self-hosted VPN."""
+    """Advise on, generate, and now actually run a VPN tunnel."""
 
     agent_key = "vpn"
     diagnostics_worker_class = VpnDiagnosticsWorker
+    connection_worker_class = VpnConnectionWorker
 
     def __init__(self, host, parent=None):
         super().__init__(host, parent)
@@ -49,6 +56,54 @@ class VpnPanel(AgentPanel):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(8)
+
+        banner = QLabel(
+            "Connect runs a real WireGuard/OpenVPN tunnel and will ask for your "
+            "administrator password. Example country profiles are templates and will "
+            "not connect until you import a real config or set a real endpoint. "
+            "Diagnostics and Action Preview remain read-only."
+        )
+        banner.setWordWrap(True)
+        banner.setObjectName("VPNSafetyBanner")
+        banner.setStyleSheet(
+            "color: #d0d8e0; background: #33240f; border: 1px solid #7a5a1e; "
+            "border-radius: 6px; padding: 6px 8px; font-size: 12px;")
+        layout.addWidget(banner)
+
+        # ── Live VPN connection ──────────────────────────────────────────
+        connect_group = QGroupBox("VPN Connection (live)")
+        connect_group.setObjectName("VPNConnectGroup")
+        connect_layout = QVBoxLayout(connect_group)
+
+        connect_row = QHBoxLayout()
+        connect_row.addWidget(QLabel("Server:"))
+        self.connect_profile_box = MenuComboBox()
+        self.connect_profile_box.setMinimumWidth(200)
+        self.connect_profile_box.setToolTip(
+            "WireGuard/OpenVPN profiles and country templates. Import a real "
+            "config to add a connectable server.")
+        connect_row.addWidget(self.connect_profile_box, 1)
+        self.import_config_btn = QPushButton("Import config…")
+        self.import_config_btn.setToolTip("Load a WireGuard .conf or OpenVPN .ovpn file.")
+        self.import_config_btn.clicked.connect(self.import_vpn_config)
+        connect_row.addWidget(self.import_config_btn)
+        connect_layout.addLayout(connect_row)
+
+        action_row = QHBoxLayout()
+        self.connect_btn = QPushButton("Connect")
+        self.connect_btn.setObjectName("PrimaryAction")
+        self.connect_btn.clicked.connect(self.connect_vpn)
+        action_row.addWidget(self.connect_btn)
+        self.disconnect_btn = QPushButton("Disconnect")
+        self.disconnect_btn.setObjectName("DangerAction")
+        self.disconnect_btn.clicked.connect(self.disconnect_vpn)
+        action_row.addWidget(self.disconnect_btn)
+        self.connection_status_label = QLabel("Not connected.")
+        self.connection_status_label.setStyleSheet("color: #9aa; font-size: 12px;")
+        action_row.addWidget(self.connection_status_label, 1)
+        connect_layout.addLayout(action_row)
+        layout.addWidget(connect_group)
+        self.reload_connect_profiles()
 
         # ── Deployment setup ─────────────────────────────────────────────
         setup_group = QGroupBox("Deployment")
@@ -358,6 +413,116 @@ class VpnPanel(AgentPanel):
     def selected_profile(self) -> dict | None:
         profile = self.profile_box.currentData()
         return dict(profile) if isinstance(profile, dict) else None
+
+    # ── Live connection ─────────────────────────────────────────────────
+    def reload_connect_profiles(self) -> None:
+        """Populate the connect picker with full (unstripped) profiles."""
+        try:
+            profiles = vpn_connection.load_connectable_profiles()
+        except Exception:
+            profiles = []
+        previous = self.connect_profile_box.currentText()
+        self.connect_profile_box.clear()
+        for profile in profiles:
+            name = str(profile.get("name") or "Unnamed")
+            country = profile.get("country")
+            label = f"{name}  ·  {country}" if country and country not in name else name
+            if vpn_connection.is_placeholder(profile):
+                label += "  (template)"
+            self.connect_profile_box.addItem(label, dict(profile))
+        if previous:
+            idx = self.connect_profile_box.findText(previous)
+            if idx >= 0:
+                self.connect_profile_box.setCurrentIndex(idx)
+
+    def selected_connect_profile(self) -> dict | None:
+        profile = self.connect_profile_box.currentData()
+        return dict(profile) if isinstance(profile, dict) else None
+
+    def import_vpn_config(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Import VPN config", str(Path.home()),
+            "VPN configs (*.conf *.ovpn);;All files (*)")
+        if not path:
+            return
+        profile = vpn_connection.profile_from_config(path)
+        try:
+            vpn_connection.save_profile(profile)
+        except Exception as exc:
+            QMessageBox.warning(self, "Import failed", f"Could not save the profile: {exc}")
+            return
+        self.reload_connect_profiles()
+        name_idx = self.connect_profile_box.findText(profile["name"], Qt.MatchStartsWith)
+        if name_idx >= 0:
+            self.connect_profile_box.setCurrentIndex(name_idx)
+        self.connection_status_label.setText(
+            f"Imported {Path(path).name} as a {profile['protocol']} profile.")
+
+    def connect_vpn(self) -> None:
+        if self._connection_busy():
+            return
+        profile = self.selected_connect_profile()
+        if not profile:
+            QMessageBox.information(self, "No profile", "Choose a server profile first.")
+            return
+        if vpn_connection.is_placeholder(profile):
+            QMessageBox.information(
+                self, "Template profile",
+                "This is an example/template. Import a real WireGuard .conf or "
+                "OpenVPN .ovpn (or set a real endpoint) before connecting.")
+            return
+        protocol = vpn_connection.resolve_protocol(profile)
+        confirm = QMessageBox.question(
+            self, "Connect VPN",
+            f"Start a real {protocol} tunnel for '{profile.get('name')}'?\n\n"
+            "This reroutes your traffic and will prompt for your administrator "
+            "password.",
+            QMessageBox.Yes | QMessageBox.No)
+        if confirm != QMessageBox.Yes:
+            return
+        self._start_connection("connect", profile,
+                               f"Connecting {profile.get('name')}…")
+
+    def disconnect_vpn(self) -> None:
+        if self._connection_busy():
+            return
+        profile = self.selected_connect_profile()
+        if not profile:
+            QMessageBox.information(self, "No profile", "Choose the profile to disconnect.")
+            return
+        self._start_connection("disconnect", profile,
+                               f"Disconnecting {profile.get('name')}…")
+
+    def _connection_busy(self) -> bool:
+        worker = getattr(self, "_connection_worker", None)
+        if worker is not None and worker.isRunning():
+            QMessageBox.information(self, "Busy", "A connection action is already running.")
+            return True
+        return False
+
+    def _start_connection(self, action: str, profile: dict, status: str) -> None:
+        self.connection_status_label.setText(status)
+        self.connect_btn.setEnabled(False)
+        self.disconnect_btn.setEnabled(False)
+        worker = self.connection_worker_class(action, profile)
+        worker.finished_signal.connect(self._on_connection_finished)
+        worker.error_signal.connect(self._on_connection_error)
+        self._connection_worker = worker
+        worker.start()
+
+    def _on_connection_finished(self, result: dict) -> None:
+        self.connect_btn.setEnabled(True)
+        self.disconnect_btn.setEnabled(True)
+        if result.get("success"):
+            self.connection_status_label.setText(
+                f"{result.get('protocol', 'VPN')}: {result.get('output') or 'done'}"[:200])
+        else:
+            self.connection_status_label.setText(f"Failed: {result.get('error', 'unknown')}"[:300])
+
+    def _on_connection_error(self, error: str) -> None:
+        self.connect_btn.setEnabled(True)
+        self.disconnect_btn.setEnabled(True)
+        self.connection_status_label.setText(f"Error: {error}"[:300])
 
     def run_diagnostics(self) -> None:
         if super().is_running():

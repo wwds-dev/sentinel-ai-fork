@@ -24,6 +24,12 @@ PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 APP_NAME="Sentinel"
 INSTALLED="/Applications/${APP_NAME}.app"
 PY="${PROJECT_ROOT}/.venv/bin/python"
+APP_VERSION="$(tr -d '[:space:]' < "${PROJECT_ROOT}/VERSION")"
+
+if [[ ! "$APP_VERSION" =~ ^[1-9][0-9]*\.[0-9]{3}$ ]]; then
+    echo "Error: VERSION must use MAJOR.SEQUENCE format, for example 2.001" >&2
+    exit 2
+fi
 
 if [ ! -x "$PY" ]; then
     echo "Error: no interpreter at ${PY}" >&2
@@ -48,8 +54,9 @@ defaults write "$APP_DIR/Contents/Info" CFBundleIdentifier -string "com.netrunne
 defaults write "$APP_DIR/Contents/Info" CFBundleExecutable -string "SentinelLauncher"
 defaults write "$APP_DIR/Contents/Info" CFBundleIconFile -string "icon.icns"
 defaults write "$APP_DIR/Contents/Info" CFBundlePackageType -string "APPL"
-defaults write "$APP_DIR/Contents/Info" CFBundleShortVersionString -string "2.0"
-defaults write "$APP_DIR/Contents/Info" CFBundleVersion -string "2"
+defaults write "$APP_DIR/Contents/Info" CFBundleGetInfoString -string "${APP_NAME} ${APP_VERSION}"
+defaults write "$APP_DIR/Contents/Info" CFBundleShortVersionString -string "$APP_VERSION"
+defaults write "$APP_DIR/Contents/Info" CFBundleVersion -string "$APP_VERSION"
 defaults write "$APP_DIR/Contents/Info" NSHighResolutionCapable -bool true
 defaults write "$APP_DIR/Contents/Info" LSUIElement -bool false
 plutil -convert xml1 "$APP_DIR/Contents/Info.plist"
@@ -93,6 +100,7 @@ codesign --force --deep --sign - "$INSTALLED"
 
 echo ""
 echo "✓ Installed: ${INSTALLED}"
+echo "  Version: v${APP_VERSION}"
 echo "  Runs live from: ${PROJECT_ROOT}"
 echo "  Edit the code, relaunch the app — no rebuild."
 echo "  API keys: ${PROJECT_ROOT}/.env"

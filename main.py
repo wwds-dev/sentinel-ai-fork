@@ -73,6 +73,7 @@ from services.agent_factory import AgentFactory
 from services.agent_catalog import BUILTIN_AGENTS, BUILTIN_AGENT_ORDER
 from services.provider_catalog import CLOUD_PROVIDERS
 from services.tool_catalog import runtime_tool_prompts
+from services.app_version import DISPLAY_VERSION, build_description
 from services.model_recommendations import (
     AGENT_RECOMMENDATIONS as RECOMMENDATION_OBJECTS,
     TASK_RECOMMENDATIONS, as_dict, resolve_available_model,
@@ -166,7 +167,7 @@ class GodAI(QWidget):
     def __init__(self):
         super().__init__()
 
-        self.setWindowTitle("Sentinel")
+        self.setWindowTitle(f"Sentinel {DISPLAY_VERSION}")
         self.resize(1400, 900)
         # The run bar is a single row so the cost can sit right-aligned as the
         # design has it; a wrapping bar cannot right-align. That costs width, so
@@ -1358,14 +1359,29 @@ class GodAI(QWidget):
         left_layout.setContentsMargins(0, 12, 0, 10)
         left_layout.setSpacing(4)
 
+        brand_row = QHBoxLayout()
+        brand_row.setContentsMargins(16, 6, 16, 12)
+        brand_row.setSpacing(7)
+
         fork_brand = QLabel("SENTINEL")
         fork_brand.setStyleSheet(
             "color: #5d6862; font-family: Menlo, Monaco, monospace; "
             "font-size: 10px; font-weight: 500; letter-spacing: 1.8px; "
-            "padding: 6px 16px 12px 16px;"
+            "padding: 0;"
         )
-        fork_brand.setToolTip("Independent Sentinel development fork")
-        left_layout.addWidget(fork_brand)
+        self.version_label = QLabel(DISPLAY_VERSION)
+        self.version_label.setObjectName("AppVersion")
+        self.version_label.setStyleSheet(
+            "color: #7f8b85; font-family: Menlo, Monaco, monospace; "
+            "font-size: 9px; font-weight: 500; padding: 1px 0 0 0;"
+        )
+        version_details = build_description()
+        fork_brand.setToolTip(version_details)
+        self.version_label.setToolTip(version_details)
+        brand_row.addWidget(fork_brand)
+        brand_row.addWidget(self.version_label)
+        brand_row.addStretch(1)
+        left_layout.addLayout(brand_row)
 
         # Inner scrollable container holds all the agent categories so they never
         # get clipped or vertically squashed when the window is short.

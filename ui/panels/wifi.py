@@ -29,7 +29,7 @@ from PySide6.QtWidgets import (
 )
 
 from agents.wifi_agent import (
-    AIRPORT, build_connection_preflight, build_kali_commands,
+    WIFI_SCAN_CMD, format_wifi_report, build_connection_preflight, build_kali_commands,
     detect_usb_adapters, network_interface_status,
 )
 from services.runtime_paths import user_data_base
@@ -383,10 +383,10 @@ class WifiPanel(AgentPanel):
 
         if mode == "Interface Info":
             cmd = ["networksetup", "-listallhardwareports"]
-        elif mode == "Scan Networks":
-            cmd = [AIRPORT, "-s"]
-        elif mode == "Signal Monitor":
-            cmd = [AIRPORT, "-I"]
+        elif mode in ("Scan Networks", "Signal Monitor"):
+            # Apple removed the `airport` binary in macOS 14.4; use the
+            # supported, no-sudo source that returns current + nearby networks.
+            cmd = list(WIFI_SCAN_CMD)
         elif mode == "Ping Test":
             target = self.target_input.text().strip()
             if not target:
@@ -396,7 +396,7 @@ class WifiPanel(AgentPanel):
                 return
             cmd = ["ping", "-c", "8", target]
         else:
-            cmd = [AIRPORT, "-I"]
+            cmd = list(WIFI_SCAN_CMD)
 
         self.scan_worker = SubprocessWorker(cmd)
         self.scan_worker.finished_signal.connect(self._scan_finished)
@@ -438,7 +438,20 @@ class WifiPanel(AgentPanel):
             )
             self._start_ai_pass(prompt)
 
+    def _format_scan_output(self, raw: str) -> str:
+        """Turn system_profiler JSON into a readable report; pass other output
+        through unchanged (Interface Info, Ping, or a legacy airport dump)."""
+        text = (raw or "").lstrip()
+        if not text.startswith("{"):
+            return raw
+        try:
+            import json
+            return format_wifi_report(json.loads(raw), self.mode_box.currentText())
+        except (ValueError, KeyError, TypeError):
+            return raw
+
     def _scan_finished(self, raw: str) -> None:
+        raw = self._format_scan_output(raw)
         self._source_output = raw
         self._show_sections([("Raw wireless output", raw, True)], raw)
         self.status_label.setText("Scan complete.")
@@ -595,7 +608,11 @@ class WifiPanel(AgentPanel):
         return result
 
     def _update_indicators(self, raw: str) -> None:
-        rssi_m = re.search(r"agrCtlRSSI:\s*(-\d+)", raw)
+        # Accept both the legacy airport format (agrCtlRSSI:/link auth:) and the
+        # system_profiler report (Signal:/Security:) so indicators work on any
+        # macOS version.
+        rssi_m = (re.search(r"agrCtlRSSI:\s*(-\d+)", raw)
+                  or re.search(r"Signal:\s*(-\d+)\s*dBm", raw))
         if rssi_m:
             rssi = int(rssi_m.group(1))
             quality = max(0, min(100, 2 * (rssi + 100)))
@@ -607,7 +624,8 @@ class WifiPanel(AgentPanel):
                 f"QProgressBar::chunk {{ background-color: {bar_color}; border-radius: 3px; }}"
             )
 
-        sec_m = re.search(r"link auth:\s*(\S+)", raw, re.IGNORECASE)
+        sec_m = (re.search(r"link auth:\s*(\S+)", raw, re.IGNORECASE)
+                 or re.search(r"Security:\s*(\S+)", raw))
         if sec_m:
             self.security_label.setText(sec_m.group(1).upper())
         elif "WPA3" in raw:

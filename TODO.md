@@ -16,6 +16,7 @@ future and cross-project items are listed under V3 or in their owning project.
 
 ### Product and interface
 
+- [x] Canonical v2.001 release identity is visible beside SENTINEL and in the window title; the thin launcher and self-contained bundle read the same `VERSION` source.
 - [x] Seven-agent Sentinel roster: Chat, Trace, Bloodhound, Beacon, Bug Spray, Tunnel and Forge; retired or moved agents no longer appear in the sidebar.
 - [x] Shared panel architecture (`AgentHost` + `AgentPanel`) and specialist modules under `ui/panels/`.
 - [x] Balanced sidebars, one-row run controls, compact History, three-level type/spacing scale, spend meters and paid-route highlighting.
@@ -48,6 +49,7 @@ future and cross-project items are listed under V3 or in their owning project.
 
 ## v3 — later
 
+- [ ] `P1` `infra` `docs` `@ai` **v2.002 release follow-up.** When the next user-visible development milestone is ready, increment `VERSION` to `2.002`, add its release-record entry, run the release checks and create the next numbered follow-up. See `docs/versioning.md`. This explicit open item is the Lab project monitor hand-off.
 - [x] `P2` `testing` `docs` `@ai` **Testing roadmap — in-app access.** The complete roadmap is a searchable Learning Centre topic and is bundled in self-contained releases.
 - [ ] `P0` `testing` `security` `@ai` **Testing roadmap — safety gate.** Isolate writable config as well as SQLite (the baseline suite changed `config/settings.json`), add a deny-by-default network/process harness, cover every agent's consent, scope, secret, budget, cancellation and write/delete boundary, plus installed-app Quit-stays-quit smoke. See `docs/testing_roadmap.md`.
 - [ ] `P1` `testing` `@ai` **Testing roadmap — workflow matrix.** Complete success/error/cancel/persistence contracts for all seven agents, their distinct modes, all shared controls/providers/settings, and the separate companion-repo test runs. See `docs/testing_roadmap.md`.

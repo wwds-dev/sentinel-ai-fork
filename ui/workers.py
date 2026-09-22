@@ -135,19 +135,27 @@ class ChatWorker(QThread):
             if hasattr(result, "__iter__") and not isinstance(result, (str, tuple, dict)):
                 self.status_signal.emit("Streaming response...")
 
+                stream_usage = None
                 for token in result:
                     if self._cancel_requested:
                         self.error_signal.emit("Request cancelled by user.")
                         return
+
+                    # A dict yielded mid/after the text stream is a usage
+                    # sentinel carrying the provider's real token counts, not
+                    # a token to display.
+                    if isinstance(token, dict):
+                        stream_usage = token.get("__usage__") or stream_usage
+                        continue
 
                     response_parts.append(token)
                     self.token_signal.emit(token)
 
                 response = "".join(response_parts)
 
-                usage = {
-                    "cost_type_override": "stream-estimated"
-                }
+                # Prefer the provider's real usage; fall back to the honest
+                # char/4 estimate only when no counts were reported.
+                usage = stream_usage or {"cost_type_override": "stream-estimated"}
 
             # ===== TUPLE (response, usage) =====
             elif isinstance(result, tuple):
@@ -296,6 +304,33 @@ class RemoteFileSearchWorker(QThread):
                 ),
             )
             self.finished_signal.emit(report)
+        except Exception as exc:
+            self.error_signal.emit(str(exc))
+
+
+class VpnConnectionWorker(QThread):
+    """Bring a VPN tunnel up or down off the UI thread.
+
+    The privileged step raises the macOS authorisation dialog inside
+    vpn_connection, so this must not run on the interface thread.
+    """
+
+    finished_signal = Signal(dict)
+    error_signal = Signal(str)
+
+    def __init__(self, action: str, profile: dict):
+        super().__init__()
+        self._action = action
+        self._profile = dict(profile or {})
+
+    def run(self) -> None:
+        try:
+            from services import vpn_connection
+            if self._action == "connect":
+                result = vpn_connection.connect(self._profile)
+            else:
+                result = vpn_connection.disconnect(self._profile)
+            self.finished_signal.emit(result)
         except Exception as exc:
             self.error_signal.emit(str(exc))
 

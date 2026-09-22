@@ -126,12 +126,31 @@ class KimiClientWrapper:
                 model=model,
                 messages=messages,
                 stream=True,
+                # Ask the API to append a final usage chunk; without this the
+                # stream carries no token counts and cost falls back to a
+                # char/4 estimate (and the cached-input discount never applies).
+                stream_options={"include_usage": True},
             )
 
+            captured_usage = None
             for chunk in stream:
-                delta = chunk.choices[0].delta.content
-                if delta:
-                    yield delta
+                if getattr(chunk, "usage", None):
+                    captured_usage = chunk.usage
+                if chunk.choices:
+                    delta = chunk.choices[0].delta.content
+                    if delta:
+                        yield delta
+
+            if captured_usage is not None:
+                inp = int(_usage_value(captured_usage, "prompt_tokens", "input_tokens") or 0)
+                yield {"__usage__": {
+                    "input_tokens": inp,
+                    "cached_input_tokens": min(inp, cached_input_tokens(captured_usage)),
+                    "output_tokens": int(
+                        _usage_value(captured_usage, "completion_tokens", "output_tokens") or 0
+                    ),
+                    "total_tokens": int(_usage_value(captured_usage, "total_tokens") or 0),
+                }}
 
         except Exception as e:
             raise RuntimeError(f"Kimi streaming request failed: {e}")

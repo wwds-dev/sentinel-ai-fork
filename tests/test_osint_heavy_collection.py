@@ -1,0 +1,107 @@
+"""Bloodhound (osint_heavy) live-collection dispatch and gauge sourcing.
+
+Regression cover for the defect where the panel passed combobox labels
+("Email Address", "Domain / IP", "Auto-detect", …) verbatim while the
+dispatcher only matched short lowercase tokens, so live collection silently
+no-opped for the two most common target types. Providers are stubbed, so
+these tests never touch the network.
+"""
+
+from __future__ import annotations
+
+import pytest
+
+import agents.osint_heavy_agent as heavy
+
+
+@pytest.fixture
+def recording_providers(monkeypatch):
+    """Replace every provider .lookup with a recorder that logs which ran."""
+    calls: list[str] = []
+
+    def make(source_name):
+        def _fake(target, *args, **kwargs):
+            calls.append(source_name)
+            # Mimic the real providers' shape, including the real per-source trail.
+            return {
+                "type": source_name,
+                "query": target,
+                "sources_contacted": [{"source": source_name, "status": "checked"}],
+            }
+        return _fake
+
+    monkeypatch.setattr(heavy._domain_prov, "lookup", make("domain"))
+    monkeypatch.setattr(heavy._email_prov, "lookup", make("email"))
+    monkeypatch.setattr(heavy._username_prov, "lookup", make("username"))
+    monkeypatch.setattr(heavy._company_prov, "lookup", make("company"))
+    return calls
+
+
+# ── Label → provider dispatch ────────────────────────────────────────────────
+
+@pytest.mark.parametrize("label,target,expected", [
+    ("Email Address", "suspect@darkmail.io", ["email"]),
+    ("email", "suspect@darkmail.io", ["email"]),
+    ("Domain / IP", "phishkit-delivery.net", ["domain"]),
+    ("Domain / IP", "192.0.2.10", ["domain"]),
+    ("domain", "example.com", ["domain"]),
+    ("Username", "h4x0r_pete", ["username"]),
+    ("Organisation", "Acme Corporation", ["company"]),
+    ("Phone Number", "+353 1 234 5678", []),          # no provider by design
+])
+def test_labels_dispatch_to_the_right_provider(
+        recording_providers, label, target, expected):
+    heavy._run_providers(target, label)
+    assert recording_providers == expected
+
+
+def test_auto_detect_routes_by_target_shape(recording_providers):
+    heavy._run_providers("suspect@darkmail.io", "Auto-detect")
+    heavy._run_providers("example.com", "Auto-detect")
+    heavy._run_providers("lonewolf", "Auto-detect")
+    assert recording_providers == ["email", "domain", "username"]
+
+
+def test_email_address_label_is_no_longer_a_silent_noop(recording_providers):
+    # The exact regression: this used to return [] because "email address" != "email".
+    results = heavy._run_providers("victim@example.com", "Email Address")
+    assert results and results[0]["type"] == "email"
+    assert recording_providers == ["email"]
+
+
+# ── Real source count feeds the gauge, not the model's estimate ─────────────
+
+def test_real_source_count_sums_contacted_sources(recording_providers):
+    agent = heavy.OsintHeavyAgent()
+    agent.collect_live("victim@example.com", "Email Address")
+    assert agent.last_source_count == 1  # one stubbed source contacted
+    assert heavy.real_source_count([]) == 0
+    assert heavy.real_source_count(None) == 0
+
+
+def test_phone_target_contacts_zero_sources(recording_providers):
+    agent = heavy.OsintHeavyAgent()
+    agent.collect_live("+353 1 234 5678", "Phone Number")
+    assert agent.last_source_count == 0
+
+
+# ── build_messages stays offline ────────────────────────────────────────────
+
+def test_build_messages_does_not_collect(monkeypatch):
+    called = {"n": 0}
+    monkeypatch.setattr(heavy, "_run_providers",
+                        lambda *a, **k: called.__setitem__("n", called["n"] + 1))
+    agent = heavy.OsintHeavyAgent()
+    msgs = agent.build_messages("example.com", "Domain / IP", "Deep Dive", "why")
+    assert called["n"] == 0                     # no network from build_messages
+    assert "LIVE OSINT DATA" not in msgs[1]["content"]
+
+
+def test_build_messages_injects_supplied_live_results():
+    agent = heavy.OsintHeavyAgent()
+    live = [{"type": "domain", "query": "example.com",
+             "sources_contacted": [{"source": "WHOIS", "status": "checked"}]}]
+    msgs = agent.build_messages(
+        "example.com", "Domain / IP", "Deep Dive", "why", live_results=live)
+    assert "LIVE OSINT DATA" in msgs[1]["content"]
+    assert "example.com" in msgs[1]["content"]

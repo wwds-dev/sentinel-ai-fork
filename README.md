@@ -2,6 +2,10 @@
 
 Sentinel is a local-first PySide6 desktop command centre for security, investigation, and controlled AI-assisted workflows. It supports local Ollama models and explicitly enabled cloud providers, records request usage and cost, and keeps each specialist workflow behind a clear panel and permission gate.
 
+**Current release: v2.001.** The canonical value lives in [`VERSION`](VERSION)
+and is shown beside **SENTINEL** in the app. See the
+[versioning policy](docs/versioning.md) for numbering and release steps.
+
 Sentinel's built-in roster is intentionally limited to seven agents:
 
 | Display name | Key | Responsibility |
@@ -11,7 +15,7 @@ Sentinel's built-in roster is intentionally limited to seven agents:
 | Bloodhound | `osint_heavy` | Deep OSINT dossiers plus read-only file discovery in user-selected folders |
 | Beacon | `wifi` | Wi-Fi diagnostics and commands for networks the operator is authorised to test |
 | Bug Spray | `bug_bounty` | In-scope vulnerability analysis and submission-ready bug bounty reports |
-| Tunnel | `vpn` | Profile-aware VPN checks, safe action previews, and self-hosted WireGuard/OpenVPN design |
+| Tunnel | `vpn` | Real WireGuard/OpenVPN connect, profile-aware checks, action previews, and self-hosted VPN design |
 | Forge | `manager` | Creates and reviews specifications for new agents and tools |
 
 Writing and Coding are Chat tools, not standalone agents. Creative publishing, audiobook, health, investing, and sports-betting workflows are not part of the current Sentinel product.
@@ -103,12 +107,21 @@ for interactive administration outside Sentinel.
 Tunnel's **Connection Check** is local and read-only by default. It reports
 installed WireGuard/OpenVPN tools, detected tunnels, recent WireGuard handshake
 and transfer totals when the `wg` status tool permits them, the current default
-route, and configured DNS servers. A selected companion VPN Agent profile can
+route, and configured DNS servers. A selected profile can
 be compared with the snapshot to explain interface, endpoint, port, handshake,
 and routing findings. Endpoint and port are checked for usable profile values,
-but the live peer endpoint is deliberately not queried or verified. Connect,
-Disconnect, and Restart are available as safe previews only: Sentinel shows
-effects, checks, and proposed commands but cannot execute them. It never
+but the live peer endpoint is deliberately not queried or verified.
+
+Tunnel's **VPN Connection** brings a real tunnel up and down. Choosing a
+WireGuard or OpenVPN profile and clicking **Connect** runs `wg-quick`/`openvpn`
+through the macOS authorisation dialog after an explicit confirmation, and
+**Disconnect** brings it down; both run off the interface thread. **Import
+config…** loads a `.conf`/`.ovpn` and stores it as a connectable profile. A few
+country-labelled example profiles ship as explicit templates — they are marked
+`(template)` and the connect path refuses them until you import a real config or
+set a real endpoint, so nothing pretends to be a working server it is not.
+**Action Preview** still shows the equivalent commands without running them, and
+**Connection Check** stays read-only. It never
 requests private key material. Public-IP and latency
 checks are optional, name the external destinations, and require a separate
 confirmation; none of these paths uses an AI model or incurs model cost.
@@ -138,11 +151,16 @@ The main runtime is organised around:
   `agents/wifi_agent/`, and `agents/manager_agent/`)
 - `bug_spray/` — Bug Spray's standalone companion repo and the in-app
   `bug_bounty` message builder
-- `agents/vpn_agent/` — Tunnel's standalone companion repo and the in-app `vpn`
-  message/configuration implementation; Sentinel imports it rather than keeping
-  a second copy
+- `agents/vpn_agent/` — Tunnel's VPN library, merged in-tree (formerly a
+  standalone submodule): the `vpn` agent (`sentinel_chat_agent.py`), the
+  `services/` stack (WireGuard/OpenVPN control, `privileged`, `killswitch`,
+  `config_inspection`, DNS/latency/public-IP checks) and `server/` provisioning.
+  The real connect path lives in `services/vpn_connection.py` and
+  `services/openvpn_manager.py`
 - `ui/panels/` — specialist panels for Trace, Bloodhound, Beacon, Bug Spray, Tunnel, and Forge
 - `services/agent_catalog.py` — canonical built-in roster and metadata
+- `VERSION` and `services/app_version.py` — canonical public version and the
+  exact development-build description shown by the app
 - `services/registry.py` and `services/validator.py` — permissions and tool/provider checks; `registry.py` also has a `projects` table with full CRUD (`docs/projects_roadmap.md`, Stage 2) that nothing in the UI reads or writes yet
 - `services/database.py` — SQLite schema and built-in registration
 - `services/*_client.py` — local and cloud model clients
@@ -172,6 +190,11 @@ Development runs and the everyday thin launcher use the Lab project directory fo
 
 `./scripts/build_app.sh` creates a self-contained release in `dist.noindex/` but does not install it. A self-contained build uses `~/Library/Application Support/Sentinel/` when launched. On first launch it renames existing `Sentinel Fork` application-support data in place; it never takes data from the archived `Sentinel AI` app. Installing with `./scripts/build_app.sh --install` explicitly replaces the thin launcher, so use that option only when you intend to switch modes. Source and frozen modes do not otherwise merge their data.
 
+Both launch modes read the same canonical `VERSION`. The live launcher shows
+the updated version on its next launch; packaged and portable copies keep the
+version embedded at build time. Follow `docs/versioning.md` for every release
+increment so the UI, bundle metadata and Lab monitor task remain aligned.
+
 Important data includes saved chats, settings, usage, run history, and registry records. Do not replace or delete `data/sentinel.db` during an upgrade. Schema and roster changes should be applied through migrations that preserve user history.
 
 Do not commit `.env`, credentials, generated reports containing sensitive information, or private investigation data.
@@ -188,10 +211,11 @@ The current manual acceptance checklist is in `tests/manual_test_cases.md`. It c
 The [testing roadmap](docs/testing_roadmap.md) maps every shipped agent workflow
 and shared control to automated, packaged-app, and owned-lab checks, with
 priority and release gates. Sentinel's main test suite does not include the
-separate Bug Spray and VPN Agent companion-repository suites.
-Tunnel's local-only and external-opt-in boundaries are covered by
-`tests/test_vpn_diagnostics.py` and the Tunnel panel tests in
-`tests/test_ui_panels.py`.
+separate Bug Spray companion-repository suite. (The VPN Agent code is now merged
+in-tree; its connect/disconnect layer is covered by `tests/test_vpn_connection.py`.)
+Tunnel's diagnostics and connection boundaries are covered by
+`tests/test_vpn_diagnostics.py`, `tests/test_vpn_connection.py`, and the Tunnel
+panel tests in `tests/test_ui_panels.py`.
 
 ## Further documentation
 

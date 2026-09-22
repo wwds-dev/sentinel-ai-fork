@@ -75,6 +75,14 @@ class TestPanelProviderRows:
         assert provider_box is not None
         assert model_box is not None
 
+
+    def test_sidebar_and_window_show_the_canonical_version(self, win):
+        from services.app_version import DISPLAY_VERSION
+
+        assert win.version_label.objectName() == "AppVersion"
+        assert win.version_label.text() == DISPLAY_VERSION
+        assert DISPLAY_VERSION in win.windowTitle()
+
     @pytest.mark.parametrize("agent", PANEL_AGENTS)
     def test_provider_box_offers_every_provider(self, win, agent):
         box, _ = win.setup_widgets_for(agent)
@@ -1090,6 +1098,27 @@ class FakeWorker(QObject):
         self.cancelled = True
 
 
+class FakeVpnConnectionWorker(QObject):
+    """A Tunnel connection worker that never runs wg-quick/openvpn/sudo."""
+
+    finished_signal = Signal(dict)
+    error_signal = Signal(str)
+    instances = []
+
+    def __init__(self, action, profile):
+        super().__init__()
+        self.action = action
+        self.profile = profile
+        self.started = False
+        FakeVpnConnectionWorker.instances.append(self)
+
+    def start(self):
+        self.started = True
+
+    def isRunning(self):
+        return False
+
+
 class FakeVpnDiagnosticsWorker(QObject):
     """A Tunnel diagnostics worker with all system and network reads removed."""
 
@@ -2022,7 +2051,8 @@ class FakeOsintHeavyAgent:
     def __init__(self):
         self.calls = []
 
-    def build_messages(self, target, target_type, scope, objective, image_metadata):
+    def build_messages(self, target, target_type, scope, objective,
+                       image_metadata, live_results=None):
         self.calls.append((target, target_type, scope, objective, image_metadata))
         return [{"role": "user", "content": target}]
 
@@ -2260,6 +2290,8 @@ def tunnel(qapp, monkeypatch):
     monkeypatch.setattr(QMessageBox, "warning", staticmethod(lambda *a, **k: None))
     monkeypatch.setattr(VpnPanel, "worker_class", FakeWorker)
     monkeypatch.setattr(VpnPanel, "diagnostics_worker_class", FakeVpnDiagnosticsWorker)
+    monkeypatch.setattr(VpnPanel, "connection_worker_class", FakeVpnConnectionWorker)
+    FakeVpnConnectionWorker.instances.clear()
     monkeypatch.setattr(
         vpn_mod,
         "load_vpn_profile_catalog",
@@ -2289,6 +2321,37 @@ class TestTunnelPanel:
         assert tunnel.tabs.count() == 5
         assert tunnel.tabs.tabText(0) == "Diagnostics"
         assert tunnel.tabs.tabText(3) == "Action Preview"
+
+    def test_connecting_a_real_profile_starts_the_connection_worker(self, tunnel, monkeypatch):
+        from PySide6.QtWidgets import QMessageBox
+        monkeypatch.setattr(QMessageBox, "question",
+                            staticmethod(lambda *a, **k: QMessageBox.Yes))
+        tunnel.connect_profile_box.clear()
+        tunnel.connect_profile_box.addItem("VPS", {
+            "name": "VPS", "protocol": "WireGuard",
+            "endpoint": "203.0.113.7", "interface": "wg0"})
+        tunnel.connect_vpn()
+        assert len(FakeVpnConnectionWorker.instances) == 1
+        assert FakeVpnConnectionWorker.instances[0].action == "connect"
+        assert FakeVpnConnectionWorker.instances[0].profile["interface"] == "wg0"
+
+    def test_connecting_a_template_profile_does_nothing(self, tunnel, monkeypatch):
+        from PySide6.QtWidgets import QMessageBox
+        # Even if the user clicks through, a placeholder must not start a tunnel.
+        monkeypatch.setattr(QMessageBox, "question",
+                            staticmethod(lambda *a, **k: QMessageBox.Yes))
+        monkeypatch.setattr(QMessageBox, "information", staticmethod(lambda *a, **k: None))
+        tunnel.connect_profile_box.clear()
+        tunnel.connect_profile_box.addItem("Example — Japan", {
+            "name": "Example — Japan", "protocol": "WireGuard",
+            "endpoint": "<SERVER_IP>", "interface": "wgjp", "placeholder": True})
+        tunnel.connect_vpn()
+        assert FakeVpnConnectionWorker.instances == []
+
+    def test_a_successful_connect_updates_status(self, tunnel):
+        tunnel._on_connection_finished({"success": True, "protocol": "WireGuard", "output": "up"})
+        assert "WireGuard" in tunnel.connection_status_label.text()
+        assert tunnel.connect_btn.isEnabled() is True
         assert tunnel.tabs.tabText(4) == "Config Inspection"
         assert tunnel.external_checks_box.isChecked() is False
         assert tunnel.profile_box.currentText() == "Travel VPS"
@@ -2545,6 +2608,28 @@ class TestBeaconPanel:
         beacon.scan_worker.finished_signal.emit("agrCtlRSSI: -80")
         assert [c for c in beacon.host.calls if c[0] == "authorize"] == []
         assert beacon.save_btn.isEnabled() is True
+
+    def test_scan_parses_system_profiler_json_into_a_readable_report(self, beacon):
+        import json
+        data = {"SPAirPortDataType": [{"spairport_airport_interfaces": [{
+            "_name": "en0",
+            "spairport_status_information": "spairport_status_connected",
+            "spairport_current_network_information": {
+                "_name": "HomeNet",
+                "spairport_network_channel": "6",
+                "spairport_security_mode": "spairport_security_mode_wpa2_personal",
+                "spairport_signal_noise": "-42 dBm / -95 dBm",
+                "spairport_network_phymode": "802.11ax",
+            },
+            "spairport_airport_other_local_wireless_networks": [],
+        }]}]}
+        beacon.mode_box.setCurrentText("Scan Networks")
+        beacon.ai_checkbox.setChecked(False)
+        beacon.run()
+        beacon.scan_worker.finished_signal.emit(json.dumps(data))
+        assert "SSID: HomeNet" in beacon.sections._raw   # JSON was formatted, not shown raw
+        assert beacon.signal_val_label.text() == "-42 dBm"
+        assert beacon.security_label.text() == "WPA2"
 
     def test_the_kali_builder_is_offline(self, beacon):
         beacon.mode_box.setCurrentText("Kali Command Builder")

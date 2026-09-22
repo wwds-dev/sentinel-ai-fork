@@ -255,7 +255,7 @@ class OsintHeavyPanel(AgentPanel):
         indicators_layout.setContentsMargins(8, 0, 0, 0)
         indicators_layout.setSpacing(10)
 
-        threat_group = QGroupBox("Threat Level")
+        threat_group = QGroupBox("Threat Level (AI estimate)")
         threat_group.setObjectName("OSINTHeavyThreatBox")
         threat_layout = QVBoxLayout(threat_group)
         self.threat_bar = QProgressBar()
@@ -272,7 +272,7 @@ class OsintHeavyPanel(AgentPanel):
         threat_layout.addWidget(self.threat_label)
         indicators_layout.addWidget(threat_group)
 
-        conf_group = QGroupBox("Confidence")
+        conf_group = QGroupBox("Confidence (AI estimate)")
         conf_group.setObjectName("OSINTHeavyConfBox")
         conf_layout = QVBoxLayout(conf_group)
         self.conf_label = QLabel("—")
@@ -291,6 +291,14 @@ class OsintHeavyPanel(AgentPanel):
             "font-size: 18px; font-weight: bold; color: #4db8ff;")
         sources_layout.addWidget(self.sources_label)
         indicators_layout.addWidget(sources_group)
+
+        gauge_note = QLabel(
+            "Threat and Confidence are the AI's own estimate, not a measurement. "
+            "Sources counts the public sources actually contacted by live collection."
+        )
+        gauge_note.setWordWrap(True)
+        gauge_note.setStyleSheet("font-size: 10px; color: #888;")
+        indicators_layout.addWidget(gauge_note)
 
         depth_group = QGroupBox("Depth")
         depth_group.setObjectName("OSINTHeavyDepthBox")
@@ -469,12 +477,10 @@ class OsintHeavyPanel(AgentPanel):
         self.file_results.setMinimumHeight(150)
         self.file_results.cellDoubleClicked.connect(self.reveal_file_result)
         body.addWidget(self.file_results)
-        hint = QLabel(
-            "Read-only: Bloodhound checks file metadata locally. Nothing is uploaded. "
-            "Double-click a result to reveal it in its folder."
-        )
-        hint.setStyleSheet("font-size: 11px; color: #777;")
-        body.addWidget(hint)
+        self.file_hint = QLabel(self._file_hint_text(remote=False))
+        self.file_hint.setStyleSheet("font-size: 11px; color: #777;")
+        self.file_hint.setWordWrap(True)
+        body.addWidget(self.file_hint)
 
         outer.addWidget(self.file_discovery_body)
         self.file_discovery_body.setVisible(False)
@@ -499,8 +505,25 @@ class OsintHeavyPanel(AgentPanel):
         if self._image_path:
             image_metadata = exif_for_prompt(self._image_path)
 
+        # Live public-source collection runs before the model call. It is a
+        # free, no-model step; the real number of sources contacted drives the
+        # Sources gauge instead of the model's self-declared estimate.
+        live_results: list[dict] = []
+        self._live_source_count = None
+        collect = getattr(self.agent(), "collect_live", None)
+        if collect is not None:
+            self.status_label.setText("Collecting live public-source data…")
+            try:
+                live_results = collect(target, target_type)
+                self._live_source_count = getattr(
+                    self.agent(), "last_source_count", None)
+            except Exception:
+                live_results = []
+                self._live_source_count = None
+
         messages = self.agent().build_messages(
-            target, target_type, scope, objective, image_metadata)
+            target, target_type, scope, objective, image_metadata,
+            live_results=live_results)
 
         self._clear_displays()
         self._last_response = ""
@@ -555,12 +578,27 @@ class OsintHeavyPanel(AgentPanel):
         self.set_busy(self.investigate_btn, self.stop_btn, False)
 
     # ── Local file discovery ───────────────────────────────────────────
+    @staticmethod
+    def _file_hint_text(remote: bool) -> str:
+        if remote:
+            return (
+                "Read-only: Bloodhound lists file metadata over SFTP on the remote "
+                "host. No file contents are transferred and nothing is sent to an AI. "
+                "Double-click a result to reveal it in its folder."
+            )
+        return (
+            "Read-only: Bloodhound checks file metadata locally. Nothing is uploaded. "
+            "Double-click a result to reveal it in its folder."
+        )
+
     def _set_file_source(self, source: str) -> None:
         remote = source == "Remote SSH machine"
         self.remote_file_widget.setVisible(remote)
         self.file_folders.setEnabled(not remote)
         self.add_folder_btn.setEnabled(not remote)
         self.remove_folder_btn.setEnabled(not remote)
+        if hasattr(self, "file_hint"):
+            self.file_hint.setText(self._file_hint_text(remote=remote))
         self.file_status.setText(
             "Enter an authenticated SSH machine and remote folders."
             if remote else
@@ -669,7 +707,8 @@ class OsintHeavyPanel(AgentPanel):
         self.file_cancel_btn.setEnabled(True)
         self.add_folder_btn.setEnabled(False)
         self.remove_folder_btn.setEnabled(False)
-        self.file_status.setText("Searching locally…")
+        self.file_status.setText(
+            "Searching remote host over SFTP…" if remote else "Searching locally…")
         worker = (
             RemoteFileSearchWorker(host, username, port, roots, filters)
             if remote else LocalFileSearchWorker(roots, filters)
@@ -869,8 +908,17 @@ class OsintHeavyPanel(AgentPanel):
             self.conf_label.setText(f"{conf_m.group(1)}%")
 
         sources_m = re.search(r"SOURCES REFERENCED[:\s]+(\d+)", text, re.IGNORECASE)
-        if sources_m:
+        real = getattr(self, "_live_source_count", None)
+        if real is not None:
+            # Real number of public sources contacted by live collection —
+            # never the model's self-declared estimate.
+            self.sources_label.setText(str(real))
+            self.sources_label.setToolTip(
+                "Public sources actually contacted by live collection.")
+        elif sources_m:
             self.sources_label.setText(sources_m.group(1))
+            self.sources_label.setToolTip(
+                "AI-estimated — no live collection ran for this target type.")
 
     # ── Image OSINT ─────────────────────────────────────────────────────
     def browse_image(self) -> None:

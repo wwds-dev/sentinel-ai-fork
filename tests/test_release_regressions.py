@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
@@ -142,6 +143,25 @@ def test_frozen_bundle_includes_tunnel_profile_seed():
     spec = (ROOT / "Sentinel.spec").read_text(encoding="utf-8")
 
     assert "agents/vpn_agent/config/vpn_profiles.json" in spec
+
+
+def test_canonical_version_has_precise_public_format():
+    from services.app_version import APP_VERSION, DISPLAY_VERSION, read_app_version
+
+    checked_in = (ROOT / "VERSION").read_text(encoding="utf-8").strip()
+    assert re.fullmatch(r"[1-9]\d*\.\d{3}", checked_in)
+    assert read_app_version(ROOT) == checked_in == APP_VERSION
+    assert DISPLAY_VERSION == f"v{checked_in}"
+
+
+def test_every_distribution_reads_the_canonical_version_file():
+    spec = (ROOT / "Sentinel.spec").read_text(encoding="utf-8")
+    installer = (ROOT / "scripts" / "install_app.sh").read_text(encoding="utf-8")
+
+    assert '("VERSION", ".")' in spec
+    assert 'Path(SPECPATH) / "VERSION"' in spec
+    assert '${PROJECT_ROOT}/VERSION' in installer
+    assert 'CFBundleShortVersionString -string "$APP_VERSION"' in installer
 
 
 def test_installer_migrates_only_sentinel_fork_identity():

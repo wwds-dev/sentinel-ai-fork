@@ -87,6 +87,22 @@ class AnthropicClientWrapper:
             with self.client.messages.stream(**kwargs) as stream:
                 for text in stream.text_stream:
                     yield text
+                # Surface the provider's real token usage after the text stream
+                # so billing/budget use exact counts, not a char/4 estimate.
+                try:
+                    usage = stream.get_final_message().usage
+                    inp = int(getattr(usage, "input_tokens", 0) or 0)
+                    cache_read = int(getattr(usage, "cache_read_input_tokens", 0) or 0)
+                    cache_write = int(getattr(usage, "cache_creation_input_tokens", 0) or 0)
+                    real = {
+                        "input_tokens": inp + cache_read + cache_write,
+                        "output_tokens": int(getattr(usage, "output_tokens", 0) or 0),
+                    }
+                    if cache_read:
+                        real["cached_input_tokens"] = cache_read
+                    yield {"__usage__": real}
+                except Exception:
+                    pass  # fall back to the stream estimate if usage is unavailable
         except _sdk.AuthenticationError:
             raise RuntimeError(
                 "AuthenticationError (401) — API key invalid or expired.\n"

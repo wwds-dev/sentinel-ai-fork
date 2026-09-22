@@ -246,10 +246,12 @@ class ManagerPanel(AgentPanel):
             "Confirm Agent Creation",
             f"Create agent '{label}' ({name})?\n\n"
             f"This will:\n"
-            f"  • Write agents/{name}_agent.py\n"
-            f"  • Add entry to config/registry.json\n"
-            f"  • Add system prompt to config/tool_prompts.json\n\n"
-            f"The app must be restarted to use the new agent.",
+            f"  • Write a scaffold file agents/{name}_agent.py\n"
+            f"  • Add DISABLED rows to the SQLite agent and tool registries\n\n"
+            f"The scaffold is a starting point, not a live agent: nothing loads or "
+            f"runs it, and it will not appear in the sidebar. A developer must wire "
+            f"it in by hand. Its generated system prompt can be enabled as a Chat "
+            f"tool from Settings → Tools after a restart.",
             QMessageBox.Yes | QMessageBox.No,
         )
 
@@ -262,15 +264,20 @@ class ManagerPanel(AgentPanel):
             self.log.append(f"\n[Created] Agent '{name}' created successfully.")
             for f in report["files_created"]:
                 self.log.append(f"  ✓ {f}")
-            self.log.append("\n[Info] Restart the app to activate the new agent.")
+            self.log.append(
+                "\n[Info] Scaffold written and registered as DISABLED. It will not "
+                "appear in the sidebar or run until a developer wires it in. Its "
+                "system prompt can be enabled as a Chat tool in Settings → Tools.")
             self.approve_btn.setEnabled(False)
             self.reject_btn.setEnabled(False)
             self.pending_spec = None
             QMessageBox.information(
                 self,
-                "Agent Created",
-                f"Agent '{label}' created successfully.\n\n"
-                f"Restart the app to activate it.",
+                "Scaffold Created",
+                f"Scaffold for '{label}' written and registered (disabled).\n\n"
+                f"This is a starting point, not a runnable agent: nothing loads it "
+                f"and it will not appear in the sidebar. Enable its generated system "
+                f"prompt as a Chat tool from Settings → Tools if you want to use it.",
             )
         else:
             errors = "\n".join(report["errors"])
