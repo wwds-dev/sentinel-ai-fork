@@ -1,1 +1,8 @@
-60de5ae6a35e74d8ed4aea0ea8daf9203a60dc8e:services/database.py:generic-api-key:198
+# False positive: a SQL string in services/database.py —
+#   "SELECT value FROM settings WHERE key = 'pricing_correction_2026_08'"
+# gitleaks' generic-api-key rule reads the quoted value as a key assignment.
+#
+# Fingerprints embed the commit SHA, so the 2026-09-24 history rewrite
+# (stripping a real email from author metadata) invalidated the previous
+# entry and this had to be re-pinned.
+315882efd1746f0005b4f65e96faf45c56ca90d8:services/database.py:generic-api-key:198
