@@ -1,3 +1,3 @@
 [submodule "bug_spray"]
 	path = agents/bug_spray
-	url = https://github.com/Netrunner3000/bug_spray.git
+	url = https://github.com/wwds-dev/bug_spray.git
